@@ -34,7 +34,17 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
         if not message.from_user or message.from_user.is_bot:
             return await handler(event, data)
 
-        # Обработка только групповых чатов
+        # Регистрация чата (включая личные сообщения) для фоновых рассылок/вовлечения
+        if message.chat:
+            async with session_scope() as session:
+                chat = await get_or_create_chat(
+                    session,
+                    chat_id=message.chat.id,
+                    title=message.chat.title or message.from_user.full_name or "ЛС",
+                    chat_type=message.chat.type,
+                )
+
+        # Обработка только групповых чатов для безопасности и активности
         if message.chat and message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
             async with session_scope() as session:
                 chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")

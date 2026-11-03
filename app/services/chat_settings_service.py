@@ -62,6 +62,7 @@ async def get_or_create_chat(
     *,
     chat_id: int,
     title: str = "",
+    chat_type: str = "supergroup",
 ) -> Chat:
     """Возвращает или создает запись чата с настройками по умолчанию атомарно."""
     chat = await session.get(Chat, chat_id)
@@ -69,6 +70,7 @@ async def get_or_create_chat(
         stmt = insert(Chat).values(
             telegram_id=chat_id,
             title=title,
+            chat_type=str(chat_type),
             is_active=True,
             settings=DEFAULT_CHAT_SETTINGS.copy(),
         ).on_conflict_do_nothing(index_elements=[Chat.telegram_id])
