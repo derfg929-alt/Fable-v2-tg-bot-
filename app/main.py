@@ -1,4 +1,3 @@
-
 """Главная точка входа Telegram-бота Fable (aiogram 3)."""
 from __future__ import annotations
 
@@ -6,7 +5,8 @@ import asyncio
 import logging
 import sys
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -27,9 +27,6 @@ except ImportError:
             Base = declarative_base()
 # -------------------------
 
-# Здесь мы УБРАЛИ import app.models, так как такой папки нет.
-# Модели должны подтянуться из хендлеров, которые импортируются ниже.
-
 from app.handlers.economy_handlers import router as economy_router
 from app.handlers.exchange_handlers import router as exchange_router
 from app.handlers.games_handlers import router as games_router
@@ -48,6 +45,17 @@ logger = logging.getLogger("fable")
 def create_dispatcher() -> Dispatcher:
     """Создает и настраивает Dispatcher aiogram 3 со всеми роутерами."""
     dp = Dispatcher()
+    
+    # --- ОБРАБОТЧИК START ---
+    @dp.message(CommandStart())
+    async def cmd_start(message: types.Message):
+        text = (
+            "🎮 Я — твой игровой и модерационный бот. Здесь ты можешь зарабатывать монеты, "
+            "качать уровень, играть в игры и следить за порядком в чате."
+        )
+        await message.answer(text, parse_mode="HTML")
+    # ------------------------------------
+
     dp.include_router(owner_router)
     dp.include_router(economy_router)
     dp.include_router(exchange_router)
