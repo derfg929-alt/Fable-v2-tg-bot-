@@ -16,7 +16,10 @@ class Settings(BaseSettings):
 
     bot_token: SecretStr = Field(alias="BOT_TOKEN")
     owner_id: int = Field(default=8039111975, alias="OWNER_ID", gt=0)
-    database_url: SecretStr = Field(alias="DATABASE_URL")
+    database_url: SecretStr = Field(
+        default=SecretStr("postgresql+asyncpg://fable:fable@localhost:5432/fable"),
+        alias="DATABASE_URL",
+    )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", alias="LOG_LEVEL"
     )
