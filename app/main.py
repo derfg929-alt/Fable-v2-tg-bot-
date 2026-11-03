@@ -11,11 +11,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.config import get_settings
-# Импортируем только то, что точно есть в session.py
 from app.db.session import check_database_connection, dispose_engine, engine
 
-# --- МАГИЯ ПОИСКА BASE ---
-# Пытаемся найти Base в разных местах, где его обычно создают
+# --- УМНЫЙ ПОИСК BASE ---
 try:
     from app.db.base import Base
 except ImportError:
@@ -25,12 +23,12 @@ except ImportError:
         try:
             from app.db.models import Base
         except ImportError:
-            # Если Base нигде нет, создаем его принудительно (аварийный вариант)
             from sqlalchemy.orm import declarative_base
             Base = declarative_base()
 # -------------------------
 
-import app.models
+# Здесь мы УБРАЛИ import app.models, так как такой папки нет.
+# Модели должны подтянуться из хендлеров, которые импортируются ниже.
 
 from app.handlers.economy_handlers import router as economy_router
 from app.handlers.exchange_handlers import router as exchange_router
