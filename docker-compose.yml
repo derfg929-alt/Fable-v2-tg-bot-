@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: fable_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: fable
+      POSTGRES_PASSWORD: fable_password
+      POSTGRES_DB: fable
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  bot:
+    build: .
+    container_name: fable_bot
+    restart: always
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fable:fable_password@db:5432/fable
+
+volumes:
+  postgres_data:
