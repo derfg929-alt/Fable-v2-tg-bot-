@@ -213,3 +213,28 @@ async def handle_reputation(message: types.Message):
             )
         except Exception as e:
             await message.reply(f"❌ Ошибка: {e}")
+
+@router.message(F.text.casefold().in_(["работа", "!работа"]))
+async def handle_work(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        await get_or_create_player(
+            session,
+            telegram_id=message.from_user.id,
+            first_name=message.from_user.first_name,
+            last_name=message.from_user.last_name,
+            username=message.from_user.username,
+        )
+        try:
+            from app.services.economy_service import claim_work_reward
+            res, reward = await claim_work_reward(session, user_id=message.from_user.id)
+            await message.reply(
+                f"💼 <b>Вы отлично потрудились!</b>\n\n"
+                f"Заработано: <b>+{reward}</b> монет\n"
+                f"Получено опыта: <b>+25</b> XP\n"
+                f"Текущий баланс: <b>{res.actor_balance}</b> монет",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await message.reply(f"⏳ {e}")

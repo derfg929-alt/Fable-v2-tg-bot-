@@ -319,3 +319,54 @@ async def burn_coins(
         idempotency_key=idempotency_key,
         metadata=metadata,
     )
+
+class WorkCooldownError(EconomyError):
+    """Кулдаун на работу еще не истек."""
+
+
+async def claim_work_reward(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    base_reward: int = 250,
+    cooldown_seconds: int = 3600,
+) -> tuple[EconomyResult, int]:
+    """Начисление награды за работу с учетом кулдауна."""
+    player = await _lock_players(session, [user_id])
+    p = player[user_id]
+
+    now = datetime.now(timezone.utc)
+    last_work = await session.scalar(
+        select(EconomyTransaction)
+        .where(
+            EconomyTransaction.actor_id == user_id,
+            EconomyTransaction.operation_type == "work",
+        )
+        .order_by(EconomyTransaction.created_at.desc())
+        .limit(1)
+    )
+
+    if last_work and last_work.created_at:
+        elapsed = (now - last_work.created_at).total_seconds()
+        if elapsed < cooldown_seconds:
+            remaining = int(cooldown_seconds - elapsed)
+            raise WorkCooldownError(f"Следующую смену можно начать через {remaining // 60} мин {remaining % 60} сек")
+
+    # Награда зависит от уровня игрока: base_reward + (level * 25)
+    reward = base_reward + (p.level * 25)
+    # Начисляем монеты
+    res = await credit_coins(
+        session,
+        user_id=user_id,
+        amount=reward,
+        reason=f"Зарплата за смену (уровень {p.level})",
+        operation_type="work",
+    )
+    # Даем опыт за работу
+    p.experience += 25
+    next_level_exp = p.level * 100
+    if p.experience >= next_level_exp:
+        p.level += 1
+        p.experience -= next_level_exp
+
+    return res, reward
