@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from aiogram import Router, types, F
+from aiogram.enums import ChatType
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.db.session import session_scope
@@ -176,6 +177,25 @@ async def on_clan_delete_cancel(callback: types.CallbackQuery):
 
 # ===================== ТОПЫ И РЕЙТИНГИ =====================
 
+def _build_tops_main_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💰 Богатые", callback_data="top_menu_rich")
+    builder.button(text="🔥 Активные", callback_data="top_menu_active")
+    builder.button(text="🛡 Кланы", callback_data="top_menu_clans")
+    builder.adjust(3)
+    return builder.as_markup()
+
+
+def _build_top_category_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💰 Богатые", callback_data="top_menu_rich")
+    builder.button(text="🔥 Активные", callback_data="top_menu_active")
+    builder.button(text="🛡 Кланы", callback_data="top_menu_clans")
+    builder.button(text="◀️ В меню топов", callback_data="top_menu_back")
+    builder.adjust(3, 1)
+    return builder.as_markup()
+
+
 @router.message(F.text.casefold().startswith("топ"))
 async def handle_tops(message: types.Message):
     if not message.from_user:
@@ -186,19 +206,18 @@ async def handle_tops(message: types.Message):
 
     async with session_scope() as session:
         if text in ("топ", "!топ"):
-            builder = InlineKeyboardBuilder()
-            builder.button(text="💰 Богатые", callback_data="top_menu_rich")
-            builder.button(text="🔥 Активные", callback_data="top_menu_active")
-            builder.button(text="🛡 Кланы", callback_data="top_menu_clans")
-            builder.adjust(3)
-            await message.reply("🏆 <b>Выберите рейтинг Fable:</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
+            await message.reply(
+                "🏆 <b>Выберите рейтинг Fable:</b>",
+                reply_markup=_build_tops_main_keyboard(),
+                parse_mode="HTML",
+            )
             return
 
         if "богат" in text:
             rich = await get_top_rich(session, chat_id=chat_id, limit=10)
             lines = [f"💰 <b>Топ богатых ({'чата' if chat_id else 'глобальный'}):</b>\n"]
             for r in rich:
-                lines.append(f"{r.rank}. <b>{r.name}</b> — {r.total_wealth} монет")
+                lines.append(f"{r.rank}. <b>{r.name}</b> — {r.total_wealth:,} монет".replace(",", " "))
             await message.reply("\n".join(lines) if rich else "Рейтинг пуст.", parse_mode="HTML")
             return
 
@@ -206,7 +225,7 @@ async def handle_tops(message: types.Message):
             active = await get_top_active(session, chat_id=chat_id, limit=10)
             lines = [f"🔥 <b>Топ активных ({'чата' if chat_id else 'глобальный'}):</b>\n"]
             for a in active:
-                lines.append(f"{a.rank}. <b>{a.name}</b> — {a.activity_points} очков")
+                lines.append(f"{a.rank}. <b>{a.name}</b> — {a.activity_points:,} очков".replace(",", " "))
             await message.reply("\n".join(lines) if active else "Рейтинг пуст.", parse_mode="HTML")
             return
 
@@ -217,6 +236,63 @@ async def handle_tops(message: types.Message):
                 lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
             await message.reply("\n".join(lines) if clans else "Рейтинг пуст.", parse_mode="HTML")
             return
+
+
+@router.callback_query(F.data == "top_menu_back")
+async def on_top_menu_back(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "🏆 <b>Выберите рейтинг Fable:</b>",
+        reply_markup=_build_tops_main_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "top_menu_rich")
+async def on_top_menu_rich(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        rich = await get_top_rich(session, chat_id=chat_id, limit=10)
+        lines = [f"💰 <b>Топ богатых ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for r in rich:
+            lines.append(f"{r.rank}. <b>{r.name}</b> — {r.total_wealth:,} монет".replace(",", " "))
+        text = "\n".join(lines) if rich else "💰 <b>Топ богатых:</b>\nРейтинг пуст."
+        await callback.message.edit_text(
+            text,
+            reply_markup=_build_top_category_keyboard(),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "top_menu_active")
+async def on_top_menu_active(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        active = await get_top_active(session, chat_id=chat_id, limit=10)
+        lines = [f"🔥 <b>Топ активных ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for a in active:
+            lines.append(f"{a.rank}. <b>{a.name}</b> — {a.activity_points:,} очков".replace(",", " "))
+        text = "\n".join(lines) if active else "🔥 <b>Топ активных:</b>\nРейтинг пуст."
+        await callback.message.edit_text(
+            text,
+            reply_markup=_build_top_category_keyboard(),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "top_menu_clans")
+async def on_top_menu_clans(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        clans = await get_top_clans(session, chat_id=chat_id, limit=10)
+        lines = [f"🛡 <b>Топ кланов ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for c in clans:
+            lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
+        text = "\n".join(lines) if clans else "🛡 <b>Топ кланов:</b>\nРейтинг пуст."
+        await callback.message.edit_text(
+            text,
+            reply_markup=_build_top_category_keyboard(),
+            parse_mode="HTML",
+        )
 
 
 # ===================== ПРАВИЛА И МОДЕРАЦИЯ =====================

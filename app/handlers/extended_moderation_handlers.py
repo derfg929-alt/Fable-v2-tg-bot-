@@ -252,10 +252,10 @@ async def handle_slowmode(message: types.Message, bot: Bot):
 async def handle_report_cmd(message: types.Message):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
-    target_id = _get_target_user_id(message)
     reason = " ".join((message.text or "").split()[1:]) or "Жалоба на нарушение"
 
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
         rep = await create_report(
             session,
             chat_id=message.chat.id,

@@ -1,0 +1,208 @@
+"""Тесты для кнопок интерфейса и интеграции Grok AI."""
+import pytest
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+from aiogram import types
+from aiogram.enums import ChatType
+
+from app.db.session import session_scope
+from app.services.player_service import get_or_create_player, get_player
+from app.services.economy_service import credit_coins
+from app.handlers.social_moderation_handlers import (
+    on_top_menu_rich,
+    on_top_menu_active,
+    on_top_menu_clans,
+    on_top_menu_back,
+)
+from app.handlers.owner_handlers import on_owner_eco_reset_prompt
+from app.handlers.games_handlers import handle_bait_claim
+from app.handlers.ai_handlers import handle_ai_query, _should_trigger_ai
+from app.services.ai_service import ask_grok
+
+
+@pytest.mark.asyncio
+async def test_top_buttons_callbacks():
+    """Проверка работы всех кнопок меню топов."""
+    async with session_scope() as session:
+        reg = await get_or_create_player(session, telegram_id=987111, first_name="TopTester")
+        await credit_coins(session, user_id=reg.player.telegram_id, amount=1000, reason="TestTop")
+
+    # Mock Message and CallbackQuery
+    chat_mock = types.Chat(id=-10012345, type=ChatType.SUPERGROUP, title="Top Chat")
+    user_mock = types.User(id=987111, is_bot=False, first_name="TopTester")
+    message_mock = AsyncMock(spec=types.Message)
+    message_mock.chat = chat_mock
+    message_mock.edit_text = AsyncMock()
+
+    callback_mock = AsyncMock(spec=types.CallbackQuery)
+    callback_mock.message = message_mock
+    callback_mock.from_user = user_mock
+
+    # Test rich top callback
+    callback_mock.data = "top_menu_rich"
+    await on_top_menu_rich(callback_mock)
+    message_mock.edit_text.assert_called_once()
+    assert "Топ богатых" in message_mock.edit_text.call_args[0][0]
+
+    # Test active top callback
+    message_mock.edit_text.reset_mock()
+    callback_mock.data = "top_menu_active"
+    await on_top_menu_active(callback_mock)
+    message_mock.edit_text.assert_called_once()
+    assert "Топ активных" in message_mock.edit_text.call_args[0][0]
+
+    # Test clans top callback
+    message_mock.edit_text.reset_mock()
+    callback_mock.data = "top_menu_clans"
+    await on_top_menu_clans(callback_mock)
+    message_mock.edit_text.assert_called_once()
+    assert "Топ кланов" in message_mock.edit_text.call_args[0][0]
+
+    # Test back to menu callback
+    message_mock.edit_text.reset_mock()
+    callback_mock.data = "top_menu_back"
+    await on_top_menu_back(callback_mock)
+    message_mock.edit_text.assert_called_once()
+    assert "Выберите рейтинг" in message_mock.edit_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_owner_eco_reset_prompt_callback():
+    """Проверка кнопки вызова сброса экономики из панели администратора."""
+    chat_mock = types.Chat(id=8039111975, type=ChatType.PRIVATE)
+    user_mock = types.User(id=8039111975, is_bot=False, first_name="Owner")
+    message_mock = AsyncMock(spec=types.Message)
+    message_mock.chat = chat_mock
+    message_mock.edit_text = AsyncMock()
+
+    callback_mock = AsyncMock(spec=types.CallbackQuery)
+    callback_mock.message = message_mock
+    callback_mock.from_user = user_mock
+    callback_mock.data = "owner_eco_reset_prompt"
+
+    await on_owner_eco_reset_prompt(callback_mock)
+    message_mock.edit_text.assert_called_once()
+    assert "ВНИМАНИЕ! ОПАСНАЯ ОПЕРАЦИЯ" in message_mock.edit_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_bait_claim_no_name_error():
+    """Проверка того, что кнопка дропа bait:claim корректно начисляет награду без NameError."""
+    chat_mock = types.Chat(id=-100999, type=ChatType.SUPERGROUP, title="Bait Chat")
+    user_mock = types.User(id=987222, is_bot=False, first_name="BaitHunter", username="baithunter")
+    message_mock = AsyncMock(spec=types.Message)
+    message_mock.chat = chat_mock
+    message_mock.edit_text = AsyncMock()
+
+    callback_mock = AsyncMock(spec=types.CallbackQuery)
+    callback_mock.message = message_mock
+    callback_mock.from_user = user_mock
+    callback_mock.data = "bait:claim"
+    callback_mock.answer = AsyncMock()
+
+    await handle_bait_claim(callback_mock)
+    callback_mock.answer.assert_called_once()
+    assert "Вы перехватили дроп" in callback_mock.answer.call_args[0][0]
+
+    # Проверяем, что монеты зачислились в БД
+    async with session_scope() as session:
+        player = await get_player(session, telegram_id=987222)
+        assert player is not None
+        assert player.wallet >= 25
+
+
+@pytest.mark.asyncio
+async def test_ai_trigger_detection():
+    """Проверка триггеров на обращение к ИИ 'фабле'."""
+    bot_id = 1234567
+    now = datetime.now(timezone.utc)
+
+    # Case 1: Текст содержит 'фабле'
+    msg1 = types.Message(
+        message_id=1,
+        date=now,
+        chat=types.Chat(id=1, type=ChatType.PRIVATE),
+        text="Фабле, расскажи анекдот",
+    )
+    assert _should_trigger_ai(msg1, bot_id) is True
+
+    # Case 2: Текст содержит 'фабле' в середине
+    msg2 = types.Message(
+        message_id=2,
+        date=now,
+        chat=types.Chat(id=1, type=ChatType.PRIVATE),
+        text="Привет, как дела, фабле?",
+    )
+    assert _should_trigger_ai(msg2, bot_id) is True
+
+    # Case 3: Обычное сообщение без триггера
+    msg3 = types.Message(
+        message_id=3,
+        date=now,
+        chat=types.Chat(id=1, type=ChatType.PRIVATE),
+        text="профиль",
+    )
+    assert _should_trigger_ai(msg3, bot_id) is False
+
+    # Case 4: Ответ на сообщение бота
+    bot_user = types.User(id=bot_id, is_bot=True, first_name="Fable Bot")
+    reply_to = types.Message(
+        message_id=9,
+        date=now,
+        chat=types.Chat(id=1, type=ChatType.PRIVATE),
+        from_user=bot_user,
+        text="Чем могу помочь?",
+    )
+    msg4 = types.Message(
+        message_id=10,
+        date=now,
+        chat=types.Chat(id=1, type=ChatType.PRIVATE),
+        reply_to_message=reply_to,
+        text="Объясни правила игры",
+    )
+    assert _should_trigger_ai(msg4, bot_id) is True
+
+
+@pytest.mark.asyncio
+async def test_ask_grok_without_key():
+    """Проверка сервиса ask_grok при отсутствии ключа."""
+    with patch("app.services.ai_service.get_settings") as mock_settings:
+        mock_obj = MagicMock()
+        mock_obj.grok_api_key_value = None
+        mock_settings.return_value = mock_obj
+
+        resp = await ask_grok("Привет")
+        assert "GROK_API_KEY" in resp
+
+
+@pytest.mark.asyncio
+async def test_ask_grok_with_mocked_api():
+    """Проверка вызова Grok API при успешном ответе."""
+    with patch("app.services.ai_service.get_settings") as mock_settings:
+        mock_obj = MagicMock()
+        mock_obj.grok_api_key_value = "fake-key"
+        mock_obj.grok_api_url = "https://api.x.ai/v1/chat/completions"
+        mock_obj.grok_model = "grok-beta"
+        mock_settings.return_value = mock_obj
+
+        # Create mock response context manager
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Привет! Я Фабле ИИ."}}]
+        })
+
+        mock_post_cm = MagicMock()
+        mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj = MagicMock()
+        mock_session_obj.post.return_value = mock_post_cm
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session_obj)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            resp = await ask_grok("Как дела?", user_name="Игрок")
+            assert resp == "Привет! Я Фабле ИИ."

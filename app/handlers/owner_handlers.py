@@ -256,20 +256,39 @@ async def handle_global_unban(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().in_(["сброс экономики", "!сброс экономики"]))
-async def handle_reset_economy_prompt(message: types.Message):
-    if not message.from_user or not _is_owner(message.from_user.id):
-        return
+def _build_economy_reset_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="⚠️ ДА, СБРОСИТЬ", callback_data="owner_eco_reset_confirm")
     builder.button(text="❌ Отмена", callback_data="owner_eco_reset_cancel")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+@router.message(F.text.casefold().in_(["сброс экономики", "!сброс экономики"]))
+async def handle_reset_economy_prompt(message: types.Message):
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
     await message.reply(
         "🚨 <b>ВНИМАНИЕ! ОПАСНАЯ ОПЕРАЦИЯ!</b>\n\n"
         "Вы действительно хотите сбросить глобальную экономику?\n"
         "Все балансы игроков, банковские счета и акции будут обнулены!\n"
         "История операций и аккаунты сохранятся.",
-        reply_markup=builder.as_markup(),
+        reply_markup=_build_economy_reset_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "owner_eco_reset_prompt")
+async def on_owner_eco_reset_prompt(callback: types.CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "🚨 <b>ВНИМАНИЕ! ОПАСНАЯ ОПЕРАЦИЯ!</b>\n\n"
+        "Вы действительно хотите сбросить глобальную экономику?\n"
+        "Все балансы игроков, банковские счета и акции будут обнулены!\n"
+        "История операций и аккаунты сохранятся.",
+        reply_markup=_build_economy_reset_keyboard(),
         parse_mode="HTML",
     )
 
