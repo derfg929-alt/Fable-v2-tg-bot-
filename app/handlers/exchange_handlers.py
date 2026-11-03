@@ -24,8 +24,51 @@ from app.services.exchange_service import (
     get_user_active_orders,
 )
 from app.services.market_chart import generate_price_chart_bytes
+from app.services.crypto_stock_service import (
+    MARKET_ASSETS,
+    fetch_real_prices,
+    buy_asset,
+    sell_asset,
+    get_player_portfolio,
+    get_asset_price,
+)
 
 router = Router(name="exchange_router")
+
+
+@router.message(F.text.casefold().in_(["портфель", "!портфель"]))
+async def handle_portfolio(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        await get_or_create_player(
+            session,
+            telegram_id=message.from_user.id,
+            first_name=message.from_user.first_name,
+        )
+        items = await get_player_portfolio(session, user_id=message.from_user.id)
+        if not items:
+            await message.reply(
+                "💼 <b>Ваш инвестиционный портфель пуст!</b>\n\n"
+                "Купите криптовалюту или акции на бирже:\n"
+                "• <code>биржа</code> — список котировок\n"
+                "• <code>биржа купить btc 0.1</code>\n"
+                "• <code>биржа купить aapl 2</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        lines = ["💼 <b>ВАШ ИНВЕСТИЦИОННЫЙ ПОРТФЕЛЬ:</b>\n"]
+        total_val = Decimal("0")
+        for info, amt, val in items:
+            total_val += val
+            amt_str = f"{amt:.4f}".rstrip("0").rstrip(".")
+            val_str = f"{int(val):,}".replace(",", " ")
+            lines.append(f"{info.icon} <b>{info.ticker}</b> ({info.name}): <b>{amt_str}</b> шт. ≈ {val_str} монет")
+
+        tot_str = f"{int(total_val):,}".replace(",", " ")
+        lines.append(f"\n💰 <b>Общая стоимость активов:</b> ≈ <b>{tot_str}</b> монет")
+        await message.reply("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(F.text.casefold().startswith("биржа"))
@@ -45,30 +88,50 @@ async def handle_exchange(message: types.Message):
         )
 
         if len(parts) == 1:
+            prices = await fetch_real_prices()
+
+            crypto_lines = ["🪙 <b>КРИПТОВАЛЮТА (Реальный курс 1:1):</b>"]
+            stock_lines = ["📈 <b>ФОНДОВЫЙ РЫНОК / АКЦИИ КОМПАНИЙ:</b>"]
+
+            for ticker, info in MARKET_ASSETS.items():
+                price = prices.get(ticker, info.default_price)
+                price_str = f"{price:,.2f}".replace(",", " ") if price < 1000 else f"{int(price):,}".replace(",", " ")
+                line = f"{info.icon} <b>{ticker}</b> ({info.name}): <b>{price_str}</b> монет"
+                if info.category == "crypto":
+                    crypto_lines.append(line)
+                else:
+                    stock_lines.append(line)
+
+            resp = (
+                "📊 <b>ФИНАНСОВАЯ БИРЖА FABLE</b>\n\n"
+                + "\n".join(crypto_lines)
+                + "\n\n"
+                + "\n".join(stock_lines)
+                + "\n\n"
+                "<i>Команды для торговли:</i>\n"
+                "• <code>биржа купить [тикер] [кол-во]</code> (напр. <code>биржа купить btc 0.5</code>)\n"
+                "• <code>биржа продать [тикер] [кол-во]</code>\n"
+                "• <code>портфель</code> — посмотреть свои крипто-активы и акции\n"
+                "• <code>биржа стакан</code> — стакан классических акций бота"
+            )
+            await message.reply(resp, parse_mode="HTML")
+            return
+
+        cmd = parts[1].casefold()
+
+        # Классический стакан акций Fable
+        if cmd == "стакан":
             book = await get_order_book(session, depth=3)
             bids_str = "\n".join([f"  • {b.price:.2f} — {b.total_quantity} шт." for b in book.bids]) or "  (нет заявок)"
             asks_str = "\n".join([f"  • {a.price:.2f} — {a.total_quantity} шт." for a in book.asks]) or "  (нет заявок)"
-
             best_b = f"{book.best_bid:.2f}" if book.best_bid else "—"
             best_a = f"{book.best_ask:.2f}" if book.best_ask else "—"
-            spread_str = f"{book.spread:.2f}" if book.spread else "—"
-
             resp = (
-                f"📊 <b>БИРЖА FABLE</b>\n\n"
+                f"📊 <b>СТАКАН БИРЖЕВЫХ АКЦИЙ FABLE</b>\n\n"
                 f"Текущий курс: <b>{book.last_price:.2f}</b>\n"
-                f"Покупка: <b>{best_b}</b> | Продажа: <b>{best_a}</b>\n"
-                f"Спред: <b>{spread_str}</b>\n"
-                f"Изменение за сутки: <b>{book.price_change_24h_percent:+.1f}%</b>\n"
-                f"Объём за сутки: <b>{book.daily_volume}</b> ед. ({book.daily_trade_count} сделок)\n"
-                f"Комиссия: <b>1%</b>\n\n"
-                f"📈 <b>Стакан заявок:</b>\n"
-                f"<b>Покупатели (Bids):</b>\n{bids_str}\n\n"
-                f"<b>Продавцы (Asks):</b>\n{asks_str}\n\n"
-                f"<i>Команды:</i>\n"
-                f"<code>биржа купить 100</code>\n"
-                f"<code>биржа продать 100</code>\n"
-                f"<code>биржа заявка купить 100 1.25</code>\n"
-                f"<code>биржа график</code> | <code>биржа отмена</code>"
+                f"Покупка: <b>{best_b}</b> | Продажа: <b>{best_a}</b>\n\n"
+                f"<b>Покупатели:</b>\n{bids_str}\n"
+                f"<b>Продавцы:</b>\n{asks_str}"
             )
             await message.reply(resp, parse_mode="HTML")
             return
@@ -93,23 +156,56 @@ async def handle_exchange(message: types.Message):
             await message.reply(f"✅ Заявка #{cancelled.id} ({cancelled.side} {cancelled.remaining_quantity} шт.) отменена, неиспользованный резерв возвращен.")
             return
 
-        # Рыночная покупка / продажа
-        if cmd in ("купить", "продать") and len(parts) >= 3 and parts[2].isdigit():
-            qty = int(parts[2])
-            side = "buy" if cmd == "купить" else "sell"
-            try:
-                summary = await execute_market_order(session, user_id=message.from_user.id, side=side, quantity=qty)
-                act = "куплено" if side == "buy" else "продано"
-                await message.reply(
-                    f"✅ <b>Рыночный ордер исполнен!</b>\n\n"
-                    f"Успешно {act}: <b>{summary.filled_quantity} / {qty}</b> шт.\n"
-                    f"Сумма: <b>{summary.total_cost_coins}</b> монет\n"
-                    f"Комиссия биржи (1%): <b>{summary.total_fee_coins}</b> монет",
-                    parse_mode="HTML",
-                )
-            except Exception as e:
-                await message.reply(f"❌ Ошибка сделки: {e}")
-            return
+        # Покупка / продажа крипты и акций: "биржа купить btc 0.5" или "биржа купить 100" (классика)
+        if cmd in ("купить", "продать") and len(parts) >= 3:
+            # Вариант 1: "биржа купить btc 0.5"
+            second_arg = parts[2].upper()
+            if second_arg in MARKET_ASSETS:
+                qty_str = parts[3].replace(",", ".") if len(parts) >= 4 else "1"
+                try:
+                    qty = Decimal(qty_str)
+                    if cmd == "купить":
+                        price, cost = await buy_asset(session, user_id=message.from_user.id, ticker=second_arg, quantity=qty)
+                        info = MARKET_ASSETS[second_arg]
+                        await message.reply(
+                            f"🎉 <b>Успешная покупка активов!</b>\n\n"
+                            f"Куплено: <b>{qty} {info.ticker}</b> ({info.name})\n"
+                            f"Курс: <b>{price:,.2f}</b> монет\n"
+                            f"Списано: <b>{cost:,}</b> монет\n\n"
+                            f"Просмотреть активы: <code>портфель</code>".replace(",", " "),
+                            parse_mode="HTML",
+                        )
+                    else:
+                        price, rev = await sell_asset(session, user_id=message.from_user.id, ticker=second_arg, quantity=qty)
+                        info = MARKET_ASSETS[second_arg]
+                        await message.reply(
+                            f"💰 <b>Успешная продажа активов!</b>\n\n"
+                            f"Продано: <b>{qty} {info.ticker}</b> ({info.name})\n"
+                            f"Курс: <b>{price:,.2f}</b> монет\n"
+                            f"Зачислено: <b>+{rev:,}</b> монет".replace(",", " "),
+                            parse_mode="HTML",
+                        )
+                except Exception as e:
+                    await message.reply(f"❌ Ошибка: {e}")
+                return
+
+            # Вариант 2: классические shares "биржа купить 100"
+            if parts[2].isdigit():
+                qty = int(parts[2])
+                side = "buy" if cmd == "купить" else "sell"
+                try:
+                    summary = await execute_market_order(session, user_id=message.from_user.id, side=side, quantity=qty)
+                    act = "куплено" if side == "buy" else "продано"
+                    await message.reply(
+                        f"✅ <b>Рыночный ордер исполнен!</b>\n\n"
+                        f"Успешно {act}: <b>{summary.filled_quantity} / {qty}</b> шт.\n"
+                        f"Сумма: <b>{summary.total_cost_coins}</b> монет\n"
+                        f"Комиссия биржи (1%): <b>{summary.total_fee_coins}</b> монет",
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    await message.reply(f"❌ Ошибка сделки: {e}")
+                return
 
         # Лимитная заявка: "биржа заявка купить 100 1.25"
         if cmd == "заявка" and len(parts) >= 5:

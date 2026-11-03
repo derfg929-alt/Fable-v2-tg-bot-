@@ -432,6 +432,58 @@ class AdminActionLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PlayerBusiness(Base, TimestampMixin):
+    __tablename__ = "player_businesses"
+    __table_args__ = (
+        UniqueConstraint("user_id", "business_id", name="uq_player_business"),
+        CheckConstraint("level >= 1", name="ck_business_level_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
+    business_id: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 to 10
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PlayerMining(Base, TimestampMixin):
+    __tablename__ = "player_mining"
+    __table_args__ = (
+        CheckConstraint("computers >= 0", name="ck_mining_computers_nonnegative"),
+        CheckConstraint("farm_level >= 1", name="ck_mining_farm_level_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
+    computers: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    farm_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_mined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PlayerAsset(Base, TimestampMixin):
+    """Assets owned by player: Cryptocurrencies and Company Stocks."""
+    __tablename__ = "player_assets"
+    __table_args__ = (
+        UniqueConstraint("user_id", "ticker", name="uq_player_asset_ticker"),
+        CheckConstraint("amount >= 0", name="ck_asset_amount_nonnegative"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(28, 8), nullable=False, default=Decimal("0"))
+
+
+class DailyBonus(Base, TimestampMixin):
+    """Tracking player daily bonus streaks and last claim times."""
+    __tablename__ = "daily_bonuses"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
+    streak: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class GlobalSetting(Base, TimestampMixin):
     __tablename__ = "global_settings"
 
