@@ -457,7 +457,19 @@ class PlayerMining(Base, TimestampMixin):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
     computers: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     farm_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    target_crypto: Mapped[str] = mapped_column(String(16), nullable=False, default="BTC")
     last_mined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AIConversation(Base, TimestampMixin):
+    """Dialogue history for AI assistant memory."""
+    __tablename__ = "ai_conversations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # 'user' or 'assistant'
+    content: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class PlayerAsset(Base, TimestampMixin):

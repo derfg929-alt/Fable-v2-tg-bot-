@@ -36,6 +36,48 @@ from app.services.crypto_stock_service import (
 router = Router(name="exchange_router")
 
 
+@router.message(F.text.casefold().in_(["крипта", "!крипта", "криптовалюта", "криптовалюты"]))
+async def handle_crypto_cmd(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        prices = await fetch_real_prices()
+        lines = ["🪙 <b>КУРС КРИПТОВАЛЮТ (1:1 к рынку):</b>\n"]
+        for ticker, info in MARKET_ASSETS.items():
+            if info.category == "crypto":
+                price = prices.get(ticker, info.default_price)
+                price_str = f"{price:,.2f}".replace(",", " ") if price < 1000 else f"{int(price):,}".replace(",", " ")
+                lines.append(f"{info.icon} <b>{ticker}</b> ({info.name}): <b>{price_str}</b> монет")
+        lines.append(
+            "\n<i>Купить или продать в любом объеме:</i>\n"
+            "• <code>биржа купить [тикер] [кол-во]</code> (напр. <code>биржа купить btc 0.05</code>)\n"
+            "• <code>биржа продать [тикер] [кол-во]</code>\n"
+            "• <code>портфель</code> — баланс ваших монет и акций"
+        )
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().in_(["фондовый рынок", "!фондовый рынок", "акции", "!акции"]))
+async def handle_stocks_cmd(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        prices = await fetch_real_prices()
+        lines = ["📈 <b>ФОНДОВЫЙ РЫНОК / АКЦИИ КОМПАНИЙ:</b>\n"]
+        for ticker, info in MARKET_ASSETS.items():
+            if info.category == "stock":
+                price = prices.get(ticker, info.default_price)
+                price_str = f"{int(price):,}".replace(",", " ")
+                lines.append(f"{info.icon} <b>{ticker}</b> ({info.name}): <b>{price_str}</b> монет")
+        lines.append(
+            "\n<i>Купить или продать акции:</i>\n"
+            "• <code>биржа купить [тикер] [кол-во]</code> (напр. <code>биржа купить aapl 5</code>)\n"
+            "• <code>биржа продать [тикер] [кол-во]</code>\n"
+            "• <code>портфель</code> — ваш инвестиционный портфель"
+        )
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(F.text.casefold().in_(["портфель", "!портфель"]))
 async def handle_portfolio(message: types.Message):
     if not message.from_user:
@@ -118,6 +160,42 @@ async def handle_exchange(message: types.Message):
             return
 
         cmd = parts[1].casefold()
+
+        # Показ только криптовалют
+        if cmd in ("крипта", "криптовалюта", "криптовалюты"):
+            prices = await fetch_real_prices()
+            lines = ["🪙 <b>КУРС КРИПТОВАЛЮТ (1:1 к рынку):</b>\n"]
+            for ticker, info in MARKET_ASSETS.items():
+                if info.category == "crypto":
+                    price = prices.get(ticker, info.default_price)
+                    price_str = f"{price:,.2f}".replace(",", " ") if price < 1000 else f"{int(price):,}".replace(",", " ")
+                    lines.append(f"{info.icon} <b>{ticker}</b> ({info.name}): <b>{price_str}</b> монет")
+            lines.append(
+                "\n<i>Купить или продать в любом объеме:</i>\n"
+                "• <code>биржа купить [тикер] [кол-во]</code> (напр. <code>биржа купить btc 0.05</code>)\n"
+                "• <code>биржа продать [тикер] [кол-во]</code>\n"
+                "• <code>портфель</code> — баланс ваших монет и акций"
+            )
+            await message.reply("\n".join(lines), parse_mode="HTML")
+            return
+
+        # Показ только фондового рынка / акций
+        if cmd in ("фондовый", "рынок", "акции", "фондовый рынок"):
+            prices = await fetch_real_prices()
+            lines = ["📈 <b>ФОНДОВЫЙ РЫНОК / АКЦИИ КОМПАНИЙ:</b>\n"]
+            for ticker, info in MARKET_ASSETS.items():
+                if info.category == "stock":
+                    price = prices.get(ticker, info.default_price)
+                    price_str = f"{int(price):,}".replace(",", " ")
+                    lines.append(f"{info.icon} <b>{ticker}</b> ({info.name}): <b>{price_str}</b> монет")
+            lines.append(
+                "\n<i>Купить или продать акции:</i>\n"
+                "• <code>биржа купить [тикер] [кол-во]</code> (напр. <code>биржа купить aapl 5</code>)\n"
+                "• <code>биржа продать [тикер] [кол-во]</code>\n"
+                "• <code>портфель</code> — ваш инвестиционный портфель"
+            )
+            await message.reply("\n".join(lines), parse_mode="HTML")
+            return
 
         # Классический стакан акций Fable
         if cmd == "стакан":

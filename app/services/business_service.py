@@ -36,29 +36,30 @@ class BusinessConfig:
     base_income_hourly: int
 
 
+# Окупаемость ровно 7 дней (168 часов): доход в час = base_cost / 168
 BUSINESSES: dict[int, BusinessConfig] = {
-    1: BusinessConfig(1, "Ларёк с шаурмой", "🌯", 1_000, 100),
-    2: BusinessConfig(2, "Кофейня", "☕️", 5_000, 400),
-    3: BusinessConfig(3, "Автомойка", "🚗", 20_000, 1_500),
-    4: BusinessConfig(4, "Барбершоп", "💈", 50_000, 3_500),
-    5: BusinessConfig(5, "Ресторан", "🍽", 150_000, 10_000),
-    6: BusinessConfig(6, "Ночной клуб", "🍸", 500_000, 30_000),
-    7: BusinessConfig(7, "Сеть супермаркетов", "🏬", 1_500_000, 80_000),
-    8: BusinessConfig(8, "Строительная компания", "🏗", 5_000_000, 250_000),
-    9: BusinessConfig(9, "IT-Корпорация", "💻", 15_000_000, 700_000),
-    10: BusinessConfig(10, "Нефтяной холдинг", "🛢", 50_000_000, 2_200_000),
+    1: BusinessConfig(1, "Ларёк с шаурмой", "🌯", 1_000, 6),
+    2: BusinessConfig(2, "Кофейня", "☕️", 5_000, 30),
+    3: BusinessConfig(3, "Автомойка", "🚗", 20_000, 120),
+    4: BusinessConfig(4, "Барбершоп", "💈", 50_000, 300),
+    5: BusinessConfig(5, "Ресторан", "🍽", 150_000, 900),
+    6: BusinessConfig(6, "Ночной клуб", "🍸", 500_000, 3_000),
+    7: BusinessConfig(7, "Сеть супермаркетов", "🏬", 1_500_000, 9_000),
+    8: BusinessConfig(8, "Строительная компания", "🏗", 5_000_000, 30_000),
+    9: BusinessConfig(9, "IT-Корпорация", "💻", 15_000_000, 90_000),
+    10: BusinessConfig(10, "Нефтяной холдинг", "🛢", 50_000_000, 300_000),
 }
 
 
 def get_upgrade_cost(b_id: int, current_level: int) -> int:
     cfg = BUSINESSES[b_id]
-    return int(cfg.base_cost * 0.6 * (current_level + 1))
+    return int(cfg.base_cost * (current_level + 1))
 
 
 def get_hourly_income(b_id: int, current_level: int) -> int:
     cfg = BUSINESSES[b_id]
-    # Каждый уровень дает +60% прибыли
-    return int(cfg.base_income_hourly * (1 + (current_level - 1) * 0.6))
+    # Каждый уровень дает +20% к базовой прибыли
+    return int(cfg.base_income_hourly * (1 + (current_level - 1) * 0.2))
 
 
 async def get_player_businesses(session: AsyncSession, *, user_id: int) -> list[PlayerBusiness]:
@@ -162,9 +163,11 @@ async def collect_business_profits(session: AsyncSession, *, user_id: int) -> tu
     for pb in businesses:
         last = pb.last_collected_at or now
         elapsed_hours = (now - last).total_seconds() / 3600.0
-        if elapsed_hours >= (1.0 / 60.0):  # хотя бы 1 минута накопления
+        # Бизнес приносит прибыль максимум за 4 часа работы без сбора!
+        capped_hours = min(4.0, elapsed_hours)
+        if capped_hours >= (1.0 / 60.0):
             income_per_hour = get_hourly_income(pb.business_id, pb.level)
-            profit = int(income_per_hour * elapsed_hours)
+            profit = int(income_per_hour * capped_hours)
             if profit > 0:
                 total_profit += profit
                 pb.last_collected_at = now

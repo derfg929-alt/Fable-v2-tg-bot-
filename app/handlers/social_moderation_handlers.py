@@ -83,6 +83,27 @@ async def _get_target_user_id(message: types.Message, session) -> int | None:
 
 # ===================== КОМАНДЫ И ПОМОЩЬ =====================
 
+from app.services.ai_service import get_ai_reply
+
+
+@router.message(F.text.casefold().startswith("фабле"))
+@router.message(F.text.casefold().startswith("fable"))
+async def handle_ai_query(message: types.Message):
+    if not message.text or not message.from_user:
+        return
+    text = message.text.strip()
+    # Убираем префикс "фабле" / "fable"
+    match = re.match(r"^(?:фабле|fable)[,\s:]*(.*)$", text, re.IGNORECASE)
+    prompt = match.group(1).strip() if match else ""
+    if not prompt:
+        await message.reply("Да, я слушаю! Чем могу помочь? (например: <code>фабле сколько будет 6÷7*8÷99*68</code>)", parse_mode="HTML")
+        return
+
+    async with session_scope() as session:
+        reply = await get_ai_reply(session, chat_id=message.chat.id, user_id=message.from_user.id, prompt=prompt)
+        await message.reply(reply, parse_mode="HTML")
+
+
 @router.message(Command("команды", "help"))
 @router.message(F.text.casefold().in_(["команды", "!команды", "помощь", "!помощь"]))
 async def handle_commands_list(message: types.Message):

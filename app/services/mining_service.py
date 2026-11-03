@@ -104,28 +104,55 @@ async def upgrade_mining_farm(session: AsyncSession, *, user_id: int) -> tuple[P
     return mining, cost
 
 
-async def collect_mining_profit(session: AsyncSession, *, user_id: int) -> tuple[int, int]:
-    """Собирает намайненные монеты. Возвращает (намайнено, компьютеров)."""
+async def set_mining_target(session: AsyncSession, *, user_id: int, ticker: str) -> str:
+    norm = ticker.upper()
+    valid_cryptos = ["BTC", "ETH", "TON", "SOL", "BNB", "XRP", "DOGE", "ADA", "TRX", "DOT"]
+    if norm not in valid_cryptos:
+        raise MiningError(f"Выберите криптовалюту для майнинга из списка: {', '.join(valid_cryptos)}")
+
+    mining = await get_or_create_mining(session, user_id=user_id)
+    mining.target_crypto = norm
+    await session.flush()
+    return norm
+
+
+async def collect_mining_profit(session: AsyncSession, *, user_id: int) -> tuple[Decimal, str, int]:
+    """Собирает намайненную криптовалюту. Возвращает (намайнено, тикер, компьютеров)."""
     mining = await get_or_create_mining(session, user_id=user_id)
     now = datetime.now(timezone.utc)
     last = mining.last_mined_at or now
 
     elapsed_hours = (now - last).total_seconds() / 3600.0
-    if elapsed_hours < (1.0 / 60.0):
-        return 0, mining.computers
+    # Максимум 4 часа накопления
+    capped_hours = min(4.0, elapsed_hours)
+    if capped_hours < (1.0 / 60.0):
+        return Decimal("0"), mining.target_crypto, mining.computers
 
-    yield_per_hour = get_hourly_yield(mining.computers, mining.farm_level)
-    coins = int(yield_per_hour * elapsed_hours)
+    from app.services.crypto_stock_service import get_asset_price
+    from app.db.models import PlayerAsset
+    from decimal import Decimal
 
-    if coins > 0:
-        await credit_coins(
-            session,
-            user_id=user_id,
-            amount=coins,
-            reason="Сбор дохода с крипто-фермы",
-            operation_type="mining_profit",
+    crypto_ticker = mining.target_crypto or "BTC"
+    price = await get_asset_price(crypto_ticker)
+
+    # Доходность в монетах / цена крипты = объем намайненной крипты
+    yield_coins = get_hourly_yield(mining.computers, mining.farm_level) * capped_hours
+    crypto_amount = (Decimal(str(yield_coins)) / price).quantize(Decimal("0.00000001"))
+
+    if crypto_amount > Decimal("0"):
+        asset = await session.scalar(
+            select(PlayerAsset).where(
+                PlayerAsset.user_id == user_id,
+                PlayerAsset.ticker == crypto_ticker,
+            ).with_for_update()
         )
+        if not asset:
+            asset = PlayerAsset(user_id=user_id, ticker=crypto_ticker, amount=crypto_amount)
+            session.add(asset)
+        else:
+            asset.amount += crypto_amount
+
         mining.last_mined_at = now
         await session.flush()
 
-    return coins, mining.computers
+    return crypto_amount, crypto_ticker, mining.computers

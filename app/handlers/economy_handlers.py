@@ -21,6 +21,7 @@ from app.services.mining_service import (
     buy_computers,
     upgrade_mining_farm,
     collect_mining_profit,
+    set_mining_target,
     get_hourly_yield,
     get_farm_upgrade_cost,
     COMPUTER_PRICE,
@@ -343,35 +344,53 @@ async def handle_mining(message: types.Message):
             upg_cost = get_farm_upgrade_cost(mining.farm_level) if mining.farm_level < 10 else "MAX"
             upg_str = f"{upg_cost:,} монет".replace(",", " ") if isinstance(upg_cost, int) else upg_cost
 
+            curr_target = mining.target_crypto or "BTC"
             resp = (
                 f"⛏ <b>КРИПТО-МАЙНИНГ ФЕРМА</b>\n\n"
                 f"🖥 Майнинг-компьютеров: <b>{mining.computers}</b> шт.\n"
                 f"⚡️ Уровень фермы: <b>{mining.farm_level} / 10</b>\n"
-                f"📈 Доходность: <b>+{hourly:,}</b> монет/час\n\n"
-                f"🛒 1 компьютер стоит: <b>{COMPUTER_PRICE:,}</b> монет\n"
+                f"🪙 Добываемая криптовалюта: <b>{curr_target}</b>\n"
+                f"📈 Мощность добычи: <b>+{hourly:,}</b> ед./час (макс. 4ч без сбора)\n\n"
+                f"🛒 1 компьютер: <b>{COMPUTER_PRICE:,}</b> монет\n"
                 f"🔧 Улучшение фермы до ур. {mining.farm_level + 1}: <b>{upg_str}</b>\n\n"
                 f"<i>Команды:</i>\n"
+                f"• <code>ферма крипта [тикер]</code> — выбрать крипту (BTC, TON, SOL, ETH, etc.)\n"
                 f"• <code>ферма купить комп [кол-во]</code> — купить компьютеры\n"
-                f"• <code>ферма улучшить</code> — прокачать оборудование и охлаждение\n"
-                f"• <code>ферма собрать</code> — собрать намайненную прибыль"
+                f"• <code>ферма улучшить</code> — прокачать оборудование\n"
+                f"• <code>ферма собрать</code> — забрать намайненную криптовалюту в портфель"
             ).replace(",", " ")
             await message.reply(resp, parse_mode="HTML")
             return
 
         cmd = parts[1].casefold()
 
-        # Сбор прибыли
-        if cmd in ("собрать", "прибыль", "доход", "collect", "майнить"):
+        # Выбор криптовалюты для майнинга: "ферма крипта TON" или "ферма майнить BTC"
+        if cmd in ("крипта", "монета", "тикер") or (cmd == "майнить" and len(parts) >= 3):
+            if len(parts) < 3:
+                await message.reply("Использование: <code>ферма крипта TON</code> (BTC, ETH, TON, SOL, DOGE и др.)", parse_mode="HTML")
+                return
+            ticker = parts[2].upper()
             try:
-                coins, comps = await collect_mining_profit(session, user_id=message.from_user.id)
-                if coins > 0:
+                target = await set_mining_target(session, user_id=message.from_user.id, ticker=ticker)
+                await message.reply(f"⛏ Компьютеры фермы перенастроены на добычу <b>{target}</b>!", parse_mode="HTML")
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        # Сбор прибыли
+        if cmd in ("собрать", "прибыль", "доход", "collect"):
+            try:
+                amt, ticker, comps = await collect_mining_profit(session, user_id=message.from_user.id)
+                if amt > 0:
+                    amt_str = f"{amt:.8f}".rstrip("0").rstrip(".")
                     await message.reply(
                         f"⛏ <b>Майнинг завершен!</b>\n\n"
-                        f"Ваши <b>{comps}</b> компьютеров намайнили <b>+{coins:,}</b> монет!".replace(",", " "),
+                        f"Ваши <b>{comps}</b> компьютеров намайнили <b>+{amt_str} {ticker}</b>!\n"
+                        f"Криптовалюта зачислена в ваш <code>портфель</code>.",
                         parse_mode="HTML",
                     )
                 else:
-                    await message.reply("⏳ Компьютеры еще майнят... Прибыль накапливается! Загляните через несколько минут.")
+                    await message.reply("⏳ Компьютеры еще майнят... Крипта накапливается! Загляните через несколько минут.")
             except Exception as e:
                 await message.reply(f"❌ {e}")
             return
