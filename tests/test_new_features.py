@@ -93,7 +93,7 @@ async def test_bonus_and_minigames():
 
         # Daily bonus
         bon = await claim_daily_bonus(session, user_id=uid)
-        assert bon.reward_coins >= 500
+        assert bon.reward_coins == 50
         assert bon.streak == 1
 
         # Dice
@@ -107,3 +107,70 @@ async def test_bonus_and_minigames():
         # Mystery box
         mult, box_payout = await play_mystery_box(session, user_id=uid, stake=100)
         assert mult >= 0
+
+
+@pytest.mark.asyncio
+async def test_business_4_hour_accumulation_cap():
+    from datetime import datetime, timezone, timedelta
+    from app.services.business_service import MAX_BUSINESS_ACCUMULATION_HOURS
+    from app.db.models import PlayerBusiness
+
+    uid = 999005
+    async with session_scope() as session:
+        reg = await get_or_create_player(session, telegram_id=uid, first_name="CapTester")
+        reg.player.wallet = 50000
+        await session.flush()
+
+        pb, cfg = await buy_business(session, user_id=uid, business_id=1)
+        # Симулируем 10 часов отсутствия
+        ten_hours_ago = datetime.now(timezone.utc) - timedelta(hours=10)
+        pb.last_collected_at = ten_hours_ago
+        await session.flush()
+
+        # Собираем прибыль
+        profit, count = await collect_business_profits(session, user_id=uid)
+        assert count == 1
+        # Прибыль должна быть ровно за 4 часа, а не за 10
+        expected_max_profit = int(15 * MAX_BUSINESS_ACCUMULATION_HOURS)
+        assert profit == expected_max_profit
+
+
+@pytest.mark.asyncio
+async def test_multi_crypto_mining_rigs():
+    from app.services.mining_service import (
+        switch_mining_coin,
+        collect_mining_profit_detailed,
+        get_rigs_dict,
+    )
+    from datetime import datetime, timezone, timedelta
+
+    uid = 999006
+    async with session_scope() as session:
+        reg = await get_or_create_player(session, telegram_id=uid, first_name="MinerTester")
+        reg.player.wallet = 100000
+        await session.flush()
+
+        # Buy GPU rig
+        m, cost = await buy_computers(session, user_id=uid, count=1, rig_type="gpu")
+        rigs = get_rigs_dict(m)
+        assert rigs.get("gpu") == 1
+
+        # Switch to ETH
+        active = await switch_mining_coin(session, user_id=uid, coin="ETH")
+        assert active == "ETH"
+
+        # Simulate 2 hours elapsed
+        m.last_mined_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        await session.flush()
+
+        res = await collect_mining_profit_detailed(session, user_id=uid)
+        assert res.crypto_coin == "ETH"
+        assert res.crypto_amount > 0
+
+
+@pytest.mark.asyncio
+async def test_engagement_service_baits():
+    from app.services.engagement_service import generate_chat_bait_message
+    text, kb = await generate_chat_bait_message()
+    assert text
+    assert kb.inline_keyboard[0][0].callback_data == "bait:claim"

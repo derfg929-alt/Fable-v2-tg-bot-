@@ -1,16 +1,19 @@
 """Фоновые задачи бота Fable:
 1. Суточный расчет процентов банка.
 2. Цикл маркетмейкера биржи.
+3. Фоновый воркер вовлечения и байтов (в ЛС и в чаты).
 """
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
 import logging
+from aiogram import Bot
 
 from app.db.session import session_scope
 from app.services.bank_service import accrue_daily_interest
 from app.services.market_maker import run_market_maker_cycle
+from app.services.engagement_service import process_dm_baits, process_chat_baits
 
 logger = logging.getLogger(__name__)
 
@@ -41,4 +44,18 @@ async def background_market_maker_worker(interval_seconds: int = 30) -> None:
                 await run_market_maker_cycle(session)
         except Exception as e:
             logger.error(f"Ошибка в фоновом цикле маркетмейкера: {e}")
+        await asyncio.sleep(interval_seconds)
+
+
+async def background_engagement_worker(bot: Bot, interval_seconds: int = 7200) -> None:
+    """Периодически отправляет байты и напоминания в ЛС и чаты, чтобы бот не забывался."""
+    while True:
+        try:
+            async with session_scope() as session:
+                dm_count = await process_dm_baits(session, bot)
+                chat_count = await process_chat_baits(session, bot)
+                if dm_count > 0 or chat_count > 0:
+                    logger.info(f"Engagement worker: отправлено {dm_count} ЛС-напоминаний и {chat_count} байтов в чаты.")
+        except Exception as e:
+            logger.error(f"Ошибка в воркере вовлечения: {e}")
         await asyncio.sleep(interval_seconds)
