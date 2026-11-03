@@ -50,6 +50,10 @@ async def main() -> None:
 
     logger.info("Проверка подключения к базе данных PostgreSQL...")
     if not await check_database_connection():
+    async with session_scope() as session:
+        from app.services.initial_catalog import seed_initial_achievements
+        await seed_initial_achievements(session)
+    logger.info("Каталог достижений успешно синхронизирован.")
         logger.critical("Не удалось подключиться к базе данных PostgreSQL!")
         sys.exit(1)
     logger.info("Подключение к PostgreSQL успешно.")
