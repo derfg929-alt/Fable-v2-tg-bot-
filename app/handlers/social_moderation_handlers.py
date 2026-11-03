@@ -23,6 +23,8 @@ from app.services.clan_service import (
     delete_clan,
 )
 from app.services.top_service import get_top_rich, get_top_active, get_top_clans
+from app.services.help_service import get_commands_help_text, get_greeting_text
+from aiogram.filters import Command
 from app.services.moderation_service import (
     get_user_admin_level,
     set_admin_level,
@@ -64,6 +66,15 @@ def _get_target_user_id(message: types.Message) -> int | None:
             if ent.type == "text_mention" and ent.user:
                 return ent.user.id
     return None
+
+
+# ===================== КОМАНДЫ И ПОМОЩЬ =====================
+
+@router.message(Command("команды", "help"))
+@router.message(F.text.casefold().in_(["команды", "!команды", "помощь", "!помощь"]))
+async def handle_commands_list(message: types.Message):
+    """Выводит список всех команд и возможностей бота."""
+    await message.reply(get_commands_help_text(), parse_mode="HTML")
 
 
 # ===================== КЛАНЫ =====================

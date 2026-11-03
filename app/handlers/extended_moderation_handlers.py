@@ -28,6 +28,7 @@ from app.services.chat_settings_service import (
     create_report,
     handle_report,
 )
+from app.services.help_service import get_greeting_text
 
 router = Router(name="extended_moderation_router")
 
@@ -43,6 +44,30 @@ def _get_target_user_id(message: types.Message) -> int | None:
 
 
 # ===================== ВХОД НОВОГО УЧАСТНИКА / ПРИВЕТСТВИЕ И КАПЧА =====================
+
+@router.my_chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
+async def on_bot_added_my_chat_member(event: types.ChatMemberUpdated, bot: Bot):
+    """Срабатывает при добавлении самого бота в группу/канал."""
+    chat = event.chat
+    if event.new_chat_member.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR):
+        async with session_scope() as session:
+            await get_or_create_chat(session, chat_id=chat.id, title=chat.title or "")
+        await bot.send_message(chat_id=chat.id, text=get_greeting_text(), parse_mode="HTML")
+
+
+@router.message(F.new_chat_members)
+async def on_bot_added_new_chat_members(message: types.Message, bot: Bot):
+    """Срабатывает при добавлении новых участников, если среди них есть наш бот."""
+    if not message.new_chat_members:
+        return
+    bot_info = await bot.get_me()
+    for member in message.new_chat_members:
+        if member.id == bot_info.id:
+            async with session_scope() as session:
+                await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+            await message.answer(get_greeting_text(), parse_mode="HTML")
+            break
+
 
 @router.chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
 async def on_new_chat_member(event: types.ChatMemberUpdated, bot: Bot):
