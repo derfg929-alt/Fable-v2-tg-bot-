@@ -21,9 +21,13 @@ from app.services.mining_service import (
     buy_computers,
     upgrade_mining_farm,
     collect_mining_profit,
-    get_hourly_yield,
+    collect_mining_profit_detailed,
+    switch_mining_coin,
+    get_rigs_dict,
+    calculate_effective_hashrate,
     get_farm_upgrade_cost,
-    COMPUTER_PRICE,
+    MINING_RIGS,
+    SUPPORTED_MINING_COINS,
 )
 from app.services.business_service import (
     BUSINESSES,
@@ -244,14 +248,17 @@ async def handle_businesses(message: types.Message):
             user_businesses = await get_player_businesses(session, user_id=message.from_user.id)
             user_b_map = {b.business_id: b for b in user_businesses}
 
-            lines = ["🏢 <b>БИЗНЕСЫ FABLE</b> (10 уровней)\n"]
+            lines = [
+                "🏢 <b>БИЗНЕСЫ FABLE</b> (10 уровней)\n",
+                "⏱ <i>Внимание: прибыль накапливается максимум за 4 часа! Если не собирать, бизнес перестает приносить доход, пока не заберете кассу.</i>\n",
+            ]
             for b_id, cfg in BUSINESSES.items():
                 if b_id in user_b_map:
                     ub = user_b_map[b_id]
                     inc = get_hourly_income(b_id, ub.level)
                     upg = get_upgrade_cost(b_id, ub.level) if ub.level < 10 else "MAX"
                     upg_str = f"{upg:,} монет".replace(",", " ") if isinstance(upg, int) else upg
-                    lines.append(f"{cfg.icon} <b>#{b_id} {cfg.name}</b> [Ур. {ub.level}/10]\n   ├ Доход: <b>+{inc:,}/ч</b>\n   └ Улучшение: {upg_str}".replace(",", " "))
+                    lines.append(f"{cfg.icon} <b>#{b_id} {cfg.name}</b> [Ур. {ub.level}/10]\n   ├ Доход: <b>+{inc:,}/ч</b> (макс. за 4ч: +{inc * 4:,})\n   └ Улучшение: {upg_str}".replace(",", " "))
                 else:
                     lines.append(f"{cfg.icon} <b>#{b_id} {cfg.name}</b> (Не куплен)\n   ├ Доход: +{cfg.base_income_hourly:,}/ч\n   └ Стоимость: <b>{cfg.base_cost:,}</b> монет".replace(",", " "))
 
@@ -259,7 +266,7 @@ async def handle_businesses(message: types.Message):
                 "\n<i>Команды:</i>\n"
                 "• <code>бизнес купить [номер]</code> — купить бизнес\n"
                 "• <code>бизнес улучшить [номер]</code> — прокачать уровень\n"
-                "• <code>бизнес собрать</code> — собрать прибыль со всех бизнесов"
+                "• <code>бизнес собрать</code> — забрать накопленную прибыль (каждые 4ч)"
             )
             await message.reply("\n".join(lines), parse_mode="HTML")
             return
@@ -339,58 +346,100 @@ async def handle_mining(message: types.Message):
 
         # Главное меню фермы
         if len(parts) == 1 or parts[0].casefold() in ("майнинг", "!майнинг"):
-            hourly = get_hourly_yield(mining.computers, mining.farm_level)
+            rigs = get_rigs_dict(mining)
+            total_comps = sum(rigs.values())
+            active_coin = (mining.active_coin or "BTC").upper()
+            hashrate = calculate_effective_hashrate(rigs, active_coin, mining.farm_level)
             upg_cost = get_farm_upgrade_cost(mining.farm_level) if mining.farm_level < 10 else "MAX"
             upg_str = f"{upg_cost:,} монет".replace(",", " ") if isinstance(upg_cost, int) else upg_cost
 
+            rigs_lines = []
+            for r_code, cfg in MINING_RIGS.items():
+                count = rigs.get(r_code, 0)
+                rigs_lines.append(f"{cfg.icon} <b>{cfg.name}</b>: <b>{count}</b> шт. (Добывает: {', '.join(cfg.allowed_coins)} | Цена: {cfg.price:,} монет)".replace(",", " "))
+
             resp = (
-                f"⛏ <b>КРИПТО-МАЙНИНГ ФЕРМА</b>\n\n"
-                f"🖥 Майнинг-компьютеров: <b>{mining.computers}</b> шт.\n"
-                f"⚡️ Уровень фермы: <b>{mining.farm_level} / 10</b>\n"
-                f"📈 Доходность: <b>+{hourly:,}</b> монет/час\n\n"
-                f"🛒 1 компьютер стоит: <b>{COMPUTER_PRICE:,}</b> монет\n"
-                f"🔧 Улучшение фермы до ур. {mining.farm_level + 1}: <b>{upg_str}</b>\n\n"
+                f"⛏ <b>КРИПТО-МАЙНИНГ ФЕРМА FABLE</b>\n\n"
+                f"🎯 Активная криптовалюта для майнинга: <b>{active_coin}</b>\n"
+                f"⚡️ Уровень фермы: <b>{mining.farm_level} / 10</b> (Бонус: +{(mining.farm_level - 1)*25}%)\n"
+                f"🔥 Общая вычислительная мощность: <b>{hashrate:,} GH/s</b>\n"
+                f"🖥 Всего оборудования на ферме: <b>{total_comps}</b> шт.\n\n"
+                f"<b>Ваши майнинг-компьютеры и риги:</b>\n"
+                + "\n".join(rigs_lines)
+                + f"\n\n🔧 Улучшение фермы до ур. {mining.farm_level + 1}: <b>{upg_str}</b>\n\n"
                 f"<i>Команды:</i>\n"
-                f"• <code>ферма купить комп [кол-во]</code> — купить компьютеры\n"
-                f"• <code>ферма улучшить</code> — прокачать оборудование и охлаждение\n"
-                f"• <code>ферма собрать</code> — собрать намайненную прибыль"
-            ).replace(",", " ")
+                f"• <code>ферма монета [BTC|ETH|TON|SOL|DOGE]</code> — выбрать добываемую криптовалюту\n"
+                f"• <code>ферма купить [cpu|gpu|asic|quantum] [кол-во]</code> — купить компьютеры/риги\n"
+                f"• <code>ферма собрать</code> — забрать намайненную криптовалюту в <code>портфель</code>\n"
+                f"• <code>ферма улучшить</code> — прокачать уровень фермы"
+            )
             await message.reply(resp, parse_mode="HTML")
             return
 
         cmd = parts[1].casefold()
 
+        # Выбор криптовалюты для майнинга
+        if cmd in ("монета", "крипта", "coin") and len(parts) >= 3:
+            chosen = parts[2].upper()
+            try:
+                active = await switch_mining_coin(session, user_id=message.from_user.id, coin=chosen)
+                await message.reply(
+                    f"🎯 <b>Криптовалюта для майнинга изменена!</b>\n\n"
+                    f"Теперь ваши риги и компьютеры майнят: <b>{active}</b>\n"
+                    f"Добытые активы поступают прямо в ваш <code>портфель</code>!",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
         # Сбор прибыли
         if cmd in ("собрать", "прибыль", "доход", "collect", "майнить"):
             try:
-                coins, comps = await collect_mining_profit(session, user_id=message.from_user.id)
-                if coins > 0:
+                res = await collect_mining_profit_detailed(session, user_id=message.from_user.id)
+                if res.crypto_amount > 0 or res.coins > 0:
+                    crypto_str = f"{res.crypto_amount:.8f}".rstrip("0").rstrip(".")
                     await message.reply(
-                        f"⛏ <b>Майнинг завершен!</b>\n\n"
-                        f"Ваши <b>{comps}</b> компьютеров намайнили <b>+{coins:,}</b> монет!".replace(",", " "),
+                        f"⛏ <b>Майнинг успешно завершен!</b>\n\n"
+                        f"Ваши <b>{res.total_computers}</b> компьютеров намайнили:\n"
+                        f"🪙 <b>+{crypto_str} {res.crypto_coin}</b> (зачислено в портфель!)\n"
+                        f"💰 <b>+{res.coins:,}</b> игровых монет!\n\n"
+                        f"Посмотреть баланс активов: <code>портфель</code>".replace(",", " "),
                         parse_mode="HTML",
                     )
                 else:
-                    await message.reply("⏳ Компьютеры еще майнят... Прибыль накапливается! Загляните через несколько минут.")
+                    await message.reply("⏳ Компьютеры еще вычисляют блоки... Добыча накапливается! Загляните чуть позже.")
             except Exception as e:
                 await message.reply(f"❌ {e}")
             return
 
         # Покупка компьютеров
         if cmd in ("купить", "buy"):
+            # Формат: "ферма купить cpu 2" или "ферма купить 2" или "ферма купить gpu"
+            rig_type = "cpu"
             count = 1
-            if len(parts) >= 4 and parts[3].isdigit():
-                count = int(parts[3])
-            elif len(parts) >= 3 and parts[2].isdigit():
-                count = int(parts[2])
+
+            if len(parts) >= 3:
+                p2 = parts[2].lower()
+                if p2 in MINING_RIGS:
+                    rig_type = p2
+                    if len(parts) >= 4 and parts[3].isdigit():
+                        count = int(parts[3])
+                elif p2.isdigit():
+                    count = int(p2)
+                elif p2 in ("комп", "компы", "пк"):
+                    if len(parts) >= 4 and parts[3].isdigit():
+                        count = int(parts[3])
+
             try:
-                m, cost = await buy_computers(session, user_id=message.from_user.id, count=count)
-                new_hourly = get_hourly_yield(m.computers, m.farm_level)
+                m, cost = await buy_computers(session, user_id=message.from_user.id, count=count, rig_type=rig_type)
+                cfg = MINING_RIGS[rig_type]
                 await message.reply(
-                    f"🖥 <b>Компьютеры успешно куплены!</b>\n\n"
-                    f"Куплено: <b>{count}</b> шт. за <b>{cost:,}</b> монет.\n"
-                    f"Всего ПК на ферме: <b>{m.computers}</b> шт.\n"
-                    f"Новая доходность: <b>+{new_hourly:,}</b> монет/час!".replace(",", " "),
+                    f"🖥 <b>Оборудование успешно установлено!</b>\n\n"
+                    f"Куплено: <b>{count} шт. {cfg.name}</b> {cfg.icon} за <b>{cost:,}</b> монет.\n"
+                    f"Специализация: <b>{', '.join(cfg.allowed_coins)}</b>\n"
+                    f"Всего ПК на ферме: <b>{m.computers}</b> шт.\n\n"
+                    f"Не забудьте настроить добычу: <code>ферма монета [тикер]</code>!".replace(",", " "),
                     parse_mode="HTML",
                 )
             except Exception as e:
@@ -401,12 +450,11 @@ async def handle_mining(message: types.Message):
         if cmd in ("улучшить", "upgrade", "апгрейд"):
             try:
                 m, cost = await upgrade_mining_farm(session, user_id=message.from_user.id)
-                new_hourly = get_hourly_yield(m.computers, m.farm_level)
                 await message.reply(
                     f"⚡️ <b>Ферма успешно улучшена!</b>\n\n"
                     f"Новый уровень: <b>{m.farm_level} / 10</b>\n"
                     f"Потрачено: <b>{cost:,}</b> монет.\n"
-                    f"Новая доходность: <b>+{new_hourly:,}</b> монет/час!".replace(",", " "),
+                    f"Бонус к добыче повышен до: <b>+{(m.farm_level - 1)*25}%</b>!".replace(",", " "),
                     parse_mode="HTML",
                 )
             except Exception as e:

@@ -37,6 +37,7 @@ from app.handlers.owner_handlers import router as owner_router
 from app.tasks.background import (
     background_bank_interest_worker,
     background_market_maker_worker,
+    background_engagement_worker,
 )
 
 logger = logging.getLogger("fable")
@@ -102,6 +103,7 @@ async def main() -> None:
     # Запуск фоновых задач
     bank_task = asyncio.create_task(background_bank_interest_worker(interval_seconds=3600))
     mm_task = asyncio.create_task(background_market_maker_worker(interval_seconds=60))
+    engagement_task = asyncio.create_task(background_engagement_worker(bot, interval_seconds=7200))
 
     logger.info("Запуск Telegram-бота Fable в режиме Long Polling...")
     try:
@@ -109,6 +111,7 @@ async def main() -> None:
     finally:
         bank_task.cancel()
         mm_task.cancel()
+        engagement_task.cancel()
         await bot.session.close()
         await dispose_engine()
         logger.info("Бот Fable успешно остановлен.")

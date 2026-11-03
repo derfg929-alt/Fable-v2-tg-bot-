@@ -71,6 +71,8 @@ async def handle_portfolio(message: types.Message):
         await message.reply("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(F.text.casefold().in_(["фондовый рынок", "!фондовый рынок", "рынок", "!рынок"]))
+@router.message(F.text.casefold().startswith("фондовый рынок"))
 @router.message(F.text.casefold().startswith("биржа"))
 async def handle_exchange(message: types.Message):
     if not message.from_user:
@@ -87,10 +89,16 @@ async def handle_exchange(message: types.Message):
             username=message.from_user.username,
         )
 
-        if len(parts) == 1:
+        # Если команда просто "биржа", "фондовый рынок", "рынок"
+        first_phrase = text.casefold()
+        if (
+            len(parts) == 1
+            or first_phrase in ("фондовый рынок", "!фондовый рынок", "рынок", "!рынок")
+            or (parts[0].casefold() == "фондовый" and len(parts) == 2 and parts[1].casefold() == "рынок")
+        ):
             prices = await fetch_real_prices()
 
-            crypto_lines = ["🪙 <b>КРИПТОВАЛЮТА (Реальный курс 1:1):</b>"]
+            crypto_lines = ["🪙 <b>КРИПТОВАЛЮТА И КРИПТОГРАФИЯ (Реальный курс 1:1):</b>"]
             stock_lines = ["📈 <b>ФОНДОВЫЙ РЫНОК / АКЦИИ КОМПАНИЙ:</b>"]
 
             for ticker, info in MARKET_ASSETS.items():
@@ -103,16 +111,16 @@ async def handle_exchange(message: types.Message):
                     stock_lines.append(line)
 
             resp = (
-                "📊 <b>ФИНАНСОВАЯ БИРЖА FABLE</b>\n\n"
+                "📊 <b>ФОНДОВЫЙ РЫНОК И БИРЖА КРИПТОВАЛЮТ FABLE</b>\n\n"
                 + "\n".join(crypto_lines)
                 + "\n\n"
                 + "\n".join(stock_lines)
                 + "\n\n"
-                "<i>Команды для торговли:</i>\n"
-                "• <code>биржа купить [тикер] [кол-во]</code> (напр. <code>биржа купить btc 0.5</code>)\n"
-                "• <code>биржа продать [тикер] [кол-во]</code>\n"
-                "• <code>портфель</code> — посмотреть свои крипто-активы и акции\n"
-                "• <code>биржа стакан</code> — стакан классических акций бота"
+                "<i>Вы можете купить или продать любые активы в любом количестве:</i>\n"
+                "• <code>биржа купить [тикер] [любое кол-во]</code> (напр. <code>биржа купить btc 0.05</code> или <code>купить btc 1</code>)\n"
+                "• <code>биржа продать [тикер] [любое кол-во]</code> (напр. <code>биржа продать btc 0.05</code>)\n"
+                "• <code>портфель</code> — посмотреть купленную криптовалюту и акции\n"
+                "• <code>биржа стакан</code> — классический биржевой стакан"
             )
             await message.reply(resp, parse_mode="HTML")
             return
@@ -156,15 +164,24 @@ async def handle_exchange(message: types.Message):
             await message.reply(f"✅ Заявка #{cancelled.id} ({cancelled.side} {cancelled.remaining_quantity} шт.) отменена, неиспользованный резерв возвращен.")
             return
 
-        # Покупка / продажа крипты и акций: "биржа купить btc 0.5" или "биржа купить 100" (классика)
-        if cmd in ("купить", "продать") and len(parts) >= 3:
-            # Вариант 1: "биржа купить btc 0.5"
-            second_arg = parts[2].upper()
+        # Покупка / продажа крипты и акций: "биржа купить btc 0.5" или "фондовый рынок купить btc 0.5"
+        # Также поддерживаем "купить [тикер] [кол-во]"
+        action_idx = -1
+        for i, p in enumerate(parts):
+            if p.casefold() in ("купить", "продать"):
+                action_idx = i
+                break
+
+        if action_idx != -1 and len(parts) >= action_idx + 2:
+            trade_action = parts[action_idx].casefold()
+            second_arg = parts[action_idx + 1].upper()
             if second_arg in MARKET_ASSETS:
-                qty_str = parts[3].replace(",", ".") if len(parts) >= 4 else "1"
+                qty_str = parts[action_idx + 2].replace(",", ".") if len(parts) >= action_idx + 3 else "1"
                 try:
                     qty = Decimal(qty_str)
-                    if cmd == "купить":
+                    if qty <= 0:
+                        raise ValueError("Количество должно быть больше нуля")
+                    if trade_action == "купить":
                         price, cost = await buy_asset(session, user_id=message.from_user.id, ticker=second_arg, quantity=qty)
                         info = MARKET_ASSETS[second_arg]
                         await message.reply(
@@ -189,10 +206,9 @@ async def handle_exchange(message: types.Message):
                     await message.reply(f"❌ Ошибка: {e}")
                 return
 
-            # Вариант 2: классические shares "биржа купить 100"
-            if parts[2].isdigit():
-                qty = int(parts[2])
-                side = "buy" if cmd == "купить" else "sell"
+            if parts[action_idx + 1].isdigit():
+                qty = int(parts[action_idx + 1])
+                side = "buy" if trade_action == "купить" else "sell"
                 try:
                     summary = await execute_market_order(session, user_id=message.from_user.id, side=side, quantity=qty)
                     act = "куплено" if side == "buy" else "продано"

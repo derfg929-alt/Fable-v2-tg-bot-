@@ -457,6 +457,8 @@ class PlayerMining(Base, TimestampMixin):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
     computers: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     farm_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    active_coin: Mapped[str] = mapped_column(String(16), nullable=False, default="BTC")
+    rigs_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     last_mined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

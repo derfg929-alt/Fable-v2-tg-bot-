@@ -44,6 +44,40 @@ def _extract_target_id(message: types.Message) -> int | None:
     return None
 
 
+@router.callback_query(F.data == "bait:claim")
+async def handle_bait_claim(callback: types.CallbackQuery):
+    """Игрок нажимает на байт-кнопку в чате."""
+    if not callback.from_user:
+        return
+    user_id = callback.from_user.id
+    async with session_scope() as session:
+        await get_or_create_player(
+            session,
+            telegram_id=user_id,
+            first_name=callback.from_user.first_name,
+            last_name=callback.from_user.last_name,
+            username=callback.from_user.username,
+        )
+        bonus_coins = 25
+        await credit_coins(
+            session,
+            user_id=user_id,
+            amount=bonus_coins,
+            reason="Захват чат-дропа (байт)",
+            operation_type="reward",
+        )
+    await callback.answer(f"🎉 Вы перехватили дроп и получили +{bonus_coins} монет!", show_alert=True)
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                f"⚡️ Игрок <b>{callback.from_user.first_name}</b> быстрее всех среагировал и забрал дроп на <b>+{bonus_coins}</b> монет!",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
+
 @router.message(F.text.casefold().in_(["бонус", "!бонус", "ежедневный бонус"]))
 async def handle_daily_bonus(message: types.Message):
     if not message.from_user:

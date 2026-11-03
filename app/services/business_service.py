@@ -36,18 +36,22 @@ class BusinessConfig:
     base_income_hourly: int
 
 
+# Сбалансированный часовой доход: развитие требует около недели активной игры
 BUSINESSES: dict[int, BusinessConfig] = {
-    1: BusinessConfig(1, "Ларёк с шаурмой", "🌯", 1_000, 100),
-    2: BusinessConfig(2, "Кофейня", "☕️", 5_000, 400),
-    3: BusinessConfig(3, "Автомойка", "🚗", 20_000, 1_500),
-    4: BusinessConfig(4, "Барбершоп", "💈", 50_000, 3_500),
-    5: BusinessConfig(5, "Ресторан", "🍽", 150_000, 10_000),
-    6: BusinessConfig(6, "Ночной клуб", "🍸", 500_000, 30_000),
-    7: BusinessConfig(7, "Сеть супермаркетов", "🏬", 1_500_000, 80_000),
-    8: BusinessConfig(8, "Строительная компания", "🏗", 5_000_000, 250_000),
-    9: BusinessConfig(9, "IT-Корпорация", "💻", 15_000_000, 700_000),
-    10: BusinessConfig(10, "Нефтяной холдинг", "🛢", 50_000_000, 2_200_000),
+    1: BusinessConfig(1, "Ларёк с шаурмой", "🌯", 1_000, 15),
+    2: BusinessConfig(2, "Кофейня", "☕️", 5_000, 45),
+    3: BusinessConfig(3, "Автомойка", "🚗", 20_000, 120),
+    4: BusinessConfig(4, "Барбершоп", "💈", 50_000, 260),
+    5: BusinessConfig(5, "Ресторан", "🍽", 150_000, 600),
+    6: BusinessConfig(6, "Ночной клуб", "🍸", 500_000, 1_600),
+    7: BusinessConfig(7, "Сеть супермаркетов", "🏬", 1_500_000, 4_000),
+    8: BusinessConfig(8, "Строительная компания", "🏗", 5_000_000, 11_000),
+    9: BusinessConfig(9, "IT-Корпорация", "💻", 15_000_000, 28_000),
+    10: BusinessConfig(10, "Нефтяной холдинг", "🛢", 50_000_000, 80_000),
 }
+
+# Максимальное время накопления прибыли бизнесов (4 часа)
+MAX_BUSINESS_ACCUMULATION_HOURS = 4.0
 
 
 def get_upgrade_cost(b_id: int, current_level: int) -> int:
@@ -148,7 +152,12 @@ async def upgrade_business(session: AsyncSession, *, user_id: int, business_id: 
 
 
 async def collect_business_profits(session: AsyncSession, *, user_id: int) -> tuple[int, int]:
-    """Собирает прибыль со всех бизнесов игрока. Возвращает (total_coins, count_businesses)."""
+    """Собирает прибыль со всех бизнесов игрока. Возвращает (total_coins, count_businesses).
+
+    Прибыль копится максимум за 4 часа. Если игрок не заходит дольше 4 часов,
+    бизнес простаивает и перестает приносить прибыль, пока не будет собран доход.
+    После сбора таймер обновляется и бизнес снова начинает приносить прибыль.
+    """
     pbs = await session.scalars(
         select(PlayerBusiness).where(PlayerBusiness.user_id == user_id).with_for_update()
     )
@@ -162,9 +171,11 @@ async def collect_business_profits(session: AsyncSession, *, user_id: int) -> tu
     for pb in businesses:
         last = pb.last_collected_at or now
         elapsed_hours = (now - last).total_seconds() / 3600.0
-        if elapsed_hours >= (1.0 / 60.0):  # хотя бы 1 минута накопления
+        # Ограничение: максимум 4 часа накопления прибыли
+        capped_hours = min(elapsed_hours, MAX_BUSINESS_ACCUMULATION_HOURS)
+        if capped_hours >= (1.0 / 60.0):  # хотя бы 1 минута накопления
             income_per_hour = get_hourly_income(pb.business_id, pb.level)
-            profit = int(income_per_hour * elapsed_hours)
+            profit = int(income_per_hour * capped_hours)
             if profit > 0:
                 total_profit += profit
                 pb.last_collected_at = now

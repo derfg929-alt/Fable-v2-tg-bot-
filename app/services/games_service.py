@@ -61,9 +61,9 @@ async def claim_daily_bonus(session: AsyncSession, *, user_id: int) -> DailyBonu
         bonus_row = DailyBonus(user_id=user_id, streak=1, last_claimed_at=now)
         session.add(bonus_row)
 
-    # Базовая награда 500 монет + 100 за каждый день стрика (макс 2 500)
-    coins = min(2500, 500 + (streak - 1) * 100)
-    exp = 25 * streak
+    # Базовая награда 50 монет + 10 за каждый день стрика (макс 150)
+    coins = min(150, 50 + (streak - 1) * 10)
+    exp = 5 * streak
 
     await credit_coins(
         session,
