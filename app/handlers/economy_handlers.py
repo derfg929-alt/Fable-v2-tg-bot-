@@ -238,3 +238,24 @@ async def handle_work(message: types.Message):
             )
         except Exception as e:
             await message.reply(f"⏳ {e}")
+
+# ===================== ДОСТИЖЕНИЯ =====================
+
+@router.message(F.text.casefold().in_(["достижения", "!достижения"]))
+async def handle_achievements(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        from app.services.achievement_service import list_achievements
+        items = await list_achievements(session, user_id=message.from_user.id)
+        if not items:
+            await message.reply("🏆 Достижения в игре пока не добавлены.")
+            return
+
+        lines = ["🏆 <b>Достижения Fable:</b>\n"]
+        for ach, unlocked in items:
+            status = "✅" if unlocked else "🔒"
+            reward_str = f" (+{ach.reward_coins} монет)" if ach.reward_coins > 0 else ""
+            lines.append(f"{status} <b>{ach.title}</b>{reward_str}\n<i>{ach.description}</i>")
+
+        await message.reply("\n\n".join(lines), parse_mode="HTML")

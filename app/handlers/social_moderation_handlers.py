@@ -336,3 +336,40 @@ async def on_top_menu_clans(callback: types.CallbackQuery):
         for c in clans:
             lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
         await callback.message.edit_text("\n".join(lines) if clans else "Рейтинг пуст.", parse_mode="HTML")
+
+# ===================== КОМАНДЫ ПОМОЩИ И ПРИВЕТСТВИЯ =====================
+
+@router.message(F.text.casefold().in_(["команды", "!команды", "помощь", "!помощь"]))
+async def handle_commands_list(message: types.Message):
+    text = (
+        "📖 <b>Список команд Fable:</b>\n\n"
+        "👤 <b>Игрок и экономика:</b>\n"
+        "• <code>профиль</code> — ваш игровой профиль\n"
+        "• <code>работа</code> — заработать монеты и опыт\n"
+        "• <code>банк</code> / <code>банк положить [сумма]</code> / <code>банк снять [сумма]</code>\n"
+        "• <code>перевод @user [сумма]</code> — перевести монеты\n"
+        "• <code>история</code> — выписка по счету\n"
+        "• <code>реп @user +</code> / <code>реп @user -</code> — изменить репутацию\n"
+        "• <code>достижения</code> — список достижений\n\n"
+        "📊 <b>Биржа:</b>\n"
+        "• <code>биржа</code> — стакан и текущий курс\n"
+        "• <code>биржа купить [кол-во]</code> / <code>биржа продать [кол-во]</code>\n"
+        "• <code>биржа заявка купить [кол-во] [цена]</code>\n"
+        "• <code>биржа график</code> — график торгов в PNG\n"
+        "• <code>биржа отмена</code> — отменить заявку\n\n"
+        "🎮 <b>Игры:</b>\n"
+        "• <code>рыбалка</code>, <code>охота</code>\n"
+        "• <code>слоты [ставка]</code>, <code>рулетка [красное/черное/число] [ставка]</code>\n"
+        "• <code>дуэль @user [ставка]</code> — дуэль в группе\n\n"
+        "🛡 <b>Кланы:</b>\n"
+        "• <code>клан</code>, <code>клан создать [имя]</code>, <code>клан вступить [имя]</code>\n"
+        "• <code>клан чат [текст]</code>, <code>клан удалить</code>\n\n"
+        "🏆 <b>Рейтинги:</b>\n"
+        "• <code>топ</code>, <code>топ богатых</code>, <code>топ активных</code>, <code>топ кланов</code> (+ <code>чат</code>)\n\n"
+        "⚖️ <b>Модерация чата:</b>\n"
+        "• <code>правила</code>, <code>админ список</code>, <code>настройки</code>\n"
+        "• <code>мут 30м [причина]</code>, <code>размут</code>, <code>варн</code>, <code>кик</code>, <code>бан</code>, <code>разбан</code>\n"
+        "• <code>заморозка вкл [время]</code> / <code>заморозка выкл</code>\n"
+        "• <code>слоумод [сек]</code>, <code>очистить [кол-во]</code>"
+    )
+    await message.reply(text, parse_mode="HTML")
