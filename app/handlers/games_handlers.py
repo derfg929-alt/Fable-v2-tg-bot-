@@ -13,7 +13,16 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.db.session import session_scope
 from app.services.player_service import get_or_create_player
-from app.services.games_service import play_fishing, play_hunting, play_slots, play_roulette
+from app.services.games_service import (
+    play_fishing,
+    play_hunting,
+    play_slots,
+    play_roulette,
+    claim_daily_bonus,
+    play_dice,
+    play_coinflip,
+    play_mystery_box,
+)
 from app.services.duel_service import (
     create_duel_invite,
     accept_duel,
@@ -33,6 +42,86 @@ def _extract_target_id(message: types.Message) -> int | None:
             if ent.type == "text_mention" and ent.user:
                 return ent.user.id
     return None
+
+
+@router.message(F.text.casefold().in_(["бонус", "!бонус", "ежедневный бонус"]))
+async def handle_daily_bonus(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            res = await claim_daily_bonus(session, user_id=message.from_user.id)
+            await message.reply(res.message, parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("кости"))
+async def handle_dice(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.reply("Использование: <code>кости 100</code>", parse_mode="HTML")
+        return
+    stake = int(parts[1])
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            p_roll, b_roll, is_win, payout = await play_dice(session, user_id=message.from_user.id, stake=stake)
+            if p_roll == b_roll:
+                await message.reply(f"🎲 <b>КОСТИ</b>\n\nВы выбросили: <b>{p_roll}</b>\nБот выбросил: <b>{b_roll}</b>\n\n🤝 Ничья! Ставка {stake} монет возвращена.", parse_mode="HTML")
+            elif is_win:
+                await message.reply(f"🎲 <b>КОСТИ</b>\n\nВы выбросили: <b>{p_roll}</b>\nБот выбросил: <b>{b_roll}</b>\n\n🎉 <b>Победа!</b> Выигрыш: <b>+{payout}</b> монет!", parse_mode="HTML")
+            else:
+                await message.reply(f"🎲 <b>КОСТИ</b>\n\nВы выбросили: <b>{p_roll}</b>\nБот выбросил: <b>{b_roll}</b>\n\n💀 <b>Проигрыш!</b> Ставка {stake} монет сгорела.", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("монетка"))
+async def handle_coinflip(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3 or not parts[2].isdigit():
+        await message.reply("Использование: <code>монетка орел 100</code> или <code>монетка решка 100</code>", parse_mode="HTML")
+        return
+    choice = parts[1].casefold()
+    stake = int(parts[2])
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            outcome, is_win, payout = await play_coinflip(session, user_id=message.from_user.id, choice=choice, stake=stake)
+            icon = "🦅" if outcome == "орел" else "🪙"
+            if is_win:
+                await message.reply(f"🪙 <b>МОНЕТКА</b> 🪙\n\nВыпало: {icon} <b>{outcome.upper()}</b>!\n\n🎉 <b>Победа!</b> Выигрыш: <b>+{payout}</b> монет!", parse_mode="HTML")
+            else:
+                await message.reply(f"🪙 <b>МОНЕТКА</b> 🪙\n\nВыпало: {icon} <b>{outcome.upper()}</b>!\n\n💀 <b>Проигрыш!</b> Ставка {stake} монет сгорела.", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("сундук"))
+async def handle_box(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.reply("Использование: <code>сундук 100</code>", parse_mode="HTML")
+        return
+    stake = int(parts[1])
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            mult, payout = await play_mystery_box(session, user_id=message.from_user.id, stake=stake)
+            if mult >= 1.0:
+                await message.reply(f"📦 <b>ТАИНСТВЕННЫЙ СУНДУК</b> 📦\n\nВам выпал множитель: <b>x{mult:.1f}</b>!\n🎉 Выигрыш: <b>+{payout}</b> монет!", parse_mode="HTML")
+            else:
+                await message.reply(f"📦 <b>ТАИНСТВЕННЫЙ СУНДУК</b> 📦\n\nВам выпал множитель: <b>x{mult:.1f}</b>\n💀 В сундуке оказалось меньше, чем ожидалось: получено {payout} монет.", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
 
 
 @router.message(F.text.casefold().in_(["рыбалка", "!рыбалка"]))
@@ -141,18 +230,20 @@ async def handle_duel_invite(message: types.Message):
         return
 
     parts = (message.text or "").split()
-    target_id = _extract_target_id(message)
     stake = None
     for p in reversed(parts):
         if p.isdigit():
             stake = int(p)
             break
 
-    if not target_id or not stake:
-        await message.reply("Использование: <code>дуэль @user 100</code> или ответом: <code>дуэль 100</code>", parse_mode="HTML")
-        return
-
     async with session_scope() as session:
+        from app.handlers.social_moderation_handlers import _get_target_user_id
+        target_id = await _get_target_user_id(message, session)
+
+        if not target_id or not stake:
+            await message.reply("Использование: <code>дуэль @user 100</code> или ответом: <code>дуэль 100</code>", parse_mode="HTML")
+            return
+
         await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
         try:
             duel = await create_duel_invite(
@@ -167,10 +258,15 @@ async def handle_duel_invite(message: types.Message):
             builder.button(text="❌ Отклонить", callback_data=f"duel_dec_{duel.id}")
             builder.adjust(2)
 
+            from app.db.models import Player
+            opp_player = await session.get(Player, target_id)
+            opp_name = opp_player.first_name if opp_player else f"ID {target_id}"
+
             await message.reply(
                 f"⚔️ <b>ВЫЗОВ НА ДУЭЛЬ!</b>\n\n"
-                f"Игрок ID <code>{message.from_user.id}</code> вызывает на дуэль игрока ID <code>{target_id}</code>!\n"
-                f"Ставка: <b>{stake}</b> монет с каждого участника.",
+                f"🤠 <b>{message.from_user.first_name}</b> бросает перчатку игроку <b>{opp_name}</b>!\n"
+                f"💰 Ставка: <b>{stake:,}</b> монет с каждого дуэлянта.\n"
+                f"🏆 Общий призовой фонд: <b>{stake * 2:,}</b> монет!".replace(",", " "),
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML",
             )
@@ -185,14 +281,18 @@ async def on_duel_accept(callback: types.CallbackQuery):
         try:
             resp = await accept_duel(session, session_id=duel_id, actor_id=callback.from_user.id)
             builder = InlineKeyboardBuilder()
-            builder.button(text="🎯 Прицелиться", callback_data=f"duel_aim_{duel_id}")
+            builder.button(text="🎯 Прицелиться (+10%)", callback_data=f"duel_aim_{duel_id}")
             builder.button(text="💥 Выстрелить", callback_data=f"duel_shoot_{duel_id}")
             builder.adjust(2)
+
+            from app.db.models import Player
+            curr_p = await session.get(Player, resp.current_turn_user_id)
+            turn_name = curr_p.first_name if curr_p else f"ID {resp.current_turn_user_id}"
 
             await callback.message.edit_text(
                 f"⚔️ <b>ДУЭЛЬ НАЧАЛАСЬ!</b>\n\n"
                 f"{resp.message}\n\n"
-                f"👉 Ход игрока ID <code>{resp.current_turn_user_id}</code>!",
+                f"👉 Первым ходит: <b>{turn_name}</b>!",
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML",
             )
@@ -218,14 +318,18 @@ async def on_duel_aim(callback: types.CallbackQuery):
         try:
             resp = await duel_aim(session, session_id=duel_id, actor_id=callback.from_user.id)
             builder = InlineKeyboardBuilder()
-            builder.button(text="🎯 Прицелиться", callback_data=f"duel_aim_{duel_id}")
+            builder.button(text="🎯 Прицелиться (+10%)", callback_data=f"duel_aim_{duel_id}")
             builder.button(text="💥 Выстрелить", callback_data=f"duel_shoot_{duel_id}")
             builder.adjust(2)
+
+            from app.db.models import Player
+            curr_p = await session.get(Player, resp.current_turn_user_id)
+            turn_name = curr_p.first_name if curr_p else f"ID {resp.current_turn_user_id}"
 
             await callback.message.edit_text(
                 f"⚔️ <b>ДУЭЛЬ</b>\n\n"
                 f"{resp.message}\n\n"
-                f"👉 Сейчас ход игрока ID <code>{resp.current_turn_user_id}</code>!",
+                f"👉 Сейчас ход дуэлянта: <b>{turn_name}</b>!",
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML",
             )
@@ -239,23 +343,30 @@ async def on_duel_shoot(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             resp = await duel_shoot(session, session_id=duel_id, actor_id=callback.from_user.id)
+            from app.db.models import Player
             if resp.is_finished:
+                winner_p = await session.get(Player, resp.winner_id)
+                win_name = winner_p.first_name if winner_p else f"ID {resp.winner_id}"
                 await callback.message.edit_text(
                     f"🏆 <b>ДУЭЛЬ ЗАВЕРШЕНА!</b>\n\n"
-                    f"{resp.message}\n"
-                    f"👑 Победитель: игрок ID <code>{resp.winner_id}</code> забирает весь банк!",
+                    f"{resp.message}\n\n"
+                    f"👑 <b>Победитель: {win_name}!</b>\n"
+                    f"💰 Он забирает весь призовой банк себе!",
                     parse_mode="HTML",
                 )
             else:
                 builder = InlineKeyboardBuilder()
-                builder.button(text="🎯 Прицелиться", callback_data=f"duel_aim_{duel_id}")
+                builder.button(text="🎯 Прицелиться (+10%)", callback_data=f"duel_aim_{duel_id}")
                 builder.button(text="💥 Выстрелить", callback_data=f"duel_shoot_{duel_id}")
                 builder.adjust(2)
+
+                curr_p = await session.get(Player, resp.current_turn_user_id)
+                turn_name = curr_p.first_name if curr_p else f"ID {resp.current_turn_user_id}"
 
                 await callback.message.edit_text(
                     f"⚔️ <b>ДУЭЛЬ</b>\n\n"
                     f"{resp.message}\n\n"
-                    f"👉 Сейчас ход игрока ID <code>{resp.current_turn_user_id}</code>!",
+                    f"👉 Сейчас ход дуэлянта: <b>{turn_name}</b>!",
                     reply_markup=builder.as_markup(),
                     parse_mode="HTML",
                 )

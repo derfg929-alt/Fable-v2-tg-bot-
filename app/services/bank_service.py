@@ -68,16 +68,16 @@ def _validate_amount(amount: int) -> None:
 
 
 def get_interest_rate(balance: int) -> Decimal:
-    """Возвращает суточную ставку по размеру вклада до начисления."""
+    """Возвращает суточную ставку по размеру вклада до начисления (пониженная ставка, монеты ценее)."""
     if balance < 0:
         raise ValueError("Банковский баланс не может быть отрицательным")
     if balance <= 10_000:
-        return Decimal("0.05")
+        return Decimal("0.01")
     if balance <= 50_000:
-        return Decimal("0.03")
+        return Decimal("0.005")
     if balance <= 100_000:
-        return Decimal("0.015")
-    return Decimal("0.005")
+        return Decimal("0.002")
+    return Decimal("0.001")
 
 
 def _period_start(value: datetime | date | None = None) -> datetime:

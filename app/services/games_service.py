@@ -19,7 +19,7 @@ from typing import Literal
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import GameSession, GlobalSetting, Player
+from app.db.models import DailyBonus, GameSession, GlobalSetting, Player
 from app.services.economy_service import (
     burn_coins,
     credit_coins,
@@ -27,6 +27,134 @@ from app.services.economy_service import (
     InvalidAmountError,
     PlayerNotFoundError,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class DailyBonusResult:
+    reward_coins: int
+    reward_exp: int
+    streak: int
+    message: str
+
+
+async def claim_daily_bonus(session: AsyncSession, *, user_id: int) -> DailyBonusResult:
+    """Ежедневный бонус раз в 24 часа со стриками."""
+    now = datetime.now(timezone.utc)
+    bonus_row = await session.scalar(
+        select(DailyBonus).where(DailyBonus.user_id == user_id).with_for_update()
+    )
+    streak = 1
+    if bonus_row:
+        elapsed = (now - bonus_row.last_claimed_at).total_seconds()
+        if elapsed < 86400:  # 24 часа
+            remaining = int(86400 - elapsed)
+            hours = remaining // 3600
+            mins = (remaining % 3600) // 60
+            raise GameCooldownError(f"Вы уже забрали ежедневный бонус! Следующий доступен через {hours} ч. {mins} мин.")
+        elif elapsed <= 172800:  # 48 часов - сохраняем стрик
+            streak = bonus_row.streak + 1
+        else:
+            streak = 1
+        bonus_row.streak = streak
+        bonus_row.last_claimed_at = now
+    else:
+        bonus_row = DailyBonus(user_id=user_id, streak=1, last_claimed_at=now)
+        session.add(bonus_row)
+
+    # Базовая награда 500 монет + 100 за каждый день стрика (макс 2 500)
+    coins = min(2500, 500 + (streak - 1) * 100)
+    exp = 25 * streak
+
+    await credit_coins(
+        session,
+        user_id=user_id,
+        amount=coins,
+        reason=f"Ежедневный бонус (день {streak})",
+        operation_type="daily_bonus",
+    )
+
+    player = await session.get(Player, user_id)
+    if player:
+        player.experience += exp
+
+    msg = (
+        f"🎁 <b>ЕЖЕДНЕВНЫЙ БОНУС ПОЛУЧЕН!</b>\n\n"
+        f"🔥 Серия входов: <b>{streak} день подряд!</b>\n"
+        f"💰 Награда: <b>+{coins:,}</b> монет\n"
+        f"✨ Опыт: <b>+{exp}</b> XP\n\n"
+        f"<i>Возвращайтесь завтра, чтобы увеличить награду!</i>"
+    ).replace(",", " ")
+
+    await session.flush()
+    return DailyBonusResult(reward_coins=coins, reward_exp=exp, streak=streak, message=msg)
+
+
+# ===================== МИНИ-ИГРЫ =====================
+
+async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple[int, int, bool, int]:
+    """Кости: бросок игрока vs бота. Возвращает (player_roll, bot_roll, is_win, payout)."""
+    if stake <= 0:
+        raise InvalidAmountError("Ставка должна быть больше нуля")
+    player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
+    if not player or player.wallet < stake:
+        raise InsufficientFundsError("Недостаточно монет для ставки")
+
+    await burn_coins(session, user_id=user_id, amount=stake, reason="Ставка в костях", operation_type="game_dice_stake")
+
+    p_roll = random.randint(1, 6)
+    b_roll = random.randint(1, 6)
+
+    is_win = p_roll > b_roll
+    is_draw = p_roll == b_roll
+    payout = 0
+
+    if is_win:
+        payout = int(stake * 2)
+        await credit_coins(session, user_id=user_id, amount=payout, reason="Выигрыш в костях", operation_type="game_dice_win")
+    elif is_draw:
+        payout = stake
+        await credit_coins(session, user_id=user_id, amount=payout, reason="Ничья в костях (возврат)", operation_type="game_dice_refund")
+
+    return p_roll, b_roll, is_win, payout
+
+
+async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, stake: int) -> tuple[str, bool, int]:
+    """Монетка: орел или решка. Возвращает (outcome, is_win, payout)."""
+    if stake <= 0:
+        raise InvalidAmountError("Ставка должна быть больше нуля")
+    player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
+    if not player or player.wallet < stake:
+        raise InsufficientFundsError("Недостаточно монет для ставки")
+
+    await burn_coins(session, user_id=user_id, amount=stake, reason="Ставка в монетке", operation_type="game_coinflip_stake")
+
+    outcome = random.choice(["орел", "решка"])
+    is_win = (choice.lower() in ("орел", "орёл", "heads") and outcome == "орел") or \
+             (choice.lower() in ("решка", "tails") and outcome == "решка")
+
+    payout = int(stake * 1.95) if is_win else 0
+    if is_win:
+        await credit_coins(session, user_id=user_id, amount=payout, reason="Выигрыш в монетке", operation_type="game_coinflip_win")
+
+    return outcome, is_win, payout
+
+
+async def play_mystery_box(session: AsyncSession, *, user_id: int, stake: int) -> tuple[float, int]:
+    """Таинственный сундук: коэффициент от 0x до 5x. Возвращает (multiplier, payout)."""
+    if stake <= 0:
+        raise InvalidAmountError("Ставка должна быть больше нуля")
+    player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
+    if not player or player.wallet < stake:
+        raise InsufficientFundsError("Недостаточно монет для ставки")
+
+    await burn_coins(session, user_id=user_id, amount=stake, reason="Открытие сундука", operation_type="game_box_stake")
+
+    mult = random.choices([0.0, 0.5, 1.2, 1.8, 2.5, 5.0], weights=[0.30, 0.25, 0.20, 0.15, 0.08, 0.02])[0]
+    payout = int(stake * mult)
+    if payout > 0:
+        await credit_coins(session, user_id=user_id, amount=payout, reason=f"Выигрыш в сундуке (x{mult})", operation_type="game_box_win")
+
+    return mult, payout
 
 
 class GameError(Exception):
@@ -102,8 +230,8 @@ async def play_fishing(session: AsyncSession, *, user_id: int) -> FishingResult:
     if not player:
         raise PlayerNotFoundError(f"Игрок с ID {user_id} не найден")
 
-    # Проверка кулдауна (60 сек по умолчанию)
-    cooldown_seconds = 60
+    # Проверка кулдауна (1 час = 3600 сек)
+    cooldown_seconds = 3600
     last_game = await session.scalar(
         select(GameSession)
         .where(
@@ -117,8 +245,10 @@ async def play_fishing(session: AsyncSession, *, user_id: int) -> FishingResult:
     if last_game and last_game.created_at:
         elapsed = (now - last_game.created_at).total_seconds()
         if elapsed < cooldown_seconds:
-            remaining = int(cooldown_seconds - elapsed)
-            raise GameCooldownError(f"Рыбачить можно через {remaining} сек.")
+            rem = int(cooldown_seconds - elapsed)
+            mins = rem // 60
+            secs = rem % 60
+            raise GameCooldownError(f"Рыбачить можно через {mins} мин. {secs} сек.")
 
     # Выбор улова
     r = random.random()
@@ -168,7 +298,7 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
     if not player:
         raise PlayerNotFoundError(f"Игрок с ID {user_id} не найден")
 
-    cooldown_seconds = 60
+    cooldown_seconds = 3600
     last_game = await session.scalar(
         select(GameSession)
         .where(
@@ -182,8 +312,10 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
     if last_game and last_game.created_at:
         elapsed = (now - last_game.created_at).total_seconds()
         if elapsed < cooldown_seconds:
-            remaining = int(cooldown_seconds - elapsed)
-            raise GameCooldownError(f"На охоту можно отправиться через {remaining} сек.")
+            rem = int(cooldown_seconds - elapsed)
+            mins = rem // 60
+            secs = rem % 60
+            raise GameCooldownError(f"На охоту можно отправиться через {mins} мин. {secs} сек.")
 
     r = random.random()
     cumulative = 0.0

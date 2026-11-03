@@ -33,13 +33,27 @@ from app.services.help_service import get_greeting_text
 router = Router(name="extended_moderation_router")
 
 
-def _get_target_user_id(message: types.Message) -> int | None:
+async def _get_target_user_id(message: types.Message, session) -> int | None:
     if message.reply_to_message and message.reply_to_message.from_user:
         return message.reply_to_message.from_user.id
     if message.entities:
         for ent in message.entities:
             if ent.type == "text_mention" and ent.user:
                 return ent.user.id
+    import re
+    text = message.text or ""
+    match = re.search(r"@([a-zA-Z0-9_]+)", text)
+    if match:
+        uname = match.group(1).lower()
+        from app.db.models import Player
+        from sqlalchemy import select, func
+        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
+        if p:
+            return p.telegram_id
+    parts = text.split()
+    for part in parts[1:]:
+        if part.isdigit() and len(part) >= 6:
+            return int(part)
     return None
 
 
@@ -106,13 +120,14 @@ async def on_new_chat_member(event: types.ChatMemberUpdated, bot: Bot):
 async def handle_kick(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
-    target_id = _get_target_user_id(message)
-    if not target_id:
-        await message.reply("Использование: ответом на сообщение <code>кик [причина]</code>", parse_mode="HTML")
-        return
-
-    reason = " ".join((message.text or "").split()[1:]) or "Исключение модератором"
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
+        if not target_id:
+            await message.reply("Использование: ответом на сообщение <code>кик [причина]</code> или <code>кик @user [причина]</code>", parse_mode="HTML")
+            return
+
+        parts = (message.text or "").split()
+        reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Исключение модератором"
         try:
             await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="kick", reason=reason)
             try:
@@ -129,13 +144,14 @@ async def handle_kick(message: types.Message, bot: Bot):
 async def handle_ban(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
-    target_id = _get_target_user_id(message)
-    if not target_id:
-        await message.reply("Использование: ответом на сообщение <code>бан [причина]</code>", parse_mode="HTML")
-        return
-
-    reason = " ".join((message.text or "").split()[1:]) or "Блокировка модератором"
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
+        if not target_id:
+            await message.reply("Использование: ответом на сообщение <code>бан [причина]</code> или <code>бан @user [причина]</code>", parse_mode="HTML")
+            return
+
+        parts = (message.text or "").split()
+        reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Блокировка модератором"
         try:
             await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="ban", reason=reason)
             try:
@@ -151,10 +167,11 @@ async def handle_ban(message: types.Message, bot: Bot):
 async def handle_unban(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
-    target_id = _get_target_user_id(message)
-    if not target_id:
-        return
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
+        if not target_id:
+            await message.reply("Использование: ответом на сообщение <code>разбан</code> или <code>разбан @user</code>", parse_mode="HTML")
+            return
         try:
             lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
             if lvl < 3:
@@ -291,18 +308,18 @@ async def handle_admin_appoint(message: types.Message):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
     parts = (message.text or "").split()
-    target_id = _get_target_user_id(message)
     lvl_val = None
     for p in reversed(parts):
-        if p.isdigit():
+        if p.isdigit() and int(p) <= 5:
             lvl_val = int(p)
             break
 
-    if not target_id or not lvl_val:
-        await message.reply("Использование: ответом на сообщение <code>админ назначить 3</code>", parse_mode="HTML")
-        return
-
     async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session)
+        if not target_id or not lvl_val:
+            await message.reply("Использование: ответом на сообщение <code>админ назначить 3</code> или <code>админ назначить @user 3</code>", parse_mode="HTML")
+            return
+
         try:
             new_lvl = await set_admin_level(session, chat_id=message.chat.id, actor_id=message.from_user.id, target_id=target_id, new_level=lvl_val)
             await message.reply(f"👑 Пользователю ID <code>{target_id}</code> установлен уровень {new_lvl} ({ROLE_NAMES[new_lvl]})!", parse_mode="HTML")
