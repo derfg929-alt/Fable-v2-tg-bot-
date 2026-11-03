@@ -366,3 +366,40 @@ async def on_preset_select(callback: types.CallbackQuery):
             await callback.message.edit_text(f"✅ Для чата успешно применен пресет: <b>{preset_name.upper()}</b>!", parse_mode="HTML")
         except Exception as e:
             await callback.answer(f"❌ {e}", show_alert=True)
+
+# ===================== ОЧИСТКА СООБЩЕНИЙ =====================
+
+@router.message(F.text.casefold().startswith("очистить"))
+async def handle_purge(message: types.Message, bot: Bot):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.reply("Использование: <code>очистить 50</code>", parse_mode="HTML")
+        return
+
+    count = min(100, int(parts[1]))
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
+        if lvl < 2:
+            await message.reply("Для очистки сообщений требуется уровень Модератора (ур. 2+)")
+            return
+
+        deleted = 0
+        curr_id = message.message_id
+        # Пытаемся удалить последние count сообщений
+        for msg_id in range(curr_id, max(1, curr_id - count - 1), -1):
+            try:
+                await bot.delete_message(chat_id=message.chat.id, message_id=msg_id)
+                deleted += 1
+            except Exception:
+                pass
+
+        resp = await message.answer(f"🧹 Удалено сообщений: {deleted}")
+        # Удаляем само сервисное сообщение через 5 секунд
+        import asyncio
+        await asyncio.sleep(5)
+        try:
+            await resp.delete()
+        except Exception:
+            pass

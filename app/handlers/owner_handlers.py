@@ -155,3 +155,50 @@ async def on_reset_economy_confirm(callback: types.CallbackQuery):
 @router.callback_query(F.data == "owner_eco_reset_cancel")
 async def on_reset_economy_cancel(callback: types.CallbackQuery):
     await callback.message.edit_text("Сброс экономики отменен.")
+
+# ===================== РАССЫЛКА ВЛАДЕЛЬЦА =====================
+
+@router.message(F.text.casefold().startswith("рассылка"))
+async def handle_owner_broadcast(message: types.Message, bot: types.Bot):
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    text = message.text[len("рассылка"):].strip()
+    if not text:
+        await message.reply("Использование: <code>рассылка [текст сообщения]</code>", parse_mode="HTML")
+        return
+
+    async with session_scope() as session:
+        chats = await list_chats_summary(session, owner_id=message.from_user.id)
+        active_chats = [c for c in chats if c.is_active]
+
+        sent = 0
+        failed = 0
+        details = {}
+
+        for c in active_chats:
+            try:
+                await bot.send_message(chat_id=c.telegram_id, text=f"📢 <b>ОБЪЯВЛЕНИЕ ОТ ВЛАДЕЛЬЦА FABLE:</b>\n\n{text}", parse_mode="HTML")
+                sent += 1
+                details[str(c.telegram_id)] = "sent"
+            except Exception as e:
+                failed += 1
+                details[str(c.telegram_id)] = f"failed: {e}"
+
+        from app.services.owner_service import record_owner_broadcast
+        await record_owner_broadcast(
+            session,
+            owner_id=message.from_user.id,
+            text=text,
+            total_chats=len(active_chats),
+            sent_count=sent,
+            failed_count=failed,
+            results=details,
+        )
+
+        await message.reply(
+            f"📢 <b>Рассылка завершена!</b>\n\n"
+            f"Всего активных чатов: {len(active_chats)}\n"
+            f"Успешно доставлено: {sent}\n"
+            f"Ошибок: {failed}",
+            parse_mode="HTML",
+        )

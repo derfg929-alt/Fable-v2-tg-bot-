@@ -307,3 +307,32 @@ async def handle_admin_list(message: types.Message):
         for p, lvl, role in admins:
             lines.append(f"• <b>{p.first_name}</b> — Уровень {lvl} ({role})")
         await message.reply("\n".join(lines), parse_mode="HTML")
+
+@router.callback_query(F.data == "top_menu_rich")
+async def on_top_menu_rich(callback: types.CallbackQuery):
+    async with session_scope() as session:
+        rich = await get_top_rich(session, limit=10)
+        lines = ["💰 <b>Топ богатых (глобальный):</b>\n"]
+        for r in rich:
+            lines.append(f"{r.rank}. <b>{r.name}</b> — {r.total_wealth} монет")
+        await callback.message.edit_text("\n".join(lines) if rich else "Рейтинг пуст.", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "top_menu_active")
+async def on_top_menu_active(callback: types.CallbackQuery):
+    async with session_scope() as session:
+        active = await get_top_active(session, limit=10)
+        lines = ["🔥 <b>Топ активных (глобальный):</b>\n"]
+        for a in active:
+            lines.append(f"{a.rank}. <b>{a.name}</b> — {a.activity_points} очков")
+        await callback.message.edit_text("\n".join(lines) if active else "Рейтинг пуст.", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "top_menu_clans")
+async def on_top_menu_clans(callback: types.CallbackQuery):
+    async with session_scope() as session:
+        clans = await get_top_clans(session, limit=10)
+        lines = ["🛡 <b>Топ кланов (глобальный):</b>\n"]
+        for c in clans:
+            lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
+        await callback.message.edit_text("\n".join(lines) if clans else "Рейтинг пуст.", parse_mode="HTML")
