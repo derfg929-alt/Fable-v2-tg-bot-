@@ -10,7 +10,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.config import get_settings
-from app.db.session import check_database_connection, dispose_engine
+# ДОБАВЛЕНО: engine и Base для создания таблиц
+from app.db.session import check_database_connection, dispose_engine, engine, Base
 from app.handlers.economy_handlers import router as economy_router
 from app.handlers.exchange_handlers import router as exchange_router
 from app.handlers.games_handlers import router as games_router
@@ -22,6 +23,11 @@ from app.tasks.background import (
     background_bank_interest_worker,
     background_market_maker_worker,
 )
+
+# ВАЖНО: Импортируем модели, чтобы SQLAlchemy создала для них таблицы.
+# Если бот упадет с ошибкой ModuleNotFoundError на этих строках, 
+# значит файлы в папке models называются иначе. Тогда удали эти 2 строки.
+import app.models 
 
 logger = logging.getLogger("fable")
 
@@ -52,7 +58,21 @@ async def main() -> None:
     if not await check_database_connection():
         logger.critical("Не удалось подключиться к базе данных PostgreSQL!")
         sys.exit(1)
+    
     logger.info("Подключение к PostgreSQL успешно.")
+
+    # ==========================================
+    # БЛОК СОЗДАНИЯ ТАБЛИЦ (ДОБАВЛЕНО)
+    # ==========================================
+    logger.info("Проверка и создание таблиц в базе данных...")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Все таблицы успешно созданы/проверены.")
+    except Exception as e:
+        logger.error(f"Ошибка при создании таблиц: {e}")
+        sys.exit(1)
+    # ==========================================
 
     bot = Bot(
         token=settings.bot_token_value,
