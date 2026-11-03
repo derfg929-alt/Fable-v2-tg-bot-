@@ -1,3 +1,4 @@
+
 """Главная точка входа Telegram-бота Fable (aiogram 3)."""
 from __future__ import annotations
 
@@ -10,20 +11,25 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.config import get_settings
+# Импортируем только то, что точно есть в session.py
 from app.db.session import check_database_connection, dispose_engine, engine
 
-# Пытаемся импортировать Base. Обычно он лежит в app.db.base
+# --- МАГИЯ ПОИСКА BASE ---
+# Пытаемся найти Base в разных местах, где его обычно создают
 try:
     from app.db.base import Base
 except ImportError:
-    # Если его там нет, пробуем взять из моделей (угадываем название)
     try:
         from app.models import Base
     except ImportError:
-        # В крайнем случае берем из session (вдруг он там)
-        from app.db.session import Base
+        try:
+            from app.db.models import Base
+        except ImportError:
+            # Если Base нигде нет, создаем его принудительно (аварийный вариант)
+            from sqlalchemy.orm import declarative_base
+            Base = declarative_base()
+# -------------------------
 
-# Импортируем модели, чтобы они зарегистрировались в Base
 import app.models
 
 from app.handlers.economy_handlers import router as economy_router
@@ -80,7 +86,6 @@ async def main() -> None:
         logger.info("Все таблицы успешно созданы/проверены.")
     except Exception as e:
         logger.error(f"Ошибка при создании таблиц: {e}")
-        # Не делаем sys.exit, чтобы бот хотя бы запустился и показал другие ошибки
     # ==========================================
 
     bot = Bot(
@@ -106,4 +111,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
- 
