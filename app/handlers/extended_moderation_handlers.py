@@ -1,0 +1,368 @@
+"""Расширенные обработчики модерации, капчи, новых участников и локальной админ-панели."""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from aiogram import Router, types, F, Bot
+from aiogram.enums import ChatType, ChatMemberStatus
+from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, IS_MEMBER, IS_NOT_MEMBER
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from app.db.session import session_scope
+from app.db.models import ChatAdmin
+from app.services.player_service import get_or_create_player
+from app.services.moderation_service import (
+    get_user_admin_level,
+    set_admin_level,
+    record_ban_or_kick,
+    add_link_whitelist,
+    remove_link_whitelist,
+    list_link_whitelist,
+    parse_duration_string,
+    ROLE_NAMES,
+)
+from app.services.chat_settings_service import (
+    get_or_create_chat,
+    update_chat_setting,
+    apply_chat_preset,
+    create_captcha,
+    create_report,
+    handle_report,
+)
+
+router = Router(name="extended_moderation_router")
+
+
+def _get_target_user_id(message: types.Message) -> int | None:
+    if message.reply_to_message and message.reply_to_message.from_user:
+        return message.reply_to_message.from_user.id
+    if message.entities:
+        for ent in message.entities:
+            if ent.type == "text_mention" and ent.user:
+                return ent.user.id
+    return None
+
+
+# ===================== ВХОД НОВОГО УЧАСТНИКА / ПРИВЕТСТВИЕ И КАПЧА =====================
+
+@router.chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
+async def on_new_chat_member(event: types.ChatMemberUpdated, bot: Bot):
+    chat = event.chat
+    new_user = event.new_chat_member.user
+    if new_user.is_bot:
+        return
+
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=new_user.id, first_name=new_user.first_name, username=new_user.username)
+        chat_db = await get_or_create_chat(session, chat_id=chat.id, title=chat.title or "")
+        settings = chat_db.settings or {}
+
+        # 1. Проверка капчи
+        if settings.get("captcha_enabled", False):
+            ch = await create_captcha(session, chat_id=chat.id, user_id=new_user.id)
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🤖 Я человек (пройти капчу)", callback_data=f"captcha_solve_{ch.challenge_token}")
+            await bot.send_message(
+                chat_id=chat.id,
+                text=f"👋 Привет, {new_user.first_name}! Пройди капчу в течение 2 минут, нажав кнопку ниже.",
+                reply_markup=builder.as_markup(),
+            )
+            return
+
+        # 2. Приветствие
+        if settings.get("welcome_enabled", True):
+            tpl = settings.get("welcome_text", "Добро пожаловать, {name}!\nЯ Хранитель, настроить — настройки, правила — правила, команды — команды.")
+            welcome_msg = tpl.replace("{name}", new_user.first_name)
+            await bot.send_message(chat_id=chat.id, text=welcome_msg)
+
+
+# ===================== КИК / БАН / РАЗБАН =====================
+
+@router.message(F.text.casefold().startswith("кик"))
+async def handle_kick(message: types.Message, bot: Bot):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    target_id = _get_target_user_id(message)
+    if not target_id:
+        await message.reply("Использование: ответом на сообщение <code>кик [причина]</code>", parse_mode="HTML")
+        return
+
+    reason = " ".join((message.text or "").split()[1:]) or "Исключение модератором"
+    async with session_scope() as session:
+        try:
+            await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="kick", reason=reason)
+            try:
+                await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id)
+                await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_id)
+            except Exception:
+                pass
+            await message.reply(f"👢 Пользователь ID <code>{target_id}</code> исключен из чата. Причина: {reason}", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("бан"))
+async def handle_ban(message: types.Message, bot: Bot):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    target_id = _get_target_user_id(message)
+    if not target_id:
+        await message.reply("Использование: ответом на сообщение <code>бан [причина]</code>", parse_mode="HTML")
+        return
+
+    reason = " ".join((message.text or "").split()[1:]) or "Блокировка модератором"
+    async with session_scope() as session:
+        try:
+            await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="ban", reason=reason)
+            try:
+                await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id)
+            except Exception:
+                pass
+            await message.reply(f"⛔️ Пользователь ID <code>{target_id}</code> заблокирован в чате. Причина: {reason}", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("разбан"))
+async def handle_unban(message: types.Message, bot: Bot):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    target_id = _get_target_user_id(message)
+    if not target_id:
+        return
+    async with session_scope() as session:
+        try:
+            lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
+            if lvl < 3:
+                await message.reply("Для разбана требуется уровень 3 (Админ)")
+                return
+            try:
+                await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_id, only_if_banned=True)
+            except Exception:
+                pass
+            await message.reply(f"✅ Пользователь ID <code>{target_id}</code> разблокирован в чате.", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+# ===================== ЗАМОРОЗКА И СЛОУМОД =====================
+
+@router.message(F.text.casefold().startswith("заморозка"))
+async def handle_freeze(message: types.Message):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    text = (message.text or "").strip().casefold()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
+        if lvl < 3:
+            await message.reply("Управлять заморозкой может Админ (ур. 3+)")
+            return
+
+        if "выкл" in text:
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=None, min_level=3)
+            await message.reply("🔓 Заморозка чата снята. Участники снова могут писать сообщения.")
+            return
+
+        parts = text.split()
+        dur_str = parts[2] if len(parts) >= 3 else "10м"
+        try:
+            dur = parse_duration_string(dur_str)
+            until = datetime.now(timezone.utc) + dur
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=until.isoformat(), min_level=3)
+            await message.reply(f"❄️ Чат заморожен на {dur_str}. Обычные участники временно не могут отправлять сообщения.")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("слоумод"))
+async def handle_slowmode(message: types.Message, bot: Bot):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    text = (message.text or "").strip().casefold()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
+        if lvl < 3:
+            await message.reply("Управлять слоумодом может Админ (ур. 3+)")
+            return
+
+        if "выкл" in text:
+            try:
+                await bot.set_chat_slow_mode_delay(chat_id=message.chat.id, slow_mode_delay=0)
+            except Exception:
+                pass
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="slowmode_seconds", value=0, min_level=3)
+            await message.reply("🚀 Слоумод отключен.")
+            return
+
+        parts = text.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            sec = int(parts[1])
+            try:
+                await bot.set_chat_slow_mode_delay(chat_id=message.chat.id, slow_mode_delay=sec)
+            except Exception:
+                pass
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="slowmode_seconds", value=sec, min_level=3)
+            await message.reply(f"🐢 Слоумод установлен на {sec} сек.")
+
+
+# ===================== РЕПОРТЫ =====================
+
+@router.message(F.text.casefold().startswith("репорт"))
+async def handle_report_cmd(message: types.Message):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    target_id = _get_target_user_id(message)
+    reason = " ".join((message.text or "").split()[1:]) or "Жалоба на нарушение"
+
+    async with session_scope() as session:
+        rep = await create_report(
+            session,
+            chat_id=message.chat.id,
+            reporter_id=message.from_user.id,
+            target_id=target_id,
+            reason=reason,
+            message_id=message.reply_to_message.message_id if message.reply_to_message else None,
+            message_text=message.reply_to_message.text if message.reply_to_message else None,
+        )
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Принять", callback_data=f"rep_acc_{rep.id}")
+        builder.button(text="❌ Отклонить", callback_data=f"rep_rej_{rep.id}")
+        builder.adjust(2)
+
+        await message.reply(
+            f"🚩 <b>Создан тикет жалобы #{rep.id}</b>\n"
+            f"Причина: {reason}\n"
+            f"Модераторы уведомлены.",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data.startswith("rep_acc_"))
+async def on_report_accept(callback: types.CallbackQuery):
+    rep_id = int(callback.data.split("_")[2])
+    async with session_scope() as session:
+        try:
+            await handle_report(session, report_id=rep_id, moderator_id=callback.from_user.id, resolution="accepted")
+            await callback.message.edit_text(f"🚩 Жалоба #{rep_id} ПРИНЯТА модератором ID {callback.from_user.id}.")
+        except Exception as e:
+            await callback.answer(f"❌ {e}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("rep_rej_"))
+async def on_report_reject(callback: types.CallbackQuery):
+    rep_id = int(callback.data.split("_")[2])
+    async with session_scope() as session:
+        try:
+            await handle_report(session, report_id=rep_id, moderator_id=callback.from_user.id, resolution="rejected")
+            await callback.message.edit_text(f"🚩 Жалоба #{rep_id} ОТКЛОНЕНА модератором ID {callback.from_user.id}.")
+        except Exception as e:
+            await callback.answer(f"❌ {e}", show_alert=True)
+
+
+# ===================== НАЗНАЧЕНИЕ АДМИНОВ / ССЫЛКИ / НАСТРОЙКИ ЧАТА =====================
+
+@router.message(F.text.casefold().startswith("админ назначить"))
+async def handle_admin_appoint(message: types.Message):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    parts = (message.text or "").split()
+    target_id = _get_target_user_id(message)
+    lvl_val = None
+    for p in reversed(parts):
+        if p.isdigit():
+            lvl_val = int(p)
+            break
+
+    if not target_id or not lvl_val:
+        await message.reply("Использование: ответом на сообщение <code>админ назначить 3</code>", parse_mode="HTML")
+        return
+
+    async with session_scope() as session:
+        try:
+            new_lvl = await set_admin_level(session, chat_id=message.chat.id, actor_id=message.from_user.id, target_id=target_id, new_level=lvl_val)
+            await message.reply(f"👑 Пользователю ID <code>{target_id}</code> установлен уровень {new_lvl} ({ROLE_NAMES[new_lvl]})!", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("ссылки"))
+async def handle_whitelist(message: types.Message):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    parts = (message.text or "").split()
+    if len(parts) == 1 or parts[1].casefold() == "список":
+        async with session_scope() as session:
+            domains = await list_link_whitelist(session, chat_id=message.chat.id)
+            if not domains:
+                await message.reply("Белый список доменов пуст (все ссылки блокируются).")
+                return
+            lines = ["🌐 <b>Белый список ссылок чата:</b>\n"]
+            for d in domains:
+                lines.append(f"• <code>{d}</code>")
+            await message.reply("\n".join(lines), parse_mode="HTML")
+            return
+
+    cmd = parts[1].casefold()
+    if cmd in ("добавить", "add") and len(parts) >= 3:
+        domain = parts[2]
+        async with session_scope() as session:
+            try:
+                await add_link_whitelist(session, chat_id=message.chat.id, admin_id=message.from_user.id, domain=domain)
+                await message.reply(f"✅ Домен <code>{domain}</code> добавлен в белый список.", parse_mode="HTML")
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+    if cmd in ("удалить", "del") and len(parts) >= 3:
+        domain = parts[2]
+        async with session_scope() as session:
+            try:
+                ok = await remove_link_whitelist(session, chat_id=message.chat.id, admin_id=message.from_user.id, domain=domain)
+                await message.reply("✅ Домен удален из белого списка." if ok else "Домен не найден в белом списке.")
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+
+@router.message(F.text.casefold().in_(["настройки", "!настройки"]))
+async def handle_chat_settings_panel(message: types.Message):
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
+        if lvl < 3:
+            await message.reply("Панель настроек доступна администраторам уровня 3+")
+            return
+
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        s = chat.settings or {}
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🛡 Строгий пресет", callback_data=f"preset_strict_{message.chat.id}")
+        builder.button(text="⚖️ Обычный пресет", callback_data=f"preset_normal_{message.chat.id}")
+        builder.button(text="🏖 Казуальный", callback_data=f"preset_casual_{message.chat.id}")
+        builder.adjust(3)
+
+        text = (
+            f"⚙️ <b>Панель настроек чата «{message.chat.title}»</b>\n\n"
+            f"Текущий пресет: <b>{s.get('preset', 'normal')}</b>\n"
+            f"Антиссылки: <b>{'Вкл' if s.get('links_restricted', True) else 'Выкл'}</b>\n"
+            f"Капча при входе: <b>{'Вкл' if s.get('captcha_enabled', False) else 'Выкл'}</b>\n"
+            f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required', False) else 'Выкл'}</b>\n"
+            f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n\n"
+            f"<i>Выберите пресет для быстрой настройки:</i>"
+        )
+        await message.reply(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("preset_"))
+async def on_preset_select(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    preset_name = parts[1]
+    chat_id = int(parts[2])
+    async with session_scope() as session:
+        try:
+            await apply_chat_preset(session, chat_id=chat_id, admin_id=callback.from_user.id, preset_name=preset_name)
+            await callback.message.edit_text(f"✅ Для чата успешно применен пресет: <b>{preset_name.upper()}</b>!", parse_mode="HTML")
+        except Exception as e:
+            await callback.answer(f"❌ {e}", show_alert=True)
