@@ -47,13 +47,12 @@ def create_dispatcher() -> Dispatcher:
     dp = Dispatcher()
     
     # --- ОБРАБОТЧИК START ---
+    from app.services.help_service import get_greeting_text
+
     @dp.message(CommandStart())
+    @dp.message(F.text.casefold().in_(["старт", "!старт"]))
     async def cmd_start(message: types.Message):
-        text = (
-            "🎮 Я — твой игровой и модерационный бот. Здесь ты можешь зарабатывать монеты, "
-            "качать уровень, играть в игры и следить за порядком в чате."
-        )
-        await message.answer(text, parse_mode="HTML")
+        await message.answer(get_greeting_text(), parse_mode="HTML")
     # ------------------------------------
 
     dp.include_router(owner_router)
