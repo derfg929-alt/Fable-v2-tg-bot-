@@ -13,6 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.db.session import session_scope
 from app.services.player_service import get_or_create_player
+from app.services.economy_service import credit_coins
 from app.services.games_service import (
     play_fishing,
     play_hunting,
