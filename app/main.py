@@ -105,7 +105,9 @@ async def main() -> None:
     # Запуск фоновых задач
     bank_task = asyncio.create_task(background_bank_interest_worker(interval_seconds=3600))
     mm_task = asyncio.create_task(background_market_maker_worker(interval_seconds=60))
-    engagement_task = asyncio.create_task(background_engagement_worker(bot, interval_seconds=7200))
+    engagement_task = asyncio.create_task(
+        background_engagement_worker(bot, min_interval_seconds=10800, max_interval_seconds=21600)
+    )
 
     logger.info("Запуск Telegram-бота Fable в режиме Long Polling...")
     try:

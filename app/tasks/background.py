@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import logging
+import random
 from aiogram import Bot
 
 from app.db.session import session_scope
@@ -47,15 +48,28 @@ async def background_market_maker_worker(interval_seconds: int = 30) -> None:
         await asyncio.sleep(interval_seconds)
 
 
-async def background_engagement_worker(bot: Bot, interval_seconds: int = 7200) -> None:
-    """Периодически отправляет байты и напоминания в ЛС и чаты, чтобы бот не забывался."""
+async def background_engagement_worker(
+    bot: Bot,
+    interval_seconds: int | None = None,
+    min_interval_seconds: int = 10800,
+    max_interval_seconds: int = 21600,
+) -> None:
+    """Периодически (раз в 3-6 часов) отправляет интерактивные байты в случайные чаты и напоминания в ЛС."""
     while True:
+        sleep_duration = (
+            interval_seconds
+            if interval_seconds is not None
+            else random.randint(min_interval_seconds, max_interval_seconds)
+        )
         try:
             async with session_scope() as session:
                 dm_count = await process_dm_baits(session, bot)
                 chat_count = await process_chat_baits(session, bot)
                 if dm_count > 0 or chat_count > 0:
-                    logger.info(f"Engagement worker: отправлено {dm_count} ЛС-напоминаний и {chat_count} байтов в чаты.")
+                    logger.info(
+                        f"Engagement worker: отправлено {dm_count} ЛС-напоминаний и {chat_count} байтов в чаты. "
+                        f"Следующий запуск через {sleep_duration // 3600} ч {(sleep_duration % 3600) // 60} мин."
+                    )
         except Exception as e:
             logger.error(f"Ошибка в воркере вовлечения: {e}")
-        await asyncio.sleep(interval_seconds)
+        await asyncio.sleep(sleep_duration)
