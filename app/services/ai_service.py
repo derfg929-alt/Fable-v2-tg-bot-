@@ -25,8 +25,12 @@ async def ask_grok(
     chat_history: list[dict[str, str]] | None = None,
 ) -> str:
     """Отправляет запрос к Grok API (xAI) и возвращает сгенерированный ответ."""
-    settings = get_settings()
-    api_key = settings.grok_api_key_value
+    try:
+        settings = get_settings()
+        api_key = getattr(settings, "grok_api_key_value", None)
+    except Exception as e:
+        logger.error("Ошибка при получении настроек Grok AI: %s", e)
+        api_key = None
 
     if not api_key:
         logger.warning("GROK_API_KEY не настроен в конфигурации.")

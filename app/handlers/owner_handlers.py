@@ -28,21 +28,39 @@ def _is_owner(user_id: int) -> bool:
     return user_id == 8039111975 or user_id == get_settings().owner_id
 
 
-@router.message(F.text.casefold().in_(["понель", "!понель", "панель", "!панель", "админка"]))
-async def handle_admin_panel(message: types.Message):
-    if not message.from_user or not _is_owner(message.from_user.id):
-        return
+async def _build_admin_panel_payload(owner_id: int):
+    """Формирует текст и клавиатуру админ-панели с подробным списком чатов."""
+    async with session_scope() as session:
+        chats = await list_chats_summary(session, owner_id=owner_id)
+
     builder = InlineKeyboardBuilder()
-    builder.button(text="🏢 Чаты", callback_data="owner_menu_chats")
+    builder.button(text="🏢 Список чатов", callback_data="owner_menu_chats")
     builder.button(text="📊 Статистика", callback_data="owner_menu_stats")
     builder.button(text="⚠️ Сброс экономики", callback_data="owner_eco_reset_prompt")
     builder.adjust(2, 1)
 
+    active_cnt = sum(1 for c in chats if c.is_active)
+    total_cnt = len(chats)
+
+    if chats:
+        chat_lines = []
+        for c in chats[:15]:
+            status_icon = "🟢" if c.is_active else "🔴"
+            chat_type_str = f" [{c.chat_type}]" if c.chat_type else ""
+            chat_lines.append(f"• {status_icon} <b>{c.title or 'Без названия'}</b>{chat_type_str} (ID: <code>{c.telegram_id}</code>)")
+        if len(chats) > 15:
+            chat_lines.append(f"<i>...и еще {len(chats) - 15} чатов (нажмите «🏢 Список чатов» для просмотра всех)</i>")
+        chats_text = "\n".join(chat_lines)
+    else:
+        chats_text = "<i>Бот пока не подключен ни к одному чату.</i>"
+
     text = (
         f"👑 <b>ГЛАВНАЯ АДМИН-ПАНЕЛЬ ВЛАДЕЛЬЦА FABLE</b>\n\n"
-        f"Добро пожаловать, Создатель! (ID: <code>{message.from_user.id}</code>)\n\n"
+        f"Добро пожаловать, Создатель! (ID: <code>{owner_id}</code>)\n\n"
+        f"🏢 <b>Подключенные чаты ({active_cnt}/{total_cnt} активны):</b>\n"
+        f"{chats_text}\n\n"
         f"<b>Доступные глобальные команды:</b>\n"
-        f"• <code>настройки чаты</code> — список подключенных групп\n"
+        f"• <code>настройки чаты</code> — полный список подключенных групп\n"
         f"• <code>настройки стоп [ID]</code> — отключить бота в группе\n"
         f"• <code>настройки старт [ID]</code> — включить бота в группе\n"
         f"• <code>выдать [ID] [монеты]</code> — начислить монеты игроку\n"
@@ -51,7 +69,24 @@ async def handle_admin_panel(message: types.Message):
         f"• <code>глобальный разбан [ID]</code>\n"
         f"• <code>сброс экономики</code>"
     )
-    await message.reply(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    return text, builder.as_markup()
+
+
+@router.message(F.text.casefold().in_(["понель", "!понель", "панель", "!панель", "админка"]))
+async def handle_admin_panel(message: types.Message):
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    text, markup = await _build_admin_panel_payload(message.from_user.id)
+    await message.reply(text, reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "owner_menu_back")
+async def on_owner_menu_back(callback: types.CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    text, markup = await _build_admin_panel_payload(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "owner_menu_chats")
@@ -61,15 +96,24 @@ async def on_owner_menu_chats(callback: types.CallbackQuery):
         return
     async with session_scope() as session:
         chats = await list_chats_summary(session, owner_id=callback.from_user.id)
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
+
         if not chats:
-            await callback.message.edit_text("Бот пока не подключен ни к одному чату.")
+            await callback.message.edit_text("🏢 Бот пока не подключен ни к одному чату.", reply_markup=builder.as_markup())
             return
 
-        lines = ["🏢 <b>Подключенные чаты Fable:</b>\n"]
-        for c in chats[:20]:
+        active_cnt = sum(1 for c in chats if c.is_active)
+        lines = [f"🏢 <b>Список чатов, где состоит Fable ({active_cnt}/{len(chats)} активны):</b>\n"]
+        for c in chats[:30]:
             status = "🟢 Активен" if c.is_active else "🔴 Остановлен"
-            lines.append(f"• <code>{c.telegram_id}</code>: <b>{c.title}</b> — {status}")
-        await callback.message.edit_text("\n".join(lines), parse_mode="HTML")
+            connected = c.connected_at.strftime("%d.%m.%Y") if c.connected_at else ""
+            conn_str = f" | {connected}" if connected else ""
+            lines.append(f"• <b>{c.title or 'Без названия'}</b>\n  ID: <code>{c.telegram_id}</code> | Тип: {c.chat_type} | {status}{conn_str}")
+        if len(chats) > 30:
+            lines.append(f"\n<i>...и еще {len(chats) - 30} чатов</i>")
+
+        await callback.message.edit_text("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "owner_menu_stats")
@@ -82,20 +126,37 @@ async def on_owner_menu_stats(callback: types.CallbackQuery):
         from sqlalchemy import func, select
         players_cnt = await session.scalar(select(func.count(Player.telegram_id))) or 0
         chats_cnt = await session.scalar(select(func.count(Chat.telegram_id))) or 0
+        active_chats_cnt = await session.scalar(select(func.count(Chat.telegram_id)).where(Chat.is_active == True)) or 0
         total_coins = await session.scalar(select(func.coalesce(func.sum(Player.wallet), 0))) or 0
         total_bank = await session.scalar(select(func.coalesce(func.sum(Player.bank_balance), 0))) or 0
         tx_cnt = await session.scalar(select(func.count(EconomyTransaction.id))) or 0
 
+        chats = await list_chats_summary(session, owner_id=callback.from_user.id)
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🏢 Список чатов", callback_data="owner_menu_chats")
+        builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
+        builder.adjust(1)
+
+        chat_sample_lines = []
+        for c in chats[:10]:
+            status = "🟢" if c.is_active else "🔴"
+            chat_sample_lines.append(f"• {status} <b>{c.title or 'Без названия'}</b> (<code>{c.telegram_id}</code>)")
+        if len(chats) > 10:
+            chat_sample_lines.append(f"<i>...и еще {len(chats) - 10} чатов</i>")
+        chats_block = "\n".join(chat_sample_lines) if chat_sample_lines else "<i>Нет подключенных чатов</i>"
+
         text = (
             f"📊 <b>ГЛОБАЛЬНАЯ СТАТИСТИКА FABLE</b>\n\n"
             f"👥 Всего зарегистрировано игроков: <b>{players_cnt:,}</b>\n"
-            f"💬 Всего подключенных групп: <b>{chats_cnt:,}</b>\n"
+            f"💬 Всего подключенных групп: <b>{chats_cnt:,}</b> (активных: <b>{active_chats_cnt}</b>)\n"
             f"💰 Монет на руках у игроков: <b>{total_coins:,}</b>\n"
             f"🏦 Монет на банковских счетах: <b>{total_bank:,}</b>\n"
             f"🏛 Всего в экономике: <b>{(total_coins + total_bank):,}</b> монет\n"
-            f"📜 Проведено финансовых транзакций: <b>{tx_cnt:,}</b>"
+            f"📜 Проведено финансовых транзакций: <b>{tx_cnt:,}</b>\n\n"
+            f"🏢 <b>Чаты с ботом:</b>\n"
+            f"{chats_block}"
         ).replace(",", " ")
-        await callback.message.edit_text(text, parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.message(F.text.casefold().startswith("выдать"))
@@ -170,10 +231,11 @@ async def handle_owner_chats(message: types.Message):
             await message.reply("Бот пока не подключен ни к одному чату.")
             return
 
-        lines = ["🏢 <b>Подключенные чаты Fable:</b>\n"]
+        active_cnt = sum(1 for c in chats if c.is_active)
+        lines = [f"🏢 <b>Подключенные чаты Fable ({active_cnt}/{len(chats)} активны):</b>\n"]
         for c in chats:
             status = "🟢 Активен" if c.is_active else "🔴 Остановлен"
-            lines.append(f"• <code>{c.telegram_id}</code>: <b>{c.title}</b> — {status}")
+            lines.append(f"• <b>{c.title or 'Без названия'}</b>\n  ID: <code>{c.telegram_id}</code> | Тип: {c.chat_type} — {status}")
         await message.reply("\n".join(lines), parse_mode="HTML")
 
 
@@ -305,4 +367,6 @@ async def on_reset_economy_confirm(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "owner_eco_reset_cancel")
 async def on_reset_economy_cancel(callback: types.CallbackQuery):
-    await callback.message.edit_text("Сброс экономики отменен.")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
+    await callback.message.edit_text("Сброс экономики отменен.", reply_markup=builder.as_markup())

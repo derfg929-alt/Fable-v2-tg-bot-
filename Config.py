@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     polling_timeout: int = Field(default=30, alias="POLLING_TIMEOUT", ge=5, le=60)
     update_concurrency: int = Field(default=32, alias="UPDATE_CONCURRENCY", ge=1, le=256)
 
+    # Настройки интеграции с Grok AI (xAI).
+    grok_api_key: SecretStr | None = Field(default=None, alias="GROK_API_KEY")
+    grok_api_url: str = Field(default="https://api.x.ai/v1/chat/completions", alias="GROK_API_URL")
+    grok_model: str = Field(default="grok-beta", alias="GROK_MODEL")
+
     @field_validator("bot_token")
     @classmethod
     def validate_bot_token(cls, value: SecretStr) -> SecretStr:
@@ -64,6 +69,11 @@ class Settings(BaseSettings):
     def database_url_value(self) -> str:
         """URL подключения только для SQLAlchemy."""
         return self.database_url.get_secret_value()
+
+    @property
+    def grok_api_key_value(self) -> str | None:
+        """Ключ API Grok в открытом виде для передачи в HTTP-клиент."""
+        return self.grok_api_key.get_secret_value() if self.grok_api_key else None
 
 
 @lru_cache(maxsize=1)

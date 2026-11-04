@@ -30,6 +30,10 @@ CHAT_BAIT_MESSAGES = [
     "💎 <i>Сундук с сокровищами материализовался в чате! Забирай скорее, пока не утащили!</i>",
     "🎲 <i>Время активности! Нажмите кнопку, чтобы получить порцию монет от Fable!</i>",
     "⚡️ <i>Случайный денежный дроп для активных участников!</i>",
+    "🎉 <i>Внезапный бонус от Fable! Жми кнопку и пополняй свой кошелек!</i>",
+    "💰 <i>Золотая лихорадка! Кто успел нажать первым — тот и забрал куш!</i>",
+    "🎁 <i>Подарочный бокс упал прямо в чат! Открывай скорее!</i>",
+    "🚀 <i>Дроп монет на реакцию! Забери свой приз прямо сейчас!</i>",
 ]
 
 DM_BAIT_MESSAGES = [
@@ -101,13 +105,25 @@ async def process_dm_baits(session: AsyncSession, bot: Bot) -> int:
     return sent_count
 
 
-async def process_chat_baits(session: AsyncSession, bot: Bot) -> int:
-    """Отправляет интерактивные байты в активные групповые чаты."""
-    chats = await session.scalars(
-        select(Chat).where(Chat.is_active == True, Chat.chat_type.in_(["group", "supergroup"])).limit(10)
+async def process_chat_baits(session: AsyncSession, bot: Bot, max_chats: int | None = None) -> int:
+    """Отправляет интерактивные байты в случайные активные групповые чаты."""
+    chats_res = await session.scalars(
+        select(Chat).where(Chat.is_active == True, Chat.chat_type.in_(["group", "supergroup"]))
     )
+    all_chats = list(chats_res.all())
+    if not all_chats:
+        return 0
+
+    # Выбираем случайное подмножество чатов для ротации рассылки
+    if max_chats is None:
+        target_count = random.randint(1, min(5, len(all_chats)))
+    else:
+        target_count = min(max_chats, len(all_chats))
+
+    selected_chats = random.sample(all_chats, k=target_count)
+
     sent_count = 0
-    for chat in chats.all():
+    for chat in selected_chats:
         try:
             text, kb = await generate_chat_bait_message()
             await bot.send_message(
