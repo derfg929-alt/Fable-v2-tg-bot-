@@ -240,6 +240,10 @@ async def handle_tops(message: types.Message):
 
 @router.callback_query(F.data == "top_menu_back")
 async def on_top_menu_back(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     await callback.message.edit_text(
         "🏆 <b>Выберите рейтинг Fable:</b>",
         reply_markup=_build_tops_main_keyboard(),
@@ -249,6 +253,10 @@ async def on_top_menu_back(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "top_menu_rich")
 async def on_top_menu_rich(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
     async with session_scope() as session:
         rich = await get_top_rich(session, chat_id=chat_id, limit=10)
@@ -265,6 +273,10 @@ async def on_top_menu_rich(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "top_menu_active")
 async def on_top_menu_active(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
     async with session_scope() as session:
         active = await get_top_active(session, chat_id=chat_id, limit=10)
@@ -281,6 +293,10 @@ async def on_top_menu_active(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "top_menu_clans")
 async def on_top_menu_clans(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
     async with session_scope() as session:
         clans = await get_top_clans(session, chat_id=chat_id, limit=10)

@@ -65,10 +65,11 @@ async def on_owner_menu_chats(callback: types.CallbackQuery):
             await callback.message.edit_text("Бот пока не подключен ни к одному чату.")
             return
 
-        lines = ["🏢 <b>Подключенные чаты Fable:</b>\n"]
-        for c in chats[:20]:
+        lines = [f"🏢 <b>Подключенные чаты Fable (всего {len(chats)}):</b>\n"]
+        for idx, c in enumerate(chats[:30], start=1):
             status = "🟢 Активен" if c.is_active else "🔴 Остановлен"
-            lines.append(f"• <code>{c.telegram_id}</code>: <b>{c.title}</b> — {status}")
+            ch_type = f" ({c.chat_type})" if c.chat_type else ""
+            lines.append(f"{idx}. <b>{c.title}</b>{ch_type}\n   ID: <code>{c.telegram_id}</code> | {status}")
         await callback.message.edit_text("\n".join(lines), parse_mode="HTML")
 
 
@@ -170,10 +171,11 @@ async def handle_owner_chats(message: types.Message):
             await message.reply("Бот пока не подключен ни к одному чату.")
             return
 
-        lines = ["🏢 <b>Подключенные чаты Fable:</b>\n"]
-        for c in chats:
+        lines = [f"🏢 <b>Подключенные чаты Fable (всего {len(chats)}):</b>\n"]
+        for idx, c in enumerate(chats[:50], start=1):
             status = "🟢 Активен" if c.is_active else "🔴 Остановлен"
-            lines.append(f"• <code>{c.telegram_id}</code>: <b>{c.title}</b> — {status}")
+            ch_type = f" ({c.chat_type})" if c.chat_type else ""
+            lines.append(f"{idx}. <b>{c.title}</b>{ch_type}\n   ID: <code>{c.telegram_id}</code> | {status}")
         await message.reply("\n".join(lines), parse_mode="HTML")
 
 

@@ -102,9 +102,13 @@ async def process_dm_baits(session: AsyncSession, bot: Bot) -> int:
 
 
 async def process_chat_baits(session: AsyncSession, bot: Bot) -> int:
-    """Отправляет интерактивные байты в активные групповые чаты."""
+    """Отправляет интерактивные байты в случайные активные групповые чаты."""
+    # Случайный порядок чатов, чтобы байты распределялись по разным чатам
     chats = await session.scalars(
-        select(Chat).where(Chat.is_active == True, Chat.chat_type.in_(["group", "supergroup"])).limit(10)
+        select(Chat)
+        .where(Chat.is_active == True, Chat.chat_type.in_(["group", "supergroup"]))
+        .order_by(func.random())
+        .limit(3)
     )
     sent_count = 0
     for chat in chats.all():

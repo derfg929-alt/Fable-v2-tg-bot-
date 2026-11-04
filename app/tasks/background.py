@@ -47,8 +47,9 @@ async def background_market_maker_worker(interval_seconds: int = 30) -> None:
         await asyncio.sleep(interval_seconds)
 
 
-async def background_engagement_worker(bot: Bot, interval_seconds: int = 7200) -> None:
-    """Периодически отправляет байты и напоминания в ЛС и чаты, чтобы бот не забывался."""
+async def background_engagement_worker(bot: Bot, min_interval_hours: int = 3, max_interval_hours: int = 6) -> None:
+    """Периодически отправляет байты и напоминания в ЛС и случайные чаты реже (раз в 3-6 часов)."""
+    import random
     while True:
         try:
             async with session_scope() as session:
@@ -58,4 +59,5 @@ async def background_engagement_worker(bot: Bot, interval_seconds: int = 7200) -
                     logger.info(f"Engagement worker: отправлено {dm_count} ЛС-напоминаний и {chat_count} байтов в чаты.")
         except Exception as e:
             logger.error(f"Ошибка в воркере вовлечения: {e}")
-        await asyncio.sleep(interval_seconds)
+        sleep_sec = random.randint(min_interval_hours * 3600, max_interval_hours * 3600)
+        await asyncio.sleep(sleep_sec)

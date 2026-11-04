@@ -57,4 +57,15 @@ async def handle_ai_query(message: types.Message, bot: Bot):
         pass
 
     answer = await ask_grok(cleaned_prompt, user_name=user_name)
-    await message.reply(answer)
+    if not answer or not answer.strip():
+        answer = "Я здесь! Задай мне любой вопрос, и я обязательно отвечу. 😊"
+
+    try:
+        # Сначала пробуем ответить через reply без принудительного HTML, чтобы теги нейросети не ломали отправку
+        await message.reply(answer, parse_mode=None)
+    except Exception:
+        try:
+            # Fallback на прямую отправку сообщения в чат
+            await message.answer(answer, parse_mode=None)
+        except Exception:
+            pass
