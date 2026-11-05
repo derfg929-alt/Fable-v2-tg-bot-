@@ -195,17 +195,28 @@ async def handle_slots(message: types.Message):
         return
     stake = int(parts[1])
 
+    dice_val = None
+    if message.bot and message.chat:
+        try:
+            dice_msg = await message.answer_dice(emoji="🎰")
+            if dice_msg and dice_msg.dice:
+                dice_val = dice_msg.dice.value
+                import asyncio
+                await asyncio.sleep(2.0)
+        except Exception:
+            dice_val = None
+
     async with session_scope() as session:
         await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
         try:
-            res = await play_slots(session, user_id=message.from_user.id, stake=stake)
+            res = await play_slots(session, user_id=message.from_user.id, stake=stake, dice_value=dice_val)
             reels_str = " | ".join(res.reels)
             if res.is_win:
                 await message.reply(
                     f"🎰 <b>СЛОТЫ</b> 🎰\n\n"
                     f"[{reels_str}]\n\n"
-                    f"🎉 <b>ПОБЕДА!</b> Коэффициент: x{res.multiplier:.1f}\n"
-                    f"Выигрыш: <b>+{res.payout}</b> монет!",
+                    f"🎉 <b>ВЫИГРЫШ!</b> Коэффициент: <b>x{res.multiplier:.1f}</b>\n"
+                    f"Выплата: <b>+{res.payout}</b> монет!",
                     parse_mode="HTML",
                 )
             else:
@@ -360,6 +371,10 @@ async def on_marry_accept_click(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             p1_name, p2_name = await accept_marriage(session, target_id=callback.from_user.id)
+            try:
+                await callback.answer("💍 Предложение принято!")
+            except Exception:
+                pass
             await callback.message.edit_text(
                 f"💖 <b>СОВЕТ ДА ЛЮБОВЬ!</b> 💍\n\n"
                 f"<b>{p1_name}</b> и <b>{p2_name}</b> официально вступили в законный брак!\n"
@@ -372,8 +387,15 @@ async def on_marry_accept_click(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("marry_no_"))
 async def on_marry_decline_click(callback: types.CallbackQuery):
+    try:
+        await callback.answer("💔 Предложение отклонено.")
+    except Exception:
+        pass
     await decline_marriage(callback.from_user.id)
-    await callback.message.edit_text("💔 Предложение руки и сердца было отвергнуто.")
+    try:
+        await callback.message.edit_text("💔 Предложение руки и сердца было отвергнуто.")
+    except Exception:
+        pass
 
 
 @router.message(F.text.casefold().in_(["развод", "!развод"]))
@@ -450,6 +472,10 @@ async def on_duel_accept(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             resp = await accept_duel(session, session_id=duel_id, actor_id=callback.from_user.id)
+            try:
+                await callback.answer("Дуэль принята!")
+            except Exception:
+                pass
             builder = InlineKeyboardBuilder()
             builder.button(text="🎯 Прицелиться (+10%)", callback_data=f"duel_aim_{duel_id}")
             builder.button(text="💥 Выстрелить", callback_data=f"duel_shoot_{duel_id}")
@@ -459,13 +485,16 @@ async def on_duel_accept(callback: types.CallbackQuery):
             curr_p = await session.get(Player, resp.current_turn_user_id)
             turn_name = curr_p.first_name if curr_p else f"ID {resp.current_turn_user_id}"
 
-            await callback.message.edit_text(
-                f"⚔️ <b>ДУЭЛЬ НАЧАЛАСЬ!</b>\n\n"
-                f"{resp.message}\n\n"
-                f"👉 Первым ходит: <b>{turn_name}</b>!",
-                reply_markup=builder.as_markup(),
-                parse_mode="HTML",
-            )
+            try:
+                await callback.message.edit_text(
+                    f"⚔️ <b>ДУЭЛЬ НАЧАЛАСЬ!</b>\n\n"
+                    f"{resp.message}\n\n"
+                    f"👉 Первым ходит: <b>{turn_name}</b>!",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
         except Exception as e:
             await callback.answer(f"❌ {e}", show_alert=True)
 
@@ -476,7 +505,14 @@ async def on_duel_decline(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             resp = await decline_duel(session, session_id=duel_id, actor_id=callback.from_user.id)
-            await callback.message.edit_text("❌ Вызов на дуэль отклонен.")
+            try:
+                await callback.answer("Вызов на дуэль отклонен.")
+            except Exception:
+                pass
+            try:
+                await callback.message.edit_text("❌ Вызов на дуэль отклонен.")
+            except Exception:
+                pass
         except Exception as e:
             await callback.answer(f"❌ {e}", show_alert=True)
 
@@ -487,6 +523,10 @@ async def on_duel_aim(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             resp = await duel_aim(session, session_id=duel_id, actor_id=callback.from_user.id)
+            try:
+                await callback.answer("🎯 Вы прицелились!")
+            except Exception:
+                pass
             builder = InlineKeyboardBuilder()
             builder.button(text="🎯 Прицелиться (+10%)", callback_data=f"duel_aim_{duel_id}")
             builder.button(text="💥 Выстрелить", callback_data=f"duel_shoot_{duel_id}")
@@ -496,13 +536,16 @@ async def on_duel_aim(callback: types.CallbackQuery):
             curr_p = await session.get(Player, resp.current_turn_user_id)
             turn_name = curr_p.first_name if curr_p else f"ID {resp.current_turn_user_id}"
 
-            await callback.message.edit_text(
-                f"⚔️ <b>ДУЭЛЬ</b>\n\n"
-                f"{resp.message}\n\n"
-                f"👉 Сейчас ход дуэлянта: <b>{turn_name}</b>!",
-                reply_markup=builder.as_markup(),
-                parse_mode="HTML",
-            )
+            try:
+                await callback.message.edit_text(
+                    f"⚔️ <b>ДУЭЛЬ</b>\n\n"
+                    f"{resp.message}\n\n"
+                    f"👉 Сейчас ход дуэлянта: <b>{turn_name}</b>!",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
         except Exception as e:
             await callback.answer(f"❌ {e}", show_alert=True)
 
@@ -513,17 +556,24 @@ async def on_duel_shoot(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             resp = await duel_shoot(session, session_id=duel_id, actor_id=callback.from_user.id)
+            try:
+                await callback.answer("💥 Выстрел!")
+            except Exception:
+                pass
             from app.db.models import Player
             if resp.is_finished:
                 winner_p = await session.get(Player, resp.winner_id)
                 win_name = winner_p.first_name if winner_p else f"ID {resp.winner_id}"
-                await callback.message.edit_text(
-                    f"🏆 <b>ДУЭЛЬ ЗАВЕРШЕНА!</b>\n\n"
-                    f"{resp.message}\n\n"
-                    f"👑 <b>Победитель: {win_name}!</b>\n"
-                    f"💰 Он забирает весь призовой банк себе!",
-                    parse_mode="HTML",
-                )
+                try:
+                    await callback.message.edit_text(
+                        f"🏆 <b>ДУЭЛЬ ЗАВЕРШЕНА!</b>\n\n"
+                        f"{resp.message}\n\n"
+                        f"👑 <b>Победитель: {win_name}!</b>\n"
+                        f"💰 Он забирает весь призовой банк себе!",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
             else:
                 builder = InlineKeyboardBuilder()
                 builder.button(text="🎯 Прицелиться (+10%)", callback_data=f"duel_aim_{duel_id}")
@@ -533,12 +583,15 @@ async def on_duel_shoot(callback: types.CallbackQuery):
                 curr_p = await session.get(Player, resp.current_turn_user_id)
                 turn_name = curr_p.first_name if curr_p else f"ID {resp.current_turn_user_id}"
 
-                await callback.message.edit_text(
-                    f"⚔️ <b>ДУЭЛЬ</b>\n\n"
-                    f"{resp.message}\n\n"
-                    f"👉 Сейчас ход дуэлянта: <b>{turn_name}</b>!",
-                    reply_markup=builder.as_markup(),
-                    parse_mode="HTML",
-                )
+                try:
+                    await callback.message.edit_text(
+                        f"⚔️ <b>ДУЭЛЬ</b>\n\n"
+                        f"{resp.message}\n\n"
+                        f"👉 Сейчас ход дуэлянта: <b>{turn_name}</b>!",
+                        reply_markup=builder.as_markup(),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             await callback.answer(f"❌ {e}", show_alert=True)

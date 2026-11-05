@@ -128,13 +128,20 @@ async def handle_commands_list(message: types.Message):
 
 @router.callback_query(F.data.startswith("help_sec_"))
 async def on_help_section_click(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     sec_str = callback.data.split("_")[2]
     if sec_str == "all":
-        await callback.message.edit_text(
-            get_commands_help_text(),
-            reply_markup=_build_help_sections_keyboard(),
-            parse_mode="HTML",
-        )
+        try:
+            await callback.message.edit_text(
+                get_commands_help_text(),
+                reply_markup=_build_help_sections_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
         return
 
     sec_id = int(sec_str)
@@ -143,7 +150,10 @@ async def on_help_section_click(callback: types.CallbackQuery):
     if text:
         builder = InlineKeyboardBuilder()
         builder.button(text="◀️ В меню разделов", callback_data="help_sec_all")
-        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @router.message(F.text.casefold().in_(["реф", "!реф"]))
@@ -277,7 +287,14 @@ async def on_clan_delete_confirm(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "clan_del_cancel")
 async def on_clan_delete_cancel(callback: types.CallbackQuery):
-    await callback.message.edit_text("Отмена удаления клана.")
+    try:
+        await callback.answer("Удаление клана отменено.")
+    except Exception:
+        pass
+    try:
+        await callback.message.edit_text("Отмена удаления клана.")
+    except Exception:
+        pass
 
 
 # ===================== ТОПЫ И РЕЙТИНГИ =====================
@@ -354,15 +371,26 @@ async def handle_tops(message: types.Message):
 
 @router.callback_query(F.data == "top_menu_back")
 async def on_top_menu_back(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "🏆 <b>Выберите рейтинг Fable:</b>",
-        reply_markup=_build_tops_main_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    try:
+        await callback.message.edit_text(
+            "🏆 <b>Выберите рейтинг Fable:</b>",
+            reply_markup=_build_tops_main_keyboard(),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "top_menu_rich")
 async def on_top_menu_rich(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
     async with session_scope() as session:
         rich = await get_top_rich(session, chat_id=chat_id, limit=10)
@@ -370,15 +398,22 @@ async def on_top_menu_rich(callback: types.CallbackQuery):
         for r in rich:
             lines.append(f"{r.rank}. <b>{r.name}</b> — {r.total_wealth:,} монет".replace(",", " "))
         text = "\n".join(lines) if rich else "💰 <b>Топ богатых:</b>\nРейтинг пуст."
-        await callback.message.edit_text(
-            text,
-            reply_markup=_build_top_category_keyboard(),
-            parse_mode="HTML",
-        )
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "top_menu_active")
 async def on_top_menu_active(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
     async with session_scope() as session:
         active = await get_top_active(session, chat_id=chat_id, limit=10)
@@ -386,15 +421,22 @@ async def on_top_menu_active(callback: types.CallbackQuery):
         for a in active:
             lines.append(f"{a.rank}. <b>{a.name}</b> — {a.activity_points:,} очков".replace(",", " "))
         text = "\n".join(lines) if active else "🔥 <b>Топ активных:</b>\nРейтинг пуст."
-        await callback.message.edit_text(
-            text,
-            reply_markup=_build_top_category_keyboard(),
-            parse_mode="HTML",
-        )
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "top_menu_clans")
 async def on_top_menu_clans(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
     async with session_scope() as session:
         clans = await get_top_clans(session, chat_id=chat_id, limit=10)
@@ -402,11 +444,14 @@ async def on_top_menu_clans(callback: types.CallbackQuery):
         for c in clans:
             lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
         text = "\n".join(lines) if clans else "🛡 <b>Топ кланов:</b>\nРейтинг пуст."
-        await callback.message.edit_text(
-            text,
-            reply_markup=_build_top_category_keyboard(),
-            parse_mode="HTML",
-        )
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 # ===================== ПРАВИЛА И МОДЕРАЦИЯ =====================
@@ -568,8 +613,11 @@ async def handle_warn(message: types.Message):
             return
 
         if "снять" in text:
-            ok = await revoke_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id)
-            await message.reply("✅ Предупреждение снято." if ok else "У пользователя нет активных предупреждений.")
+            try:
+                ok = await revoke_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id)
+                await message.reply("✅ Предупреждение снято." if ok else "У пользователя нет активных предупреждений.")
+            except Exception as e:
+                await message.reply(f"❌ {e}")
             return
 
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Нарушение"
