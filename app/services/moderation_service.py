@@ -153,6 +153,55 @@ async def get_user_admin_level(
     return 1
 
 
+async def sync_chat_creator_and_admins(session: AsyncSession, *, chat_id: int, bot) -> int | None:
+    """Синхронизирует владельца (создателя) и администраторов чата через Telegram Bot API.
+    Возвращает telegram_id создателя чата, если найден.
+    """
+    if not bot:
+        return None
+    try:
+        admins = await bot.get_chat_administrators(chat_id=chat_id)
+        creator_id = None
+        for adm in admins:
+            user = getattr(adm, "user", None)
+            if not user or getattr(user, "is_bot", False):
+                continue
+
+            status = getattr(adm, "status", None)
+            if status in ("creator", "owner"):
+                creator_id = user.id
+                level = 5
+            elif status == "administrator":
+                level = 3
+            else:
+                continue
+
+            # Убеждаемся, что игрок существует
+            p_stmt = insert(Player).values(
+                telegram_id=user.id,
+                first_name=user.first_name or "Участник",
+                username=user.username,
+            ).on_conflict_do_nothing(index_elements=[Player.telegram_id])
+            await session.execute(p_stmt)
+
+            # Синхронизируем уровень
+            stmt = insert(ChatAdmin).values(
+                chat_id=chat_id,
+                user_id=user.id,
+                level=level,
+                assigned_by=user.id,
+                is_active=True,
+            ).on_conflict_do_update(
+                index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
+                set_={"level": level, "is_active": True},
+            )
+            await session.execute(stmt)
+
+        return creator_id
+    except Exception:
+        return None
+
+
 async def check_can_moderate(
     session: AsyncSession,
     *,
@@ -185,10 +234,11 @@ async def set_admin_level(
     actor_id: int,
     target_id: int,
     new_level: int,
+    bot=None,
 ) -> int:
     """Назначение роли / уровня администратора с соблюдением всех правил иерархии."""
-    actor_level = await get_user_admin_level(session, chat_id=chat_id, user_id=actor_id)
-    target_level = await get_user_admin_level(session, chat_id=chat_id, user_id=target_id)
+    actor_level = await get_user_admin_level(session, chat_id=chat_id, user_id=actor_id, bot=bot)
+    target_level = await get_user_admin_level(session, chat_id=chat_id, user_id=target_id, bot=bot)
 
     if not (1 <= new_level <= 5):
         raise ModerationError("Уровень должен быть от 1 до 5")
@@ -328,9 +378,10 @@ async def issue_warn(
     moderator_id: int,
     target_id: int,
     reason: str | None = None,
+    bot=None,
 ) -> tuple[ModerationCase, int]:
     """Выдача варна (срок 30 дней, без авто-санкций). Возвращает (case, активных_варнов)."""
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2)
+    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
 
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(days=30)
@@ -379,9 +430,10 @@ async def revoke_warn(
     chat_id: int,
     moderator_id: int,
     target_id: int,
+    bot=None,
 ) -> bool:
     """Снятие последнего активного варна."""
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2)
+    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
 
     last_warn = await session.scalar(
         select(ModerationCase)
