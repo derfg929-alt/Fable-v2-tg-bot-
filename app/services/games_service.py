@@ -244,7 +244,18 @@ HUNTING_LOOT = [
     ("legendary", "Мифический дракон", 7500, 0.02, "дракон"),
 ]
 
+# Реальные символы Telegram-слотов (4 символа, закодированные по 2 бита)
+# 0: BAR, 1: 🍇, 2: 🍋, 3: 7️⃣
+TELEGRAM_SLOT_SYMBOLS = ["BAR", "🍇", "🍋", "7️⃣"]
 SLOT_SYMBOLS = ["🍒", "🍋", "🍇", "🔔", "⭐", "7️⃣"]
+
+def decode_telegram_slot_dice(dice_value: int) -> tuple[str, str, str]:
+    """Декодирует значение Telegram слотов (1..64) в тройку барабанов."""
+    val = max(1, min(64, dice_value)) - 1
+    r1 = TELEGRAM_SLOT_SYMBOLS[val & 3]
+    r2 = TELEGRAM_SLOT_SYMBOLS[(val >> 2) & 3]
+    r3 = TELEGRAM_SLOT_SYMBOLS[(val >> 4) & 3]
+    return (r1, r2, r3)
 
 ROULETTE_NUMBERS_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 ROULETTE_NUMBERS_BLACK = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
@@ -438,10 +449,14 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
     return HuntingResult(category=category, target_name=target_name, reward_coins=reward_coins, message=msg)
 
 
-async def play_slots(session: AsyncSession, *, user_id: int, stake: int) -> SlotResult:
-    """Слоты: списание ставки, вращение барабанов, расчет выигрыша, сжигание при проигрыше."""
+async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_value: int | None = None) -> SlotResult:
+    """Слоты: списание ставки, вращение барабанов, расчет выигрыша, сжигание при проигрыше.
+    Поддерживает реальное значение Telegram dice (1..64) с аутентичными символами слотов и реальными шансами.
+    """
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
+    if stake > 500_000:
+        raise InvalidAmountError("Максимальная ставка в слотах: 500 000 монет")
 
     player = await session.scalar(
         select(Player).where(Player.telegram_id == user_id).with_for_update()
@@ -461,31 +476,34 @@ async def play_slots(session: AsyncSession, *, user_id: int, stake: int) -> Slot
         operation_type="game_slots_stake",
     )
 
-    if stake > 500_000:
-        raise InvalidAmountError("Максимальная ставка в слотах: 500 000 монет")
+    if dice_value is not None:
+        reels = decode_telegram_slot_dice(dice_value)
+    else:
+        roll = random.randint(1, 64)
+        reels = decode_telegram_slot_dice(roll)
 
-    # Расширенный набор символов слотов с пустышками для уменьшения переизбытка монет
-    expanded_symbols = ["🍒", "🍋", "🍇", "🔔", "⭐", "7️⃣", "⚪️", "❌"]
-    r1, r2, r3 = random.choice(expanded_symbols), random.choice(expanded_symbols), random.choice(expanded_symbols)
-    reels = (r1, r2, r3)
-
+    r1, r2, r3 = reels
     is_win = False
     multiplier = 0.0
 
-    if r1 == r2 == r3 and r1 not in ("⚪️", "❌"):
+    if r1 == r2 == r3:
         is_win = True
         if r1 == "7️⃣":
-            multiplier = 15.0  # Джекпот
-        elif r1 == "⭐":
-            multiplier = 8.0
-        elif r1 == "🔔":
-            multiplier = 5.0
-        else:
-            multiplier = 3.5
-    elif (r1 == r2 or r2 == r3 or r1 == r3) and ("❌" not in (r1, r2, r3)):
-        # Две одинаковых без символа неудачи
+            multiplier = 15.0  # Джекпот 777 (шанс 1/64 = ~1.56%)
+        elif r1 == "🍇":
+            multiplier = 5.0   # Три винограда (1/64)
+        elif r1 == "🍋":
+            multiplier = 5.0   # Три лимона (1/64)
+        elif r1 == "BAR":
+            multiplier = 5.0   # Три BAR (1/64)
+    elif r1 == r2 or r2 == r3 or r1 == r3:
+        # Пара одинаковых символов
         is_win = True
-        multiplier = 1.2
+        # Если совпала пара семерок 7️⃣
+        if (r1 == "7️⃣" and r2 == "7️⃣") or (r2 == "7️⃣" and r3 == "7️⃣") or (r1 == "7️⃣" and r3 == "7️⃣"):
+            multiplier = 1.2
+        else:
+            multiplier = 0.8
 
     payout = int(stake * multiplier)
     if payout > 0:

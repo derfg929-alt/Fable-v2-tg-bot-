@@ -85,8 +85,15 @@ async def on_owner_menu_back(callback: types.CallbackQuery):
     if not _is_owner(callback.from_user.id):
         await callback.answer("Доступ запрещен!", show_alert=True)
         return
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     text, markup = await _build_admin_panel_payload(callback.from_user.id)
-    await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "owner_menu_chats")
@@ -94,13 +101,20 @@ async def on_owner_menu_chats(callback: types.CallbackQuery):
     if not _is_owner(callback.from_user.id):
         await callback.answer("Доступ запрещен!", show_alert=True)
         return
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     async with session_scope() as session:
         chats = await list_chats_summary(session, owner_id=callback.from_user.id)
         builder = InlineKeyboardBuilder()
         builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
 
         if not chats:
-            await callback.message.edit_text("🏢 Бот пока не подключен ни к одному чату.", reply_markup=builder.as_markup())
+            try:
+                await callback.message.edit_text("🏢 Бот пока не подключен ни к одному чату.", reply_markup=builder.as_markup())
+            except Exception:
+                pass
             return
 
         active_cnt = sum(1 for c in chats if c.is_active)
@@ -113,7 +127,10 @@ async def on_owner_menu_chats(callback: types.CallbackQuery):
         if len(chats) > 30:
             lines.append(f"\n<i>...и еще {len(chats) - 30} чатов</i>")
 
-        await callback.message.edit_text("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+        try:
+            await callback.message.edit_text("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "owner_menu_stats")
@@ -121,6 +138,10 @@ async def on_owner_menu_stats(callback: types.CallbackQuery):
     if not _is_owner(callback.from_user.id):
         await callback.answer("Доступ запрещен!", show_alert=True)
         return
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     async with session_scope() as session:
         from app.db.models import Player, Chat, EconomyTransaction
         from sqlalchemy import func, select
@@ -156,7 +177,10 @@ async def on_owner_menu_stats(callback: types.CallbackQuery):
             f"🏢 <b>Чаты с ботом:</b>\n"
             f"{chats_block}"
         ).replace(",", " ")
-        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @router.message(F.text.casefold().startswith("выдать"))
@@ -345,14 +369,21 @@ async def on_owner_eco_reset_prompt(callback: types.CallbackQuery):
     if not _is_owner(callback.from_user.id):
         await callback.answer("Доступ запрещен!", show_alert=True)
         return
-    await callback.message.edit_text(
-        "🚨 <b>ВНИМАНИЕ! ОПАСНАЯ ОПЕРАЦИЯ!</b>\n\n"
-        "Вы действительно хотите сбросить глобальную экономику?\n"
-        "Все балансы игроков, банковские счета и акции будут обнулены!\n"
-        "История операций и аккаунты сохранятся.",
-        reply_markup=_build_economy_reset_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    try:
+        await callback.message.edit_text(
+            "🚨 <b>ВНИМАНИЕ! ОПАСНАЯ ОПЕРАЦИЯ!</b>\n\n"
+            "Вы действительно хотите сбросить глобальную экономику?\n"
+            "Все балансы игроков, банковские счета и акции будут обнулены!\n"
+            "История операций и аккаунты сохранятся.",
+            reply_markup=_build_economy_reset_keyboard(),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "owner_eco_reset_confirm")
@@ -360,13 +391,27 @@ async def on_reset_economy_confirm(callback: types.CallbackQuery):
     if not _is_owner(callback.from_user.id):
         await callback.answer("Только владелец!", show_alert=True)
         return
+    try:
+        await callback.answer("Сброс выполняется...")
+    except Exception:
+        pass
     async with session_scope() as session:
         count = await reset_global_economy(session, owner_id=callback.from_user.id)
-        await callback.message.edit_text(f"💥 <b>Глобальный сброс выполнен!</b>\nОбнулены балансы {count} игроков.", parse_mode="HTML")
+        try:
+            await callback.message.edit_text(f"💥 <b>Глобальный сброс выполнен!</b>\nОбнулены балансы {count} игроков.", parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "owner_eco_reset_cancel")
 async def on_reset_economy_cancel(callback: types.CallbackQuery):
+    try:
+        await callback.answer("Сброс отменен.")
+    except Exception:
+        pass
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
-    await callback.message.edit_text("Сброс экономики отменен.", reply_markup=builder.as_markup())
+    try:
+        await callback.message.edit_text("Сброс экономики отменен.", reply_markup=builder.as_markup())
+    except Exception:
+        pass
