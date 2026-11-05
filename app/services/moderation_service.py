@@ -93,9 +93,12 @@ def parse_duration_string(duration_str: str) -> timedelta:
 
 
 async def get_user_admin_level(
-    session: AsyncSession, *, chat_id: int, user_id: int
+    session: AsyncSession, *, chat_id: int, user_id: int, bot=None
 ) -> int:
-    """Возвращает локальный уровень прав пользователя в чате (от 1 до 5)."""
+    """Возвращает локальный уровень прав пользователя в чате (от 1 до 5).
+    Если пользователь является создателем или администратором в самом Telegram,
+    но в базе еще нет записи, уровень синхронизируется.
+    """
     from app.config import get_settings
     # Глобальный владелец бота всегда имеет уровень 5 во всех чатах
     if user_id == 8039111975 or user_id == get_settings().owner_id:
@@ -110,6 +113,43 @@ async def get_user_admin_level(
     )
     if admin_row:
         return admin_row.level
+
+    # Попытка проверить права напрямую в Telegram чате
+    if bot:
+        try:
+            member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+            status = getattr(member, "status", None)
+            if status in ("creator", "owner"):
+                # Назначаем создателю ур. 5
+                stmt = insert(ChatAdmin).values(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    level=5,
+                    assigned_by=user_id,
+                    is_active=True,
+                ).on_conflict_do_update(
+                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
+                    set_={"level": 5, "is_active": True},
+                )
+                await session.execute(stmt)
+                return 5
+            elif status == "administrator":
+                # Назначаем Telegram-админу ур. 3 (Админ)
+                stmt = insert(ChatAdmin).values(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    level=3,
+                    assigned_by=user_id,
+                    is_active=True,
+                ).on_conflict_do_update(
+                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
+                    set_={"level": 3, "is_active": True},
+                )
+                await session.execute(stmt)
+                return 3
+        except Exception:
+            pass
+
     return 1
 
 
@@ -120,15 +160,16 @@ async def check_can_moderate(
     moderator_id: int,
     target_id: int,
     min_required_level: int = 2,
+    bot=None,
 ) -> tuple[int, int]:
     """Проверяет право модератора наказывать цель."""
-    mod_level = await get_user_admin_level(session, chat_id=chat_id, user_id=moderator_id)
+    mod_level = await get_user_admin_level(session, chat_id=chat_id, user_id=moderator_id, bot=bot)
     if mod_level < min_required_level:
         raise PermissionDeniedError(
             f"Для этого действия требуется уровень {min_required_level} ({ROLE_NAMES[min_required_level]}), ваш уровень: {mod_level}"
         )
 
-    target_level = await get_user_admin_level(session, chat_id=chat_id, user_id=target_id)
+    target_level = await get_user_admin_level(session, chat_id=chat_id, user_id=target_id, bot=bot)
     if moderator_id != target_id and mod_level <= target_level:
         raise HierarchyViolationError(
             f"Вы не можете применить санкции к участнику равного или более высокого уровня ({ROLE_NAMES[target_level]})"
@@ -209,9 +250,10 @@ async def issue_mute(
     target_id: int,
     duration: timedelta,
     reason: str | None = None,
+    bot=None,
 ) -> ModerationCase:
     """Выдача мута с проверкой прав."""
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2)
+    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
 
     now = datetime.now(timezone.utc)
     expires_at = now + duration
@@ -246,9 +288,10 @@ async def revoke_mute(
     chat_id: int,
     moderator_id: int,
     target_id: int,
+    bot=None,
 ) -> None:
     """Снятие мута."""
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2)
+    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
 
     cases = (
         await session.scalars(
@@ -404,9 +447,10 @@ async def record_ban_or_kick(
     target_id: int,
     action: str,  # 'ban' or 'kick'
     reason: str | None = None,
+    bot=None,
 ) -> ModerationCase:
     """Фиксация бана или кика (требуется ур. 3+ для бана/кика)."""
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=3)
+    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=3, bot=bot)
 
     case = ModerationCase(
         chat_id=chat_id,
