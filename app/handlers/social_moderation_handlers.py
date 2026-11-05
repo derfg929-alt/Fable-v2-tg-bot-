@@ -84,11 +84,116 @@ async def _get_target_user_id(message: types.Message, session) -> int | None:
 
 # ===================== КОМАНДЫ И ПОМОЩЬ =====================
 
+def _build_help_sections_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="1⃣ Основное", callback_data="help_sec_1")
+    builder.button(text="2⃣ Игры", callback_data="help_sec_2")
+    builder.button(text="3⃣ Заработок", callback_data="help_sec_3")
+    builder.button(text="4⃣ Кланы", callback_data="help_sec_4")
+    builder.button(text="5⃣ Города", callback_data="help_sec_5")
+    builder.button(text="6⃣ Развлечения", callback_data="help_sec_6")
+    builder.button(text="7⃣ Бизнесы", callback_data="help_sec_7")
+    builder.button(text="8⃣ Персонаж", callback_data="help_sec_8")
+    builder.button(text="9⃣ Космодром", callback_data="help_sec_9")
+    builder.button(text="🔟 Биржа", callback_data="help_sec_10")
+    builder.adjust(2, 2, 2, 2, 2)
+    return builder.as_markup()
+
+
 @router.message(Command("команды", "help"))
 @router.message(F.text.casefold().in_(["команды", "!команды", "помощь", "!помощь"]))
+@router.message(F.text.casefold().startswith("помощь"))
 async def handle_commands_list(message: types.Message):
-    """Выводит список всех команд и возможностей бота."""
-    await message.reply(get_commands_help_text(), parse_mode="HTML")
+    """Выводит список всех команд и разделов помощи бота."""
+    msg_text = getattr(message, "text", None) or ""
+    parts = msg_text.strip().split()
+    if len(parts) > 1:
+        arg = parts[1].strip()
+        from app.services.help_service import get_section_help_text
+        if arg.isdigit():
+            sec_num = int(arg)
+            text = get_section_help_text(sec_num)
+            if text:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="◀️ Все разделы", callback_data="help_sec_all")
+                await message.reply(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                return
+
+    await message.reply(
+        get_commands_help_text(),
+        reply_markup=_build_help_sections_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("help_sec_"))
+async def on_help_section_click(callback: types.CallbackQuery):
+    sec_str = callback.data.split("_")[2]
+    if sec_str == "all":
+        await callback.message.edit_text(
+            get_commands_help_text(),
+            reply_markup=_build_help_sections_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    sec_id = int(sec_str)
+    from app.services.help_service import get_section_help_text
+    text = get_section_help_text(sec_id)
+    if text:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="◀️ В меню разделов", callback_data="help_sec_all")
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().in_(["реф", "!реф"]))
+@router.message(F.text.casefold().startswith("реф"))
+async def handle_ref_system(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").strip().split()
+    user_id = message.from_user.id
+
+    async with session_scope() as session:
+        reg = await get_or_create_player(session, telegram_id=user_id, first_name=message.from_user.first_name)
+        player = reg.player
+
+        if len(parts) >= 2 and parts[1].isdigit():
+            ref_id = int(parts[1])
+            if ref_id == user_id:
+                await message.reply("❌ Вы не можете пригласить самого себя!")
+                return
+            if player.referred_by:
+                await message.reply("❌ Вы уже активировали реферальный код ранее!")
+                return
+
+            from app.db.models import Player
+            inviter = await session.get(Player, ref_id)
+            if not inviter:
+                await message.reply("❌ Пригласивший игрок не найден в системе Fable!")
+                return
+
+            player.referred_by = ref_id
+            from app.services.economy_service import credit_coins
+            bonus = 1_000
+            await credit_coins(session, user_id=user_id, amount=bonus, reason=f"Бонус за реферала от {ref_id}", operation_type="referral_bonus")
+            await credit_coins(session, user_id=ref_id, amount=bonus, reason=f"Бонус за приглашение игрока {user_id}", operation_type="referral_bonus")
+            await message.reply(f"🎉 <b>Реферальный код активирован!</b>\n\nВы и ваш друг получили по <b>+{bonus:,}</b> монет!".replace(",", " "), parse_mode="HTML")
+            return
+
+        bot_info = await message.bot.get_me()
+        bot_username = bot_info.username or "FableBot"
+        ref_link = f"https://t.me/{bot_username}?start={user_id}"
+
+        resp = (
+            f"✉️ <b>РЕФЕРАЛЬНАЯ СИСТЕМА FABLE</b>\n\n"
+            f"Приглашайте друзей и развивайтесь в игре вместе!\n"
+            f"🎁 <b>Награда:</b> по <b>1 000 монет</b> вам и каждому приглашенному игроку!\n\n"
+            f"🔗 Ваша ссылка для приглашения:\n<code>{ref_link}</code>\n\n"
+            f"Или друг может отправить в чат бота команду:\n"
+            f"<code>реф {user_id}</code>"
+        )
+        await message.reply(resp, parse_mode="HTML")
 
 
 # ===================== КЛАНЫ =====================

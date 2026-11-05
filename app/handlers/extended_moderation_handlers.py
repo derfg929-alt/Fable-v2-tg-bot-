@@ -8,6 +8,7 @@ from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, IS_MEMBER,
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.db.session import session_scope
+from sqlalchemy.dialects.postgresql import insert
 from app.db.models import ChatAdmin
 from app.services.player_service import get_or_create_player
 from app.services.moderation_service import (
@@ -64,8 +65,23 @@ async def on_bot_added_my_chat_member(event: types.ChatMemberUpdated, bot: Bot):
     """Срабатывает при добавлении самого бота в группу/канал."""
     chat = event.chat
     if event.new_chat_member.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR):
+        adder = getattr(event, "from_user", None)
         async with session_scope() as session:
             await get_or_create_chat(session, chat_id=chat.id, title=chat.title or "")
+            if adder and not getattr(adder, "is_bot", False):
+                await get_or_create_player(session, telegram_id=adder.id, first_name=getattr(adder, "first_name", "Владелец"), username=getattr(adder, "username", None))
+                stmt = insert(ChatAdmin).values(
+                    chat_id=chat.id,
+                    user_id=adder.id,
+                    level=5,
+                    assigned_by=adder.id,
+                    is_active=True,
+                ).on_conflict_do_update(
+                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
+                    set_={"level": 5, "is_active": True},
+                )
+                await session.execute(stmt)
+
         await bot.send_message(chat_id=chat.id, text=get_greeting_text(), parse_mode="HTML")
 
 
@@ -77,8 +93,22 @@ async def on_bot_added_new_chat_members(message: types.Message, bot: Bot):
     bot_info = await bot.get_me()
     for member in message.new_chat_members:
         if member.id == bot_info.id:
+            adder = getattr(message, "from_user", None)
             async with session_scope() as session:
                 await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+                if adder and not getattr(adder, "is_bot", False):
+                    await get_or_create_player(session, telegram_id=adder.id, first_name=getattr(adder, "first_name", "Владелец"), username=getattr(adder, "username", None))
+                    stmt = insert(ChatAdmin).values(
+                        chat_id=message.chat.id,
+                        user_id=adder.id,
+                        level=5,
+                        assigned_by=adder.id,
+                        is_active=True,
+                    ).on_conflict_do_update(
+                        index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
+                        set_={"level": 5, "is_active": True},
+                    )
+                    await session.execute(stmt)
             await message.answer(get_greeting_text(), parse_mode="HTML")
             break
 
