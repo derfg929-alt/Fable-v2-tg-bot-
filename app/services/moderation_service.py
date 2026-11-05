@@ -114,7 +114,7 @@ async def get_user_admin_level(
     if admin_row:
         return admin_row.level
 
-    # Попытка проверить права напрямую в Telegram чате
+    # Попытка проверить права напрямую в Telegram чате, если в БД еще нет роли
     if bot:
         try:
             member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
@@ -134,7 +134,6 @@ async def get_user_admin_level(
                 await session.execute(stmt)
                 return 5
             elif status == "administrator":
-                # Назначаем Telegram-админу ур. 3 (Админ)
                 stmt = insert(ChatAdmin).values(
                     chat_id=chat_id,
                     user_id=user_id,
