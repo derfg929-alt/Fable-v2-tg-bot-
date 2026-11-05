@@ -254,6 +254,141 @@ async def handle_roulette(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
+# ===================== СОЦИАЛЬНЫЕ И ИГРОВЫЕ КОМАНДЫ (Ники, Браки, Шар, Реши) =====================
+
+from app.services.social_fun_service import (
+    change_nickname,
+    evaluate_math_expression,
+    get_magic_ball_prediction,
+    propose_marriage,
+    accept_marriage,
+    decline_marriage,
+    divorce,
+)
+
+
+@router.message(F.text.casefold().startswith("ник"))
+async def handle_nickname(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.reply("Использование: <code>ник [ваше новое имя]</code>", parse_mode="HTML")
+        return
+    new_nick = parts[1].strip()
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            name = await change_nickname(session, user_id=message.from_user.id, new_nick=new_nick)
+            await message.reply(f"👑 Ваш никнейм успешно изменен на: <b>{name}</b>!", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().startswith("шар"))
+async def handle_magic_ball(message: types.Message):
+    q = (message.text or "")[3:].strip()
+    resp = get_magic_ball_prediction(q)
+    await message.reply(resp, parse_mode="HTML")
+
+
+@router.message(F.text.casefold().startswith("реши"))
+async def handle_math_solve(message: types.Message):
+    expr = (message.text or "")[4:].strip()
+    try:
+        ans = evaluate_math_expression(expr)
+        await message.reply(f"🧮 <b>Калькулятор Fable:</b>\n\n<code>{expr}</code> = <b>{ans}</b>", parse_mode="HTML")
+    except Exception as e:
+        await message.reply(f"❌ {e}", parse_mode="HTML")
+
+
+@router.message(F.text.casefold().startswith("брак"))
+async def handle_marriage(message: types.Message):
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().casefold()
+    user_id = message.from_user.id
+
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=user_id, first_name=message.from_user.first_name)
+
+        if "согласие" in text or "да" in text:
+            try:
+                p1_name, p2_name = await accept_marriage(session, target_id=user_id)
+                await message.reply(
+                    f"💖 <b>СОВЕТ ДА ЛЮБОВЬ!</b> 💍\n\n"
+                    f"<b>{p1_name}</b> и <b>{p2_name}</b> официально связали себя узами брака!\n"
+                    f"Поздравляем молодоженов!",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        if "отказ" in text or "нет" in text:
+            ok = await decline_marriage(user_id)
+            if ok:
+                await message.reply("💔 Предложение руки и сердца отклонено.")
+            else:
+                await message.reply("Вам не делали предложений.")
+            return
+
+        target_id = _extract_target_id(message)
+        if not target_id:
+            await message.reply("Использование: ответом на сообщение <code>брак</code> или <code>брак @user</code>", parse_mode="HTML")
+            return
+
+        try:
+            p1_name, p2_name = await propose_marriage(session, user_id=user_id, target_id=target_id)
+            builder = InlineKeyboardBuilder()
+            builder.button(text="💍 Согласиться", callback_data=f"marry_yes_{user_id}")
+            builder.button(text="💔 Отказать", callback_data=f"marry_no_{user_id}")
+            builder.adjust(2)
+            await message.reply(
+                f"💍 <b>ПРЕДЛОЖЕНИЕ РУКИ И СЕРДЦА!</b>\n\n"
+                f"<b>{p1_name}</b> делает романтическое предложение игроку <b>{p2_name}</b>!\n"
+                f"Готовы ли вы стать семьей?",
+                reply_markup=builder.as_markup(),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.callback_query(F.data.startswith("marry_yes_"))
+async def on_marry_accept_click(callback: types.CallbackQuery):
+    async with session_scope() as session:
+        try:
+            p1_name, p2_name = await accept_marriage(session, target_id=callback.from_user.id)
+            await callback.message.edit_text(
+                f"💖 <b>СОВЕТ ДА ЛЮБОВЬ!</b> 💍\n\n"
+                f"<b>{p1_name}</b> и <b>{p2_name}</b> официально вступили в законный брак!\n"
+                f"Горько! 🎉",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await callback.answer(f"❌ {e}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("marry_no_"))
+async def on_marry_decline_click(callback: types.CallbackQuery):
+    await decline_marriage(callback.from_user.id)
+    await callback.message.edit_text("💔 Предложение руки и сердца было отвергнуто.")
+
+
+@router.message(F.text.casefold().in_(["развод", "!развод"]))
+async def handle_divorce(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            spouse = await divorce(session, user_id=message.from_user.id)
+            await message.reply(f"💔 Ваш брак с <b>{spouse}</b> официально расторгнут. Теперь вы свободны.", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
 # ===================== ДУЭЛИ =====================
 
 @router.message(F.text.casefold().startswith("дуэль"))

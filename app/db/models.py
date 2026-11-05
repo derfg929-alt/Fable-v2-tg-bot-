@@ -52,6 +52,10 @@ class Player(Base, TimestampMixin):
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     reputation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     shares: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    custom_nickname: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rating: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    married_to: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     registered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -504,3 +508,61 @@ class OwnerBroadcast(Base):
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     results: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlayerMine(Base, TimestampMixin):
+    """Шахта игрока: уровень кирки и запасы руды."""
+    __tablename__ = "player_mines"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
+    pickaxe_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    coal: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    iron: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    copper: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    silver: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    gold: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    processed_metals: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_mined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PlayerInventory(Base, TimestampMixin):
+    """Инвентарь игрока: купленные в магазине предметы, дроп с охоты/рыбалки, эксклюзивы из кейсов."""
+    __tablename__ = "player_inventories"
+    __table_args__ = (
+        UniqueConstraint("user_id", "item_id", name="uq_player_inventory_item"),
+        CheckConstraint("quantity >= 0", name="ck_player_inventory_quantity_nonnegative"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="general")
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_exclusive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class PlayerProperty(Base, TimestampMixin):
+    """Купленная игроком недвижимость (10 видов)."""
+    __tablename__ = "player_properties"
+    __table_args__ = (
+        UniqueConstraint("user_id", "property_id", name="uq_player_property"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
+    property_id: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 to 10
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class PlayerJob(Base, TimestampMixin):
+    """История работы и подработок игрока с кулдаунами."""
+    __tablename__ = "player_jobs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
+    current_job: Mapped[str] = mapped_column(String(64), nullable=False, default="Стажёр")
+    last_worked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_side_job_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
