@@ -90,6 +90,39 @@ def get_hourly_yield(computers: int, farm_level: int) -> int:
     return int(computers * 25 * multiplier)
 
 
+def format_mining_profit_overview(mining: PlayerMining) -> str:
+    """Подробный финансовый паспорт крипто-фермы: мощности, выработка монет в час и день."""
+    rigs = get_rigs_dict(mining)
+    total_comps = sum(rigs.values())
+    active_coin = (mining.active_coin or "BTC").upper()
+    total_hr = calculate_effective_hashrate(rigs, active_coin, mining.farm_level)
+
+    yield_rate = COIN_BASE_YIELD_PER_HASHRATE.get(active_coin, Decimal("0.00000005"))
+    hourly_crypto = (Decimal(str(total_hr)) * yield_rate).quantize(Decimal("0.00000001"))
+    cap_crypto = (hourly_crypto * Decimal("4.0")).quantize(Decimal("0.00000001"))
+    daily_crypto = (hourly_crypto * Decimal("24.0")).quantize(Decimal("0.00000001"))
+
+    hourly_coins = int(total_hr * 0.5)
+    cap_coins = int(hourly_coins * 4)
+
+    lines = [
+        f"⚡️ <b>ФИНАНСОВЫЙ ПАСПОРТ МАЙНИНГ-ФЕРМЫ</b>\n",
+        f"🎯 Активная валюта добычи: <b>{active_coin}</b>",
+        f"🏢 Уровень дата-центра: <b>{mining.farm_level} / 10</b> (+{(mining.farm_level - 1)*25}% бонус хэшрейта)",
+        f"🔥 Вычислительная мощность: <b>{total_hr:,} GH/s</b>",
+        f"🖥 Всего оборудования: <b>{total_comps}</b> ригов\n",
+        f"📈 <b>Прогноз добычи криптовалюты:</b>",
+        f"• В час: <b>+{hourly_crypto:.8f} {active_coin}</b>",
+        f"• В накопитель (за 4ч капа): <b>до +{cap_crypto:.8f} {active_coin}</b>",
+        f"• В сутки (при сборе): <b>~{daily_crypto:.8f} {active_coin}</b>\n",
+        f"💰 <b>Бонусные игровые монеты:</b>",
+        f"• В час: <b>+{hourly_coins:,}</b> монет/час",
+        f"• За 4 часа: <b>+{cap_coins:,}</b> монет\n",
+        f"💡 <i>Сбор переносит намайненные активы в <code>портфель</code>!</i>",
+    ]
+    return "\n".join(lines).replace(",", " ")
+
+
 async def get_or_create_mining(session: AsyncSession, *, user_id: int) -> PlayerMining:
     row = await session.scalar(
         select(PlayerMining).where(PlayerMining.user_id == user_id).with_for_update()

@@ -92,9 +92,12 @@ async def claim_daily_bonus(session: AsyncSession, *, user_id: int) -> DailyBonu
 # ===================== МИНИ-ИГРЫ =====================
 
 async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple[int, int, bool, int]:
-    """Кости: бросок игрока vs бота. Возвращает (player_roll, bot_roll, is_win, payout)."""
+    """Кости: бросок игрока vs бота с ограничением эмиссии монет."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
+    if stake > 500_000:
+        raise InvalidAmountError("Максимальная ставка в костях: 500 000 монет")
+
     player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
     if not player or player.wallet < stake:
         raise InsufficientFundsError("Недостаточно монет для ставки")
@@ -109,7 +112,8 @@ async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple
     payout = 0
 
     if is_win:
-        payout = int(stake * 2)
+        # Комиссия казино 5% для сдерживания инфляции (выплата 1.9x)
+        payout = int(stake * 1.9)
         await credit_coins(session, user_id=user_id, amount=payout, reason="Выигрыш в костях", operation_type="game_dice_win")
     elif is_draw:
         payout = stake
@@ -119,9 +123,12 @@ async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple
 
 
 async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, stake: int) -> tuple[str, bool, int]:
-    """Монетка: орел или решка. Возвращает (outcome, is_win, payout)."""
+    """Монетка: орел или решка с честным балансом выплат 1.9x."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
+    if stake > 500_000:
+        raise InvalidAmountError("Максимальная ставка в монетке: 500 000 монет")
+
     player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
     if not player or player.wallet < stake:
         raise InsufficientFundsError("Недостаточно монет для ставки")
@@ -132,7 +139,7 @@ async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, sta
     is_win = (choice.lower() in ("орел", "орёл", "heads") and outcome == "орел") or \
              (choice.lower() in ("решка", "tails") and outcome == "решка")
 
-    payout = int(stake * 1.95) if is_win else 0
+    payout = int(stake * 1.9) if is_win else 0
     if is_win:
         await credit_coins(session, user_id=user_id, amount=payout, reason="Выигрыш в монетке", operation_type="game_coinflip_win")
 
@@ -140,16 +147,20 @@ async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, sta
 
 
 async def play_mystery_box(session: AsyncSession, *, user_id: int, stake: int) -> tuple[float, int]:
-    """Таинственный сундук: коэффициент от 0x до 5x. Возвращает (multiplier, payout)."""
+    """Таинственный сундук: сбалансированное распределение с меньшим числом выигрышей."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
+    if stake > 500_000:
+        raise InvalidAmountError("Максимальная ставка в сундуке: 500 000 монет")
+
     player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
     if not player or player.wallet < stake:
         raise InsufficientFundsError("Недостаточно монет для ставки")
 
     await burn_coins(session, user_id=user_id, amount=stake, reason="Открытие сундука", operation_type="game_box_stake")
 
-    mult = random.choices([0.0, 0.5, 1.2, 1.8, 2.5, 5.0], weights=[0.30, 0.25, 0.20, 0.15, 0.08, 0.02])[0]
+    # Сбалансированный house edge: 40% полный ноль, 30% возврат 0.5x, 15% 1.2x, 10% 1.5x, 4% 2.0x, 1% 3.5x
+    mult = random.choices([0.0, 0.5, 1.2, 1.5, 2.0, 3.5], weights=[0.40, 0.30, 0.15, 0.10, 0.04, 0.01])[0]
     payout = int(stake * mult)
     if payout > 0:
         await credit_coins(session, user_id=user_id, amount=payout, reason=f"Выигрыш в сундуке (x{mult})", operation_type="game_box_win")
@@ -200,20 +211,37 @@ class RouletteResult:
     net_profit: int
 
 
+from app.db.models import PlayerInventory
+from app.services.gear_service import get_or_create_gear
+
+HUNTING_PRICES: dict[str, int] = {
+    "заяц": 75,
+    "олень": 320,
+    "медведь": 1_500,
+    "дракон": 7_500,
+}
+
+FISHING_PRICES: dict[str, int] = {
+    "карась": 60,
+    "щука": 250,
+    "золотая рыбка": 1_200,
+    "сундук с сокровищами": 6_000,
+}
+
 FISHING_LOOT = [
-    ("empty", "Ничего не поймано", 0, 0.25),
-    ("common", "Карась", 50, 0.45),
-    ("rare", "Щука", 200, 0.20),
-    ("epic", "Золотая рыбка", 1000, 0.08),
-    ("legendary", "Древний сундук с сокровищами", 5000, 0.02),
+    ("empty", "Ничего не поймано", 0, 0.25, None),
+    ("common", "Карась", 60, 0.45, "карась"),
+    ("rare", "Щука", 250, 0.20, "щука"),
+    ("epic", "Золотая рыбка", 1200, 0.08, "золотая рыбка"),
+    ("legendary", "Древний сундук с сокровищами", 6000, 0.02, "сундук с сокровищами"),
 ]
 
 HUNTING_LOOT = [
-    ("failure", "Зверь убежал", 0, 0.30),
-    ("common", "Заяц", 60, 0.40),
-    ("rare", "Олень", 250, 0.20),
-    ("epic", "Медведь", 1200, 0.08),
-    ("legendary", "Мифический дракон", 6000, 0.02),
+    ("failure", "Зверь убежал", 0, 0.30, None),
+    ("common", "Заяц", 75, 0.40, "заяц"),
+    ("rare", "Олень", 320, 0.20, "олень"),
+    ("epic", "Медведь", 1500, 0.08, "медведь"),
+    ("legendary", "Мифический дракон", 7500, 0.02, "дракон"),
 ]
 
 SLOT_SYMBOLS = ["🍒", "🍋", "🍇", "🔔", "⭐", "7️⃣"]
@@ -223,15 +251,14 @@ ROULETTE_NUMBERS_BLACK = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29
 
 
 async def play_fishing(session: AsyncSession, *, user_id: int) -> FishingResult:
-    """Рыбалка: проверка кулдауна, генерация улова, начисление награды."""
+    """Рыбалка: проверка кулдауна, влияние удочки из снаряжения, сохранение улова в инвентарь."""
     player = await session.scalar(
         select(Player).where(Player.telegram_id == user_id).with_for_update()
     )
     if not player:
         raise PlayerNotFoundError(f"Игрок с ID {user_id} не найден")
 
-    # Проверка кулдауна (1 час = 3600 сек)
-    cooldown_seconds = 3600
+    cooldown_seconds = 600  # 10 минут
     last_game = await session.scalar(
         select(GameSession)
         .where(
@@ -250,55 +277,82 @@ async def play_fishing(session: AsyncSession, *, user_id: int) -> FishingResult:
             secs = rem % 60
             raise GameCooldownError(f"Рыбачить можно через {mins} мин. {secs} сек.")
 
-    # Выбор улова
-    r = random.random()
-    cumulative = 0.0
-    category, item_name, reward, _ = FISHING_LOOT[0]
-    for cat, name, rew, prob in FISHING_LOOT:
-        cumulative += prob
-        if r <= cumulative:
-            category, item_name, reward, _ = cat, name, rew, prob
-            break
+    gear = await get_or_create_gear(session, user_id=user_id)
+    rod_lvl = gear.fishing_rod_level
 
-    if reward > 0:
-        await credit_coins(
-            session,
-            user_id=user_id,
-            amount=reward,
-            reason=f"Улов на рыбалке: {item_name}",
-            operation_type="game_fishing",
+    # Шанс холостой поклевки уменьшается с уровнем удочки
+    empty_prob = max(0.05, 0.25 - (rod_lvl - 1) * 0.03)
+    r = random.random()
+
+    if r < empty_prob:
+        category, item_name, reward_coins, item_key = "empty", "Ничего не поймано", 0, None
+    else:
+        weights = [
+            0.50,
+            0.28 + (rod_lvl - 1) * 0.02,
+            0.15 + (rod_lvl - 1) * 0.015,
+            0.05 + (rod_lvl - 1) * 0.01,
+        ]
+        chosen = random.choices(FISHING_LOOT[1:], weights=weights)[0]
+        category, item_name, reward_coins, _, item_key = chosen
+
+    if item_key:
+        inv = await session.scalar(
+            select(PlayerInventory).where(
+                PlayerInventory.user_id == user_id,
+                PlayerInventory.item_id == item_key,
+            ).with_for_update()
         )
+        if not inv:
+            inv = PlayerInventory(
+                user_id=user_id,
+                item_id=item_key,
+                item_name=item_name,
+                category="fishing",
+                quantity=1,
+                is_exclusive=False,
+            )
+            session.add(inv)
+        else:
+            inv.quantity += 1
+
+        player.experience += 10 + rod_lvl * 2
 
     game_session = GameSession(
         game_type="fishing",
         status="finished",
         user_id=user_id,
         stake=0,
-        payout=reward,
+        payout=reward_coins,
         result=f"{category}:{item_name}",
-        state={"item_name": item_name, "category": category},
+        state={"item_name": item_name, "category": category, "rod_level": rod_lvl},
         finished_at=now,
     )
     session.add(game_session)
     await session.flush()
 
-    msg = (
-        f"🎣 Вы закинули удочку...\n"
-        f"Улов: {item_name}!\n"
-        + (f"Вы получили {reward} монет!" if reward > 0 else "К сожалению, ничего не клюнуло.")
-    )
-    return FishingResult(category=category, item_name=item_name, reward_coins=reward, message=msg)
+    if item_key:
+        msg = (
+            f"🎣 <b>РЫБАЛКА УДАЛАСЬ!</b> (Удочка ур. {rod_lvl})\n\n"
+            f"Вы выудили: <b>{item_name}</b> (1 шт.)!\n"
+            f"📦 <i>Улов добавлен в ваш <code>инвентарь</code>. Продайте его скупщику через <code>инвентарь</code>!</i>\n"
+            f"Оценочная стоимость: <b>~{reward_coins}</b> монет."
+        )
+    else:
+        msg = f"🎣 <b>РЫБАЛКА</b> (Удочка ур. {rod_lvl})\n\nПоплавок дернулся, но рыба сорвалась с крючка! Попробуйте позже или улучшите удочку: <code>улучшить удочка</code>."
+
+    return FishingResult(category=category, item_name=item_name, reward_coins=reward_coins, message=msg)
 
 
 async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
-    """Охота: проверка кулдауна, генерация добычи, начисление награды."""
+    """Охота: проверка кулдауна, влияние охотничьего оружия, добыча в инвентарь."""
     player = await session.scalar(
         select(Player).where(Player.telegram_id == user_id).with_for_update()
     )
     if not player:
         raise PlayerNotFoundError(f"Игрок с ID {user_id} не найден")
 
-    cooldown_seconds = 3600
+    cooldown_seconds = 600  # 10 минут
     last_game = await session.scalar(
         select(GameSession)
         .where(
@@ -317,44 +371,71 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
             secs = rem % 60
             raise GameCooldownError(f"На охоту можно отправиться через {mins} мин. {secs} сек.")
 
-    r = random.random()
-    cumulative = 0.0
-    category, target_name, reward, _ = HUNTING_LOOT[0]
-    for cat, name, rew, prob in HUNTING_LOOT:
-        cumulative += prob
-        if r <= cumulative:
-            category, target_name, rew, prob = cat, name, rew, prob
-            reward = rew
-            break
+    gear = await get_or_create_gear(session, user_id=user_id)
+    rifle_lvl = gear.hunting_rifle_level
 
-    if reward > 0:
-        await credit_coins(
-            session,
-            user_id=user_id,
-            amount=reward,
-            reason=f"Добыча на охоте: {target_name}",
-            operation_type="game_hunting",
+    # Промах снижается с прокачкой оружия (от 25% до 3%)
+    miss_prob = max(0.03, 0.25 - (rifle_lvl - 1) * 0.03)
+    r = random.random()
+
+    if r < miss_prob:
+        category, target_name, reward_coins, item_key = "failure", "Зверь убежал", 0, None
+    else:
+        weights = [
+            0.52,
+            0.28 + (rifle_lvl - 1) * 0.015,
+            0.14 + (rifle_lvl - 1) * 0.015,
+            0.04 + (rifle_lvl - 1) * 0.01,
+        ]
+        chosen = random.choices(HUNTING_LOOT[1:], weights=weights)[0]
+        category, target_name, reward_coins, _, item_key = chosen
+
+    if item_key:
+        inv = await session.scalar(
+            select(PlayerInventory).where(
+                PlayerInventory.user_id == user_id,
+                PlayerInventory.item_id == item_key,
+            ).with_for_update()
         )
+        if not inv:
+            inv = PlayerInventory(
+                user_id=user_id,
+                item_id=item_key,
+                item_name=target_name,
+                category="hunting",
+                quantity=1,
+                is_exclusive=False,
+            )
+            session.add(inv)
+        else:
+            inv.quantity += 1
+
+        player.experience += 15 + rifle_lvl * 3
 
     game_session = GameSession(
         game_type="hunting",
         status="finished",
         user_id=user_id,
         stake=0,
-        payout=reward,
+        payout=reward_coins,
         result=f"{category}:{target_name}",
-        state={"target_name": target_name, "category": category},
+        state={"target_name": target_name, "category": category, "rifle_level": rifle_lvl},
         finished_at=now,
     )
     session.add(game_session)
     await session.flush()
 
-    msg = (
-        f"🏹 Вы отправились в чащу леса...\n"
-        f"Добыча: {target_name}!\n"
-        + (f"Награда: {reward} монет!" if reward > 0 else "Добыча ускользнула.")
-    )
-    return HuntingResult(category=category, target_name=target_name, reward_coins=reward, message=msg)
+    if item_key:
+        msg = (
+            f"🏹 <b>УДАЧНАЯ ОХОТА!</b> (Оружие ур. {rifle_lvl})\n\n"
+            f"Вы метко подстрелили добычу: <b>{target_name}</b> (1 шт.)!\n"
+            f"📦 <i>Трофей сохранен в ваш <code>инвентарь</code>. Чтобы получить деньги, продайте его в магазин: <code>инвентарь</code>!</i>\n"
+            f"Оценочная стоимость: <b>~{reward_coins}</b> монет."
+        )
+    else:
+        msg = f"🏹 <b>ОХОТА</b> (Оружие ур. {rifle_lvl})\n\nЗверь скрылся в густой чаще леса! Улучшите оружие для охоты: <code>улучшить оружие</code>."
+
+    return HuntingResult(category=category, target_name=target_name, reward_coins=reward_coins, message=msg)
 
 
 async def play_slots(session: AsyncSession, *, user_id: int, stake: int) -> SlotResult:
@@ -380,26 +461,31 @@ async def play_slots(session: AsyncSession, *, user_id: int, stake: int) -> Slot
         operation_type="game_slots_stake",
     )
 
-    r1, r2, r3 = random.choice(SLOT_SYMBOLS), random.choice(SLOT_SYMBOLS), random.choice(SLOT_SYMBOLS)
+    if stake > 500_000:
+        raise InvalidAmountError("Максимальная ставка в слотах: 500 000 монет")
+
+    # Расширенный набор символов слотов с пустышками для уменьшения переизбытка монет
+    expanded_symbols = ["🍒", "🍋", "🍇", "🔔", "⭐", "7️⃣", "⚪️", "❌"]
+    r1, r2, r3 = random.choice(expanded_symbols), random.choice(expanded_symbols), random.choice(expanded_symbols)
     reels = (r1, r2, r3)
 
     is_win = False
     multiplier = 0.0
 
-    if r1 == r2 == r3:
+    if r1 == r2 == r3 and r1 not in ("⚪️", "❌"):
         is_win = True
         if r1 == "7️⃣":
-            multiplier = 20.0  # Джекпот
+            multiplier = 15.0  # Джекпот
         elif r1 == "⭐":
-            multiplier = 10.0
+            multiplier = 8.0
         elif r1 == "🔔":
-            multiplier = 7.0
-        else:
             multiplier = 5.0
-    elif r1 == r2 or r2 == r3 or r1 == r3:
-        # Две одинаковых
+        else:
+            multiplier = 3.5
+    elif (r1 == r2 or r2 == r3 or r1 == r3) and ("❌" not in (r1, r2, r3)):
+        # Две одинаковых без символа неудачи
         is_win = True
-        multiplier = 1.5
+        multiplier = 1.2
 
     payout = int(stake * multiplier)
     if payout > 0:
