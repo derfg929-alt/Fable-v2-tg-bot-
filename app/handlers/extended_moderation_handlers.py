@@ -19,6 +19,7 @@ from app.services.moderation_service import (
     remove_link_whitelist,
     list_link_whitelist,
     parse_duration_string,
+    sync_chat_creator_and_admins,
     ROLE_NAMES,
 )
 from app.services.chat_settings_service import (
@@ -82,6 +83,9 @@ async def on_bot_added_my_chat_member(event: types.ChatMemberUpdated, bot: Bot):
                 )
                 await session.execute(stmt)
 
+            # Также всегда синхронизируем истинного создателя группы и админов Telegram
+            await sync_chat_creator_and_admins(session, chat_id=chat.id, bot=bot)
+
         await bot.send_message(chat_id=chat.id, text=get_greeting_text(), parse_mode="HTML")
 
 
@@ -109,6 +113,10 @@ async def on_bot_added_new_chat_members(message: types.Message, bot: Bot):
                         set_={"level": 5, "is_active": True},
                     )
                     await session.execute(stmt)
+
+                # Синхронизируем истинного владельца группы (creator)
+                await sync_chat_creator_and_admins(session, chat_id=message.chat.id, bot=bot)
+
             await message.answer(get_greeting_text(), parse_mode="HTML")
             break
 
@@ -374,7 +382,7 @@ async def handle_admin_appoint(message: types.Message, bot: Bot):
             return
 
         try:
-            new_lvl = await set_admin_level(session, chat_id=message.chat.id, actor_id=message.from_user.id, target_id=target_id, new_level=lvl_val)
+            new_lvl = await set_admin_level(session, chat_id=message.chat.id, actor_id=message.from_user.id, target_id=target_id, new_level=lvl_val, bot=bot)
             await message.reply(f"👑 Пользователю ID <code>{target_id}</code> установлен уровень {new_lvl} ({ROLE_NAMES[new_lvl]})!", parse_mode="HTML")
         except Exception as e:
             await message.reply(f"❌ {e}")
@@ -392,7 +400,7 @@ async def handle_admin_dismiss(message: types.Message, bot: Bot):
             return
 
         try:
-            await set_admin_level(session, chat_id=message.chat.id, actor_id=message.from_user.id, target_id=target_id, new_level=1)
+            await set_admin_level(session, chat_id=message.chat.id, actor_id=message.from_user.id, target_id=target_id, new_level=1, bot=bot)
             await message.reply(f"🛡 С пользователя ID <code>{target_id}</code> успешно сняты права администратора в чате.", parse_mode="HTML")
         except Exception as e:
             await message.reply(f"❌ {e}")

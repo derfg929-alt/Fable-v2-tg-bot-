@@ -23,7 +23,16 @@ from app.services.clan_service import (
     get_clan_messages,
     delete_clan,
 )
-from app.services.top_service import get_top_rich, get_top_active, get_top_clans
+from app.services.top_service import (
+    get_top_rich,
+    get_top_active,
+    get_top_clans,
+    get_top_level,
+    get_top_rating,
+    get_top_mine,
+    get_top_businesses,
+    get_top_cosmodrome,
+)
 from app.services.help_service import get_commands_help_text, get_greeting_text
 from aiogram.filters import Command
 from app.services.moderation_service import (
@@ -304,7 +313,12 @@ def _build_tops_main_keyboard():
     builder.button(text="💰 Богатые", callback_data="top_menu_rich")
     builder.button(text="🔥 Активные", callback_data="top_menu_active")
     builder.button(text="🛡 Кланы", callback_data="top_menu_clans")
-    builder.adjust(3)
+    builder.button(text="⭐ Уровень", callback_data="top_menu_level")
+    builder.button(text="🎖 Рейтинг", callback_data="top_menu_rating")
+    builder.button(text="⛏ Шахта", callback_data="top_menu_mine")
+    builder.button(text="🏢 Бизнесы", callback_data="top_menu_biz")
+    builder.button(text="🚀 Космодром", callback_data="top_menu_cosmo")
+    builder.adjust(3, 2, 3)
     return builder.as_markup()
 
 
@@ -313,8 +327,13 @@ def _build_top_category_keyboard():
     builder.button(text="💰 Богатые", callback_data="top_menu_rich")
     builder.button(text="🔥 Активные", callback_data="top_menu_active")
     builder.button(text="🛡 Кланы", callback_data="top_menu_clans")
+    builder.button(text="⭐ Уровень", callback_data="top_menu_level")
+    builder.button(text="🎖 Рейтинг", callback_data="top_menu_rating")
+    builder.button(text="⛏ Шахта", callback_data="top_menu_mine")
+    builder.button(text="🏢 Бизнесы", callback_data="top_menu_biz")
+    builder.button(text="🚀 Космодром", callback_data="top_menu_cosmo")
     builder.button(text="◀️ В меню топов", callback_data="top_menu_back")
-    builder.adjust(3, 1)
+    builder.adjust(3, 2, 3, 1)
     return builder.as_markup()
 
 
@@ -333,26 +352,31 @@ async def handle_tops(message: types.Message):
             await message.reply(
                 f"🏆 <b>Выберите рейтинг Fable ({scope_str}):</b>\n\n"
                 f"💡 <i>Доступны команды:</i>\n"
-                f"• <code>топ богатых</code> / <code>топ богатых чат</code>\n"
-                f"• <code>топ активных</code> / <code>топ активных чат</code>\n"
-                f"• <code>топ кланов</code> / <code>топ кланов чат</code>",
+                f"• <code>топ богатых</code> (или <code>чат</code>)\n"
+                f"• <code>топ активных</code> (или <code>чат</code>)\n"
+                f"• <code>топ кланов</code> (или <code>чат</code>)\n"
+                f"• <code>топ уровней</code> (или <code>чат</code>)\n"
+                f"• <code>топ рейтинга</code> (или <code>чат</code>)\n"
+                f"• <code>топ шахты</code> (или <code>чат</code>)\n"
+                f"• <code>топ бизнесов</code> (или <code>чат</code>)\n"
+                f"• <code>топ космодрома</code> (или <code>чат</code>)",
                 reply_markup=_build_tops_main_keyboard(),
                 parse_mode="HTML",
             )
             return
 
-        if "богат" in text:
+        scope = f"чата «{message.chat.title}»" if chat_id and message.chat else "глобальный"
+
+        if any(w in text for w in ("богат", "баланс", "денег", "кошельк")):
             rich = await get_top_rich(session, chat_id=chat_id, limit=10)
-            scope = f"чата «{message.chat.title}»" if chat_id and message.chat else "глобальный"
             lines = [f"💰 <b>Топ богатых ({scope}):</b>\n"]
             for r in rich:
                 lines.append(f"{r.rank}. <b>{r.name}</b> — {r.total_wealth:,} монет".replace(",", " "))
             await message.reply("\n".join(lines) if rich else f"💰 <b>Топ богатых ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
             return
 
-        if "актив" in text:
+        if any(w in text for w in ("актив", "сообщени")):
             active = await get_top_active(session, chat_id=chat_id, limit=10)
-            scope = f"чата «{message.chat.title}»" if chat_id and message.chat else "глобальный"
             lines = [f"🔥 <b>Топ активных ({scope}):</b>\n"]
             for a in active:
                 lines.append(f"{a.rank}. <b>{a.name}</b> — {a.activity_points:,} очков".replace(",", " "))
@@ -361,11 +385,50 @@ async def handle_tops(message: types.Message):
 
         if "клан" in text:
             clans = await get_top_clans(session, chat_id=chat_id, limit=10)
-            scope = f"чата «{message.chat.title}»" if chat_id and message.chat else "глобальный"
             lines = [f"🛡 <b>Топ кланов ({scope}):</b>\n"]
             for c in clans:
                 lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
             await message.reply("\n".join(lines) if clans else f"🛡 <b>Топ кланов ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
+            return
+
+        if any(w in text for w in ("уров", "лвл", "опыт", "lvl")):
+            levels = await get_top_level(session, chat_id=chat_id, limit=10)
+            lines = [f"⭐ <b>Топ по уровню ({scope}):</b>\n"]
+            for item in levels:
+                lines.append(f"{item.rank}. <b>{item.name}</b> — Ур. {item.level} ({item.experience:,} XP)".replace(",", " "))
+            await message.reply("\n".join(lines) if levels else f"⭐ <b>Топ по уровню ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
+            return
+
+        if any(w in text for w in ("рейтинг", "авторитет")):
+            ratings = await get_top_rating(session, chat_id=chat_id, limit=10)
+            lines = [f"🎖 <b>Топ по рейтингу ({scope}):</b>\n"]
+            for item in ratings:
+                lines.append(f"{item.rank}. <b>{item.name}</b> — {item.rating:,} очков".replace(",", " "))
+            await message.reply("\n".join(lines) if ratings else f"🎖 <b>Топ по рейтингу ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
+            return
+
+        if any(w in text for w in ("шахт", "руд", "рудник")):
+            miners = await get_top_mine(session, chat_id=chat_id, limit=10)
+            lines = [f"⛏ <b>Топ шахтеров ({scope}):</b>\n"]
+            for m in miners:
+                lines.append(f"{m.rank}. <b>{m.name}</b> — {m.total_ores:,} руды (кирка ур. {m.pickaxe_level})".replace(",", " "))
+            await message.reply("\n".join(lines) if miners else f"⛏ <b>Топ шахтеров ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
+            return
+
+        if any(w in text for w in ("бизнес", "предприят")):
+            bizs = await get_top_businesses(session, chat_id=chat_id, limit=10)
+            lines = [f"🏢 <b>Топ владельцев бизнеса ({scope}):</b>\n"]
+            for b in bizs:
+                lines.append(f"{b.rank}. <b>{b.name}</b> — {b.business_count} бизнесов (всего {b.total_levels} ур.)")
+            await message.reply("\n".join(lines) if bizs else f"🏢 <b>Топ владельцев бизнеса ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
+            return
+
+        if any(w in text for w in ("космодром", "ракет", "космос")):
+            cosmos = await get_top_cosmodrome(session, chat_id=chat_id, limit=10)
+            lines = [f"🚀 <b>Топ космодрома ({scope}):</b>\n"]
+            for k in cosmos:
+                lines.append(f"{k.rank}. <b>{k.name}</b> — Космодром ур. {k.cosmodrome_level} ({k.rocket_count} ракет, {k.total_launches} запусков)")
+            await message.reply("\n".join(lines) if cosmos else f"🚀 <b>Топ космодрома ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
             return
 
 
@@ -444,6 +507,121 @@ async def on_top_menu_clans(callback: types.CallbackQuery):
         for c in clans:
             lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
         text = "\n".join(lines) if clans else "🛡 <b>Топ кланов:</b>\nРейтинг пуст."
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "top_menu_level")
+async def on_top_menu_level(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        levels = await get_top_level(session, chat_id=chat_id, limit=10)
+        lines = [f"⭐ <b>Топ по уровню ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for item in levels:
+            lines.append(f"{item.rank}. <b>{item.name}</b> — Ур. {item.level} ({item.experience:,} XP)".replace(",", " "))
+        text = "\n".join(lines) if levels else "⭐ <b>Топ по уровню:</b>\nРейтинг пуст."
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "top_menu_rating")
+async def on_top_menu_rating(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        ratings = await get_top_rating(session, chat_id=chat_id, limit=10)
+        lines = [f"🎖 <b>Топ по рейтингу ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for item in ratings:
+            lines.append(f"{item.rank}. <b>{item.name}</b> — {item.rating:,} очков".replace(",", " "))
+        text = "\n".join(lines) if ratings else "🎖 <b>Топ по рейтингу:</b>\nРейтинг пуст."
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "top_menu_mine")
+async def on_top_menu_mine(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        miners = await get_top_mine(session, chat_id=chat_id, limit=10)
+        lines = [f"⛏ <b>Топ шахтеров ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for m in miners:
+            lines.append(f"{m.rank}. <b>{m.name}</b> — {m.total_ores:,} руды (кирка ур. {m.pickaxe_level})".replace(",", " "))
+        text = "\n".join(lines) if miners else "⛏ <b>Топ шахтеров:</b>\nРейтинг пуст."
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "top_menu_biz")
+async def on_top_menu_biz(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        bizs = await get_top_businesses(session, chat_id=chat_id, limit=10)
+        lines = [f"🏢 <b>Топ владельцев бизнеса ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for b in bizs:
+            lines.append(f"{b.rank}. <b>{b.name}</b> — {b.business_count} бизнесов (всего {b.total_levels} ур.)")
+        text = "\n".join(lines) if bizs else "🏢 <b>Топ владельцев бизнеса:</b>\nРейтинг пуст."
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=_build_top_category_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "top_menu_cosmo")
+async def on_top_menu_cosmo(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    chat_id = callback.message.chat.id if callback.message.chat.type != ChatType.PRIVATE else None
+    async with session_scope() as session:
+        cosmos = await get_top_cosmodrome(session, chat_id=chat_id, limit=10)
+        lines = [f"🚀 <b>Топ космодрома ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+        for k in cosmos:
+            lines.append(f"{k.rank}. <b>{k.name}</b> — Космодром ур. {k.cosmodrome_level} ({k.rocket_count} ракет, {k.total_launches} запусков)")
+        text = "\n".join(lines) if cosmos else "🚀 <b>Топ космодрома:</b>\nРейтинг пуст."
         try:
             await callback.message.edit_text(
                 text,
@@ -614,7 +792,7 @@ async def handle_warn(message: types.Message):
 
         if "снять" in text:
             try:
-                ok = await revoke_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id)
+                ok = await revoke_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, bot=message.bot)
                 await message.reply("✅ Предупреждение снято." if ok else "У пользователя нет активных предупреждений.")
             except Exception as e:
                 await message.reply(f"❌ {e}")
@@ -622,7 +800,7 @@ async def handle_warn(message: types.Message):
 
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Нарушение"
         try:
-            case, cnt = await issue_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, reason=reason)
+            case, cnt = await issue_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, reason=reason, bot=message.bot)
             await message.reply(f"⚠️ Пользователю ID <code>{target_id}</code> выдано предупреждение ({cnt}/5). Причина: {reason}", parse_mode="HTML")
         except Exception as e:
             await message.reply(f"❌ {e}")

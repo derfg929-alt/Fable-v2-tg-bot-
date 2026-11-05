@@ -16,7 +16,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ActivityRecord, Clan, ClanMember, Player
+from app.db.models import (
+    ActivityRecord,
+    Clan,
+    ClanMember,
+    Player,
+    PlayerBusiness,
+    PlayerCosmodrome,
+    PlayerMine,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +53,52 @@ class TopClanEntry:
     level: int
     rating: int
     member_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TopLevelEntry:
+    rank: int
+    user_id: int
+    name: str
+    level: int
+    experience: int
+
+
+@dataclass(frozen=True, slots=True)
+class TopRatingEntry:
+    rank: int
+    user_id: int
+    name: str
+    rating: int
+
+
+@dataclass(frozen=True, slots=True)
+class TopMineEntry:
+    rank: int
+    user_id: int
+    name: str
+    pickaxe_level: int
+    total_ores: int
+    processed_metals: int
+
+
+@dataclass(frozen=True, slots=True)
+class TopBusinessEntry:
+    rank: int
+    user_id: int
+    name: str
+    business_count: int
+    total_levels: int
+
+
+@dataclass(frozen=True, slots=True)
+class TopCosmodromeEntry:
+    rank: int
+    user_id: int
+    name: str
+    cosmodrome_level: int
+    total_launches: int
+    rocket_count: int
 
 
 async def get_top_rich(
@@ -94,6 +148,243 @@ async def get_top_rich(
                 total_wealth=int(wealth),
                 wallet=player.wallet,
                 bank=player.bank_balance,
+            )
+        )
+    return entries
+
+
+async def get_top_level(
+    session: AsyncSession,
+    *,
+    chat_id: int | None = None,
+    limit: int = 50,
+) -> list[TopLevelEntry]:
+    """Возвращает топ игроков по уровню и опыту."""
+    if chat_id is None:
+        stmt = (
+            select(Player)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(Player.level), desc(Player.experience))
+            .limit(limit)
+        )
+    else:
+        subq = (
+            select(ActivityRecord.user_id)
+            .where(ActivityRecord.chat_id == chat_id)
+            .distinct()
+            .subquery()
+        )
+        stmt = (
+            select(Player)
+            .join(subq, subq.c.user_id == Player.telegram_id)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(Player.level), desc(Player.experience))
+            .limit(limit)
+        )
+
+    res = (await session.scalars(stmt)).all()
+    entries = []
+    for rank, player in enumerate(res, start=1):
+        entries.append(
+            TopLevelEntry(
+                rank=rank,
+                user_id=player.telegram_id,
+                name=player.first_name,
+                level=player.level,
+                experience=player.experience,
+            )
+        )
+    return entries
+
+
+async def get_top_rating(
+    session: AsyncSession,
+    *,
+    chat_id: int | None = None,
+    limit: int = 50,
+) -> list[TopRatingEntry]:
+    """Возвращает топ игроков по авторитету/рейтингу."""
+    if chat_id is None:
+        stmt = (
+            select(Player)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(Player.rating))
+            .limit(limit)
+        )
+    else:
+        subq = (
+            select(ActivityRecord.user_id)
+            .where(ActivityRecord.chat_id == chat_id)
+            .distinct()
+            .subquery()
+        )
+        stmt = (
+            select(Player)
+            .join(subq, subq.c.user_id == Player.telegram_id)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(Player.rating))
+            .limit(limit)
+        )
+
+    res = (await session.scalars(stmt)).all()
+    entries = []
+    for rank, player in enumerate(res, start=1):
+        entries.append(
+            TopRatingEntry(
+                rank=rank,
+                user_id=player.telegram_id,
+                name=player.first_name,
+                rating=player.rating,
+            )
+        )
+    return entries
+
+
+async def get_top_mine(
+    session: AsyncSession,
+    *,
+    chat_id: int | None = None,
+    limit: int = 50,
+) -> list[TopMineEntry]:
+    """Возвращает топ шахтеров по добытой руде и уровню кирки."""
+    total_ores_expr = (
+        PlayerMine.coal
+        + PlayerMine.iron
+        + PlayerMine.copper
+        + PlayerMine.silver
+        + PlayerMine.gold
+    ).label("total_ores")
+
+    if chat_id is None:
+        stmt = (
+            select(Player, PlayerMine, total_ores_expr)
+            .join(PlayerMine, PlayerMine.user_id == Player.telegram_id)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(total_ores_expr), desc(PlayerMine.processed_metals), desc(PlayerMine.pickaxe_level))
+            .limit(limit)
+        )
+    else:
+        subq = (
+            select(ActivityRecord.user_id)
+            .where(ActivityRecord.chat_id == chat_id)
+            .distinct()
+            .subquery()
+        )
+        stmt = (
+            select(Player, PlayerMine, total_ores_expr)
+            .join(subq, subq.c.user_id == Player.telegram_id)
+            .join(PlayerMine, PlayerMine.user_id == Player.telegram_id)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(total_ores_expr), desc(PlayerMine.processed_metals), desc(PlayerMine.pickaxe_level))
+            .limit(limit)
+        )
+
+    res = (await session.execute(stmt)).all()
+    entries = []
+    for rank, (player, mine, ores) in enumerate(res, start=1):
+        entries.append(
+            TopMineEntry(
+                rank=rank,
+                user_id=player.telegram_id,
+                name=player.first_name,
+                pickaxe_level=mine.pickaxe_level,
+                total_ores=int(ores),
+                processed_metals=mine.processed_metals,
+            )
+        )
+    return entries
+
+
+async def get_top_businesses(
+    session: AsyncSession,
+    *,
+    chat_id: int | None = None,
+    limit: int = 50,
+) -> list[TopBusinessEntry]:
+    """Возвращает топ магнатов бизнеса."""
+    cnt_expr = func.count(PlayerBusiness.id).label("b_cnt")
+    lvl_sum_expr = func.coalesce(func.sum(PlayerBusiness.level), 0).label("total_lvl")
+
+    query = (
+        select(Player, cnt_expr, lvl_sum_expr)
+        .join(PlayerBusiness, PlayerBusiness.user_id == Player.telegram_id)
+        .where(Player.is_globally_banned.is_(False))
+    )
+
+    if chat_id is not None:
+        subq = (
+            select(ActivityRecord.user_id)
+            .where(ActivityRecord.chat_id == chat_id)
+            .distinct()
+            .subquery()
+        )
+        query = query.join(subq, subq.c.user_id == Player.telegram_id)
+
+    query = (
+        query.group_by(Player.telegram_id)
+        .order_by(desc(lvl_sum_expr), desc(cnt_expr))
+        .limit(limit)
+    )
+
+    res = (await session.execute(query)).all()
+    entries = []
+    for rank, (player, cnt, total_lvl) in enumerate(res, start=1):
+        entries.append(
+            TopBusinessEntry(
+                rank=rank,
+                user_id=player.telegram_id,
+                name=player.first_name,
+                business_count=int(cnt),
+                total_levels=int(total_lvl),
+            )
+        )
+    return entries
+
+
+async def get_top_cosmodrome(
+    session: AsyncSession,
+    *,
+    chat_id: int | None = None,
+    limit: int = 50,
+) -> list[TopCosmodromeEntry]:
+    """Возвращает топ покорителей космоса."""
+    if chat_id is None:
+        stmt = (
+            select(Player, PlayerCosmodrome)
+            .join(PlayerCosmodrome, PlayerCosmodrome.user_id == Player.telegram_id)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(PlayerCosmodrome.level), desc(PlayerCosmodrome.total_launches))
+            .limit(limit)
+        )
+    else:
+        subq = (
+            select(ActivityRecord.user_id)
+            .where(ActivityRecord.chat_id == chat_id)
+            .distinct()
+            .subquery()
+        )
+        stmt = (
+            select(Player, PlayerCosmodrome)
+            .join(subq, subq.c.user_id == Player.telegram_id)
+            .join(PlayerCosmodrome, PlayerCosmodrome.user_id == Player.telegram_id)
+            .where(Player.is_globally_banned.is_(False))
+            .order_by(desc(PlayerCosmodrome.level), desc(PlayerCosmodrome.total_launches))
+            .limit(limit)
+        )
+
+    res = (await session.execute(stmt)).all()
+    entries = []
+    for rank, (player, cosmo) in enumerate(res, start=1):
+        rockets = cosmo.rockets_json or {}
+        r_count = sum(int(v) for v in rockets.values()) if isinstance(rockets, dict) else 0
+        entries.append(
+            TopCosmodromeEntry(
+                rank=rank,
+                user_id=player.telegram_id,
+                name=player.first_name,
+                cosmodrome_level=cosmo.level,
+                total_launches=cosmo.total_launches,
+                rocket_count=r_count,
             )
         )
     return entries
