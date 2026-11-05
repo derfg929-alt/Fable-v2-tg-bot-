@@ -159,13 +159,21 @@ async def handle_kick(message: types.Message, bot: Bot):
         parts = (message.text or "").split()
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Исключение модератором"
         try:
-            await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="kick", reason=reason)
+            await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="kick", reason=reason, bot=bot)
+            tg_status = ""
             try:
                 await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id)
                 await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_id)
-            except Exception:
-                pass
-            await message.reply(f"👢 Пользователь ID <code>{target_id}</code> исключен из чата. Причина: {reason}", parse_mode="HTML")
+                tg_status = " <i>(участник исключен из группы Telegram)</i>"
+            except Exception as tg_err:
+                tg_status = f"\n⚠️ <i>Примечание: Telegram не дал исключить участника ({tg_err}). Проверьте права бота (требуется админ с правом бана)!</i>"
+            await message.reply(
+                f"👢 <b>ПОЛЬЗОВАТЕЛЬ ИСКЛЮЧЕН (КИК)!</b>\n\n"
+                f"👤 Нарушитель: ID <code>{target_id}</code>\n"
+                f"📝 Причина: <i>{reason}</i>\n"
+                f"👮‍♂️ Модератор: ID <code>{message.from_user.id}</code>{tg_status}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await message.reply(f"❌ {e}")
 
@@ -183,12 +191,20 @@ async def handle_ban(message: types.Message, bot: Bot):
         parts = (message.text or "").split()
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Блокировка модератором"
         try:
-            await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="ban", reason=reason)
+            await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="ban", reason=reason, bot=bot)
+            tg_status = ""
             try:
                 await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id)
-            except Exception:
-                pass
-            await message.reply(f"⛔️ Пользователь ID <code>{target_id}</code> заблокирован в чате. Причина: {reason}", parse_mode="HTML")
+                tg_status = " <i>(в Telegram заблокирован)</i>"
+            except Exception as tg_err:
+                tg_status = f"\n⚠️ <i>Примечание: Telegram не дал заблокировать участника ({tg_err}). Проверьте права бота (требуется админ с правом бана)!</i>"
+            await message.reply(
+                f"⛔️ <b>ПОЛЬЗОВАТЕЛЬ ЗАБЛОКИРОВАН (БАН)!</b>\n\n"
+                f"👤 Нарушитель: ID <code>{target_id}</code>\n"
+                f"📝 Причина: <i>{reason}</i>\n"
+                f"👮‍♂️ Администратор: ID <code>{message.from_user.id}</code>{tg_status}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await message.reply(f"❌ {e}")
 
@@ -203,15 +219,21 @@ async def handle_unban(message: types.Message, bot: Bot):
             await message.reply("Использование: ответом на сообщение <code>разбан</code> или <code>разбан @user</code>", parse_mode="HTML")
             return
         try:
-            lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
+            lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
             if lvl < 3:
                 await message.reply("Для разбана требуется уровень 3 (Админ)")
                 return
+            tg_status = ""
             try:
                 await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_id, only_if_banned=True)
-            except Exception:
-                pass
-            await message.reply(f"✅ Пользователь ID <code>{target_id}</code> разблокирован в чате.", parse_mode="HTML")
+                tg_status = " <i>(в Telegram бан снят)</i>"
+            except Exception as tg_err:
+                tg_status = f"\n⚠️ <i>Примечание: Telegram unban ({tg_err}).</i>"
+            await message.reply(
+                f"✅ <b>ПОЛЬЗОВАТЕЛЬ РАЗБЛОКИРОВАН!</b>\n\n"
+                f"👤 ID <code>{target_id}</code> снова может вступать в группу.{tg_status}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await message.reply(f"❌ {e}")
 

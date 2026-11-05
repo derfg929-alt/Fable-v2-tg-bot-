@@ -15,6 +15,8 @@ from aiogram import BaseMiddleware, types
 from aiogram.enums import ChatType
 
 from app.db.session import session_scope
+from sqlalchemy import select
+from app.db.models import ModerationCase
 from app.services.activity_service import reward_chat_message
 from app.services.moderation_service import is_link_allowed, get_user_admin_level
 from app.services.chat_settings_service import get_or_create_chat, has_accepted_rules
@@ -37,6 +39,24 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
         # Обработка только групповых чатов
         if message.chat and message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
             async with session_scope() as session:
+                now = datetime.now(timezone.utc)
+                # 0. Проверка локального активного мута в БД (на случай задержки Bot API)
+                active_mute = await session.scalar(
+                    select(ModerationCase).where(
+                        ModerationCase.chat_id == message.chat.id,
+                        ModerationCase.target_id == message.from_user.id,
+                        ModerationCase.action == "mute",
+                        ModerationCase.is_active.is_(True),
+                        ModerationCase.expires_at > now,
+                    ).limit(1)
+                )
+                if active_mute:
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    return
+
                 chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
                 settings = chat.settings or {}
 

@@ -475,22 +475,83 @@ async def handle_mute(message: types.Message):
 
         try:
             dur = parse_duration_string(dur_str)
-            await issue_mute(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, duration=dur, reason=reason)
-            await message.reply(f"🔇 Пользователь ID <code>{target_id}</code> замьючен на {dur_str}. Причина: {reason}", parse_mode="HTML")
+            case = await issue_mute(
+                session,
+                chat_id=message.chat.id,
+                moderator_id=message.from_user.id,
+                target_id=target_id,
+                duration=dur,
+                reason=reason,
+                bot=message.bot,
+            )
+            # Применение мута в Telegram через ChatPermissions
+            tg_status = ""
+            if message.bot:
+                try:
+                    from aiogram.types import ChatPermissions
+                    no_permissions = ChatPermissions(
+                        can_send_messages=False,
+                        can_send_media_messages=False,
+                        can_send_other_messages=False,
+                        can_add_web_page_previews=False,
+                    )
+                    await message.bot.restrict_chat_member(
+                        chat_id=message.chat.id,
+                        user_id=target_id,
+                        permissions=no_permissions,
+                        until_date=case.expires_at,
+                    )
+                    tg_status = " <i>(в Telegram права ограничены)</i>"
+                except Exception as tg_err:
+                    tg_status = f"\n⚠️ <i>Примечание: бот не смог ограничить участника в Telegram ({tg_err}). Убедитесь, что бот является администратором с правом блокировки пользователей!</i>"
+
+            await message.reply(
+                f"🔇 <b>ПОЛЬЗОВАТЕЛЬ ЗАМЬЮЧЕН!</b>\n\n"
+                f"👤 Нарушитель: ID <code>{target_id}</code>\n"
+                f"⏱ Срок мута: <b>{dur_str}</b>\n"
+                f"📝 Причина: <i>{reason}</i>\n"
+                f"👮‍♂️ Модератор: ID <code>{message.from_user.id}</code>{tg_status}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await message.reply(f"❌ {e}")
 
 
 @router.message(F.text.casefold().startswith("размут"))
 async def handle_unmute(message: types.Message):
+    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+        return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
         if not target_id:
             await message.reply("Использование: ответом на сообщение <code>размут</code> или <code>размут @user</code>", parse_mode="HTML")
             return
         try:
-            await revoke_mute(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id)
-            await message.reply(f"🔊 Пользователь ID <code>{target_id}</code> размьючен.", parse_mode="HTML")
+            await revoke_mute(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, bot=message.bot)
+            tg_status = ""
+            if message.bot:
+                try:
+                    from aiogram.types import ChatPermissions
+                    full_permissions = ChatPermissions(
+                        can_send_messages=True,
+                        can_send_media_messages=True,
+                        can_send_other_messages=True,
+                        can_add_web_page_previews=True,
+                    )
+                    await message.bot.restrict_chat_member(
+                        chat_id=message.chat.id,
+                        user_id=target_id,
+                        permissions=full_permissions,
+                    )
+                    tg_status = " <i>(в Telegram ограничения сняты)</i>"
+                except Exception as tg_err:
+                    tg_status = f"\n⚠️ <i>Примечание: ограничение в Telegram снять не удалось ({tg_err}).</i>"
+
+            await message.reply(
+                f"🔊 <b>МУТ СНЯТ!</b>\n\n"
+                f"👤 Пользователь ID <code>{target_id}</code> успешно размьючен.{tg_status}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await message.reply(f"❌ {e}")
 
