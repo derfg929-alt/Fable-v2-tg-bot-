@@ -566,3 +566,33 @@ class PlayerJob(Base, TimestampMixin):
     current_job: Mapped[str] = mapped_column(String(64), nullable=False, default="Стажёр")
     last_worked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_side_job_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PlayerCosmodrome(Base, TimestampMixin):
+    """Личный космодром игрока: уровень космодрома, ракеты, космические экспедиции."""
+    __tablename__ = "player_cosmodromes"
+    __table_args__ = (
+        CheckConstraint("level >= 1", name="ck_cosmodrome_level_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    rockets_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    total_launches: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PlayerGear(Base, TimestampMixin):
+    """Снаряжение и транспорт игрока для подработок, охоты и рыбалки."""
+    __tablename__ = "player_gears"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
+    hunting_rifle_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    fishing_rod_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    taxi_car_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    courier_bike_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    barista_machine_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    loader_exosuit_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    cleaner_gear_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

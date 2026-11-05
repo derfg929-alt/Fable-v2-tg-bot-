@@ -58,6 +58,24 @@ from app.services.shop_service import (
     PROPERTIES,
     SHOP_ITEMS,
 )
+from app.services.cosmodrome_service import (
+    ROCKETS,
+    get_or_create_cosmodrome,
+    get_rockets_dict,
+    calculate_hourly_income,
+    buy_rocket,
+    upgrade_cosmodrome,
+    collect_cosmodrome_profits,
+    launch_rocket_mission,
+    get_cosmodrome_upgrade_cost,
+)
+from app.services.gear_service import (
+    GEAR_ITEMS,
+    get_or_create_gear,
+    upgrade_player_gear,
+    get_gear_upgrade_cost,
+    get_gear_bonus_percent,
+)
 
 router = Router(name="economy_router")
 
@@ -757,15 +775,24 @@ async def handle_businesses(message: types.Message):
                     last = ub.last_collected_at or now
                     b_hours = min((now - last).total_seconds() / 3600.0, 4.0)
                     b_cash = int(inc * b_hours) if b_hours >= (1.0 / 60.0) else 0
+                    daily = inc * 24
+                    payback = (cfg.base_cost / daily) if daily > 0 else 0
 
                     lines.append(
                         f"{cfg.icon} <b>#{b_id} {cfg.name}</b> [Ур. {ub.level}/10]\n"
-                        f"   ├ Доход: <b>+{inc:,}/ч</b> (макс. за 4ч: +{inc * 4:,})\n"
-                        f"   ├ В кассе бизнеса: <b>{b_cash:,}</b> монет\n"
+                        f"   ├ Доход: <b>+{inc:,}/ч</b> (макс. за 4ч: +{inc * 4:,} | сутки: +{daily:,})\n"
+                        f"   ├ Окупаемость: ~{payback:.1f} дн. | В кассе: <b>{b_cash:,}</b> монет\n"
                         f"   └ Улучшение: {upg_str}".replace(",", " ")
                     )
                 else:
-                    lines.append(f"{cfg.icon} <b>#{b_id} {cfg.name}</b> (Не куплен)\n   ├ Доход: +{cfg.base_income_hourly:,}/ч\n   └ Стоимость: <b>{cfg.base_cost:,}</b> монет".replace(",", " "))
+                    daily = cfg.base_income_hourly * 24
+                    payback = (cfg.base_cost / daily) if daily > 0 else 0
+                    lines.append(
+                        f"{cfg.icon} <b>#{b_id} {cfg.name}</b> (Не куплен)\n"
+                        f"   ├ Доход: <b>+{cfg.base_income_hourly:,}/ч</b> (сутки: +{daily:,})\n"
+                        f"   ├ Окупаемость: ~{payback:.1f} дн.\n"
+                        f"   └ Стоимость: <b>{cfg.base_cost:,}</b> монет".replace(",", " ")
+                    )
 
             lines.append(
                 "\n<i>Команды:</i>\n"
@@ -882,30 +909,33 @@ async def handle_mining(message: types.Message):
             rigs_lines = []
             for r_code, cfg in MINING_RIGS.items():
                 count = rigs.get(r_code, 0)
-                rigs_lines.append(f"{cfg.icon} <b>{cfg.name}</b>: <b>{count}</b> шт. (Мощность: {cfg.hashrate} GH/s | Добывает: {', '.join(cfg.allowed_coins)} | Цена: {cfg.price:,} монет)".replace(",", " "))
+                rigs_lines.append(f"{cfg.icon} <b>{cfg.name}</b>: <b>{count}</b> шт. (Мощность: {cfg.hashrate} GH/s | Монеты: {', '.join(cfg.allowed_coins)} | Цена: {cfg.price:,} монет)".replace(",", " "))
 
-            # Расчет примерной часовой добычи для активной монеты
+            # Расчет детальной часовой и 4-часовой добычи
             from app.services.mining_service import COIN_BASE_YIELD_PER_HASHRATE
             yield_rate = COIN_BASE_YIELD_PER_HASHRATE.get(active_coin, Decimal("0.00000005"))
             hourly_crypto = (Decimal(str(hashrate)) * yield_rate).quantize(Decimal("0.00000001"))
+            cap_crypto = (hourly_crypto * Decimal("4.0")).quantize(Decimal("0.00000001"))
             hourly_crypto_str = f"{hourly_crypto:.8f}".rstrip("0").rstrip(".")
+            cap_crypto_str = f"{cap_crypto:.8f}".rstrip("0").rstrip(".")
 
             resp = (
                 f"⛏ <b>КРИПТО-МАЙНИНГ ФЕРМА FABLE</b>\n\n"
                 f"🎯 Активная криптовалюта: <b>{active_coin}</b>\n"
-                f"⚡️ Уровень фермы: <b>{mining.farm_level} / 10</b> (Бонус к мощности: +{(mining.farm_level - 1)*25}%)\n"
+                f"⚡️ Уровень дата-центра: <b>{mining.farm_level} / 10</b> (Бонус мощности: +{(mining.farm_level - 1)*25}%)\n"
                 f"🔥 Общая вычислительная мощность: <b>{hashrate:,} GH/s</b>\n"
-                f"⛏ Добыча активной монеты: <b>~{hourly_crypto_str} {active_coin}/час</b>\n"
-                f"🖥 Всего оборудования на ферме: <b>{total_comps}</b> шт.\n\n"
-                f"<b>Разные мощности майнят разные монеты:</b>\n"
+                f"📈 <b>Расчет прибыли активной монеты:</b>\n"
+                f"   ├ В час: <b>+{hourly_crypto_str} {active_coin}</b> + {int(hashrate*0.5):,} монет\n"
+                f"   └ Капа (за 4ч): <b>до +{cap_crypto_str} {active_coin}</b> + {int(hashrate*2):,} монет\n"
+                f"🖥 Оборудование фермы ({total_comps} шт.):\n"
                 + "\n".join(rigs_lines)
-                + f"\n\n🔧 Улучшение фермы до ур. {mining.farm_level + 1}: <b>{upg_str}</b>\n\n"
+                + f"\n\n🔧 Улучшение дата-центра до ур. {mining.farm_level + 1}: <b>{upg_str}</b>\n\n"
                 f"<i>Команды:</i>\n"
                 f"• <code>купить ферму</code> — приобрести базовую ферму\n"
-                f"• <code>ферма монета [BTC|ETH|TON|SOL|DOGE]</code> — выбрать добываемую криптовалюту\n"
-                f"• <code>ферма купить [cpu|gpu|asic|quantum] [кол-во]</code> — купить компьютеры/риги\n"
-                f"• <code>ферма собрать</code> — забрать намайненную криптовалюту в <code>портфель</code>\n"
-                f"• <code>ферма улучшить</code> — прокачать уровень фермы"
+                f"• <code>ферма монета [BTC|ETH|TON|SOL|DOGE]</code> — переключить монету\n"
+                f"• <code>ферма купить [cpu|gpu|asic|quantum] [кол-во]</code> — купить оборудование\n"
+                f"• <code>ферма собрать</code> — перевести добытую крипту в <code>портфель</code>\n"
+                f"• <code>ферма улучшить</code> — прокачать дата-центр"
             )
             await message.reply(resp, parse_mode="HTML")
             return
@@ -994,6 +1024,209 @@ async def handle_mining(message: types.Message):
             except Exception as e:
                 await message.reply(f"❌ {e}")
             return
+
+
+# ===================== КОСМОДРОМ И РАКЕТЫ =====================
+
+@router.message(F.text.casefold().in_(["космодром", "!космодром"]))
+@router.message(F.text.casefold().startswith("космодром"))
+async def handle_cosmodrome(message: types.Message):
+    if not message.from_user:
+        return
+    text = (message.text or "").strip()
+    parts = text.split()
+
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        cosmo = await get_or_create_cosmodrome(session, user_id=message.from_user.id)
+        rockets = get_rockets_dict(cosmo)
+
+        if len(parts) == 1:
+            total_rockets = sum(rockets.values())
+            hourly_inc = calculate_hourly_income(rockets, cosmo.level)
+            cap_inc = int(hourly_inc * 4.0)
+
+            # Накоплено прямо сейчас
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            last = cosmo.last_collected_at or now
+            hours = min((now - last).total_seconds() / 3600.0, 4.0)
+            cur_cash = int(hourly_inc * hours) if hours >= (1.0 / 60.0) else 0
+
+            upg_cost = get_cosmodrome_upgrade_cost(cosmo.level) if cosmo.level < 10 else "MAX"
+            upg_str = f"{upg_cost:,} монет".replace(",", " ") if isinstance(upg_cost, int) else upg_cost
+
+            rocket_lines = []
+            for r_code, cfg in ROCKETS.items():
+                cnt = rockets.get(r_code, 0)
+                status = f"<b>{cnt} шт. в ангаре</b>" if cnt > 0 else f"Цена: {cfg.price:,} монет"
+                daily = cfg.hourly_income * 24
+                payback = (cfg.price / daily) if daily > 0 else 0
+                rocket_lines.append(
+                    f"{cfg.icon} <b>{cfg.name}</b> [{r_code}]\n"
+                    f"   ├ Доход: <b>+{cfg.hourly_income:,}/ч</b> (сутки: +{daily:,}) | Окупаемость: ~{payback:.1f} дн.\n"
+                    f"   ├ Статус: {status} | Мин. космодром: ур. {cfg.min_cosmodrome_level}\n"
+                    f"   └ <i>{cfg.description}</i>".replace(",", " ")
+                )
+
+            resp = (
+                f"🌌 <b>ОРБИТАЛЬНЫЙ КОСМОДРОМ FABLE</b>\n\n"
+                f"🚀 Уровень космодрома: <b>{cosmo.level} / 10</b> (Бонус к рейсам: +{(cosmo.level - 1)*20}%)\n"
+                f"🛸 Ракет в ангаре: <b>{total_rockets}</b> шт. | Всего запусков: <b>{cosmo.total_launches}</b>\n"
+                f"📈 <b>Финансовые возможности космодрома:</b>\n"
+                f"   ├ Коммерческий доход: <b>+{hourly_inc:,}</b> монет/час\n"
+                f"   ├ Накопитель кассы (за 4ч капа): <b>до +{cap_inc:,}</b> монет\n"
+                f"   └ Готово к сбору сейчас: <b>+{cur_cash:,}</b> монет\n\n"
+                f"<b>Каталог космических ракет:</b>\n"
+                + "\n".join(rocket_lines)
+                + f"\n\n🔧 Модернизация стартовой площадки до ур. {cosmo.level + 1}: <b>{upg_str}</b>\n\n"
+                f"<i>Команды:</i>\n"
+                f"• <code>космодром купить [vostok|soyuz|falcon|proton|starship|saturn] [кол-во]</code>\n"
+                f"• <code>космодром собрать</code> — получить прибыль от коммерческих рейсов\n"
+                f"• <code>космодром запуск</code> — отправить ракету в отдельную миссию\n"
+                f"• <code>космодром улучшить</code> — прокачать стартовые площадки"
+            )
+            await message.reply(resp, parse_mode="HTML")
+            return
+
+        cmd = parts[1].lower()
+        if cmd in ("собрать", "прибыль", "доход", "collect"):
+            try:
+                profit, count = await collect_cosmodrome_profits(session, user_id=message.from_user.id)
+                if profit > 0:
+                    await message.reply(
+                        f"🌌 <b>Прибыль с космодрома собрана!</b>\n\n"
+                        f"Ваши <b>{count}</b> ракет успешно завершили рейсы!\n"
+                        f"Зачислено: <b>+{profit:,}</b> монет!".replace(",", " "),
+                        parse_mode="HTML",
+                    )
+                else:
+                    await message.reply("⏳ Ракеты еще в пути или ангар пуст. Сбор возможен при накоплении от 1 минуты!")
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        if cmd in ("запуск", "миссия", "launch"):
+            r_code = parts[2].lower() if len(parts) >= 3 else None
+            try:
+                res = await launch_rocket_mission(session, user_id=message.from_user.id, rocket_code=r_code)
+                await message.reply(
+                    f"🚀 <b>УСПЕШНЫЙ ЗАПУСК РАКЕТЫ {res.rocket_name.upper()}!</b>\n\n"
+                    f"{res.story}\n\n"
+                    f"💰 Награда за полет: <b>+{res.reward_coins:,}</b> монет\n"
+                    f"✨ Космический опыт: <b>+{res.reward_exp}</b> XP".replace(",", " "),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        if cmd in ("купить", "buy") and len(parts) >= 3:
+            r_code = parts[2].lower()
+            cnt = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 1
+            try:
+                c, cfg, cost = await buy_rocket(session, user_id=message.from_user.id, rocket_code=r_code, count=cnt)
+                await message.reply(
+                    f"🚀 <b>РАКЕТА ПРИОБРЕТЕНА!</b>\n\n"
+                    f"Ангар пополнился: <b>{cfg.name}</b> {cfg.icon} ({cnt} шт.)!\n"
+                    f"Сумма контракта: <b>{cost:,}</b> монет.\n"
+                    f"Она приносит <b>+{cfg.hourly_income * cnt:,}</b> монет/час!\n"
+                    f"Отправьте ее на орбиту: <code>космодром запуск</code>!".replace(",", " "),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        if cmd in ("улучшить", "upgrade", "прокачать"):
+            try:
+                c, cost = await upgrade_cosmodrome(session, user_id=message.from_user.id)
+                await message.reply(
+                    f"🌌 <b>КОСМОДРОМ УСПЕШНО УЛУЧШЕН!</b>\n\n"
+                    f"Новый уровень: <b>{c.level} / 10</b>!\n"
+                    f"Потрачено: <b>{cost:,}</b> монет.\n"
+                    f"Бонус к доходности всех полетов: <b>+{(c.level - 1)*20}%</b>!".replace(",", " "),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+
+# ===================== СНАРЯЖЕНИЕ И УЛУЧШЕНИЯ =====================
+
+@router.message(F.text.casefold().in_(["снаряжение", "!снаряжение", "экипировка", "!экипировка"]))
+async def handle_gear_panel(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        gear = await get_or_create_gear(session, user_id=message.from_user.id)
+        mine = await get_or_create_mine(session, user_id=message.from_user.id)
+
+        lines = [
+            "🛡 <b>АРСЕНАЛ И СНАРЯЖЕНИЕ FABLE</b>\n",
+            "Улучшение экипировки увеличивает прибыль подработок, шахты и охоты:\n",
+            f"🔫 <b>Охотничье ружьё</b>: Ур. <b>{gear.hunting_rifle_level} / 10</b> (Увеличивает меткость и шанс редких зверей)",
+            f"🎣 <b>Рыболовная удочка</b>: Ур. <b>{gear.fishing_rod_level} / 10</b> (Снижает сход рыбы и даёт сундуки)",
+            f"⛏ <b>Шахтерская кирка</b>: Ур. <b>{mine.pickaxe_level} / 10</b> (Открывает железо, медь, серебро, золото)",
+            f"🚕 <b>Рок-машина такси</b>: Ур. <b>{gear.taxi_car_level} / 10</b> (+{get_gear_bonus_percent(gear.taxi_car_level)}% к оплате заказов)",
+            f"🛵 <b>Транспорт курьера</b>: Ур. <b>{gear.courier_bike_level} / 10</b> (+{get_gear_bonus_percent(gear.courier_bike_level)}% к оплате)",
+            f"☕️ <b>Кофемашина бариста</b>: Ур. <b>{gear.barista_machine_level} / 10</b> (+{get_gear_bonus_percent(gear.barista_machine_level)}% к чаевым)",
+            f"🦾 <b>Экзоскелет грузчика</b>: Ур. <b>{gear.loader_exosuit_level} / 10</b> (+{get_gear_bonus_percent(gear.loader_exosuit_level)}% к ставке)",
+            f"🧼 <b>Инвентарь клинера</b>: Ур. <b>{gear.cleaner_gear_level} / 10</b> (+{get_gear_bonus_percent(gear.cleaner_gear_level)}% к чеку)",
+            "\n💡 <i>Чтобы улучшить предмет, напишите:\n"
+            "• <code>улучшить оружие</code>\n"
+            "• <code>улучшить удочка</code>\n"
+            "• <code>улучшить кирка</code>\n"
+            "• <code>улучшить такси</code>\n"
+            "• <code>улучшить курьер</code>\n"
+            "• <code>улучшить бариста</code>\n"
+            "• <code>улучшить грузчик</code>\n"
+            "• <code>улучшить уборщик</code></i>",
+        ]
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().startswith("улучшить"))
+async def handle_gear_upgrade(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").strip().split()
+    if len(parts) < 2:
+        await message.reply("Использование: <code>улучшить [оружие|удочка|кирка|такси|курьер|бариста|грузчик|уборщик]</code>", parse_mode="HTML")
+        return
+
+    item_name = parts[1].lower()
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+
+        if item_name in ("кирка", "кирку", "шахта"):
+            try:
+                lvl, cost = await upgrade_pickaxe(session, user_id=message.from_user.id)
+                await message.reply(
+                    f"⛏ <b>КИРКА УСПЕШНО УЛУЧШЕНА!</b>\n\n"
+                    f"Новый уровень: <b>{lvl} / 10</b>\n"
+                    f"Потрачено: <b>{cost:,}</b> монет.\n"
+                    f"Теперь вам доступны более ценные металлы в забое!".replace(",", " "),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        try:
+            name, new_lvl, cost = await upgrade_player_gear(session, user_id=message.from_user.id, gear_type=item_name)
+            await message.reply(
+                f"⚡️ <b>СНАРЯЖЕНИЕ УСПЕШНО УЛУЧШЕНО!</b>\n\n"
+                f"Предмет: <b>{name}</b>\n"
+                f"Новый уровень: <b>{new_lvl} / 10</b>\n"
+                f"Потрачено: <b>{cost:,}</b> монет.\n"
+                f"Ваша прибыль и бонусы от активности возросли!".replace(",", " "),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await message.reply(f"❌ {e}")
 
 
 @router.message(F.text.casefold().startswith("реп"))

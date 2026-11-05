@@ -306,13 +306,19 @@ async def handle_tops(message: types.Message):
     if not message.from_user:
         return
     text = (message.text or "").strip().casefold()
+    # Определяем контекст топа: чат или глобальный
     is_chat = "чат" in text
-    chat_id = message.chat.id if is_chat and message.chat.type != types.ChatType.PRIVATE else None
+    chat_id = message.chat.id if (is_chat or text in ("топ чат", "!топ чат")) and message.chat.type != types.ChatType.PRIVATE else None
 
     async with session_scope() as session:
-        if text in ("топ", "!топ"):
+        if text in ("топ", "!топ", "топ глобальный", "!топ глобальный", "топ чат", "!топ чат"):
+            scope_str = "чата" if chat_id else "глобальный"
             await message.reply(
-                "🏆 <b>Выберите рейтинг Fable:</b>",
+                f"🏆 <b>Выберите рейтинг Fable ({scope_str}):</b>\n\n"
+                f"💡 <i>Доступны команды:</i>\n"
+                f"• <code>топ богатых</code> / <code>топ богатых чат</code>\n"
+                f"• <code>топ активных</code> / <code>топ активных чат</code>\n"
+                f"• <code>топ кланов</code> / <code>топ кланов чат</code>",
                 reply_markup=_build_tops_main_keyboard(),
                 parse_mode="HTML",
             )
@@ -320,26 +326,29 @@ async def handle_tops(message: types.Message):
 
         if "богат" in text:
             rich = await get_top_rich(session, chat_id=chat_id, limit=10)
-            lines = [f"💰 <b>Топ богатых ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+            scope = f"чата «{message.chat.title}»" if chat_id and message.chat else "глобальный"
+            lines = [f"💰 <b>Топ богатых ({scope}):</b>\n"]
             for r in rich:
                 lines.append(f"{r.rank}. <b>{r.name}</b> — {r.total_wealth:,} монет".replace(",", " "))
-            await message.reply("\n".join(lines) if rich else "Рейтинг пуст.", parse_mode="HTML")
+            await message.reply("\n".join(lines) if rich else f"💰 <b>Топ богатых ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
             return
 
         if "актив" in text:
             active = await get_top_active(session, chat_id=chat_id, limit=10)
-            lines = [f"🔥 <b>Топ активных ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+            scope = f"чата «{message.chat.title}»" if chat_id and message.chat else "глобальный"
+            lines = [f"🔥 <b>Топ активных ({scope}):</b>\n"]
             for a in active:
                 lines.append(f"{a.rank}. <b>{a.name}</b> — {a.activity_points:,} очков".replace(",", " "))
-            await message.reply("\n".join(lines) if active else "Рейтинг пуст.", parse_mode="HTML")
+            await message.reply("\n".join(lines) if active else f"🔥 <b>Топ активных ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
             return
 
         if "клан" in text:
             clans = await get_top_clans(session, chat_id=chat_id, limit=10)
-            lines = [f"🛡 <b>Топ кланов ({'чата' if chat_id else 'глобальный'}):</b>\n"]
+            scope = f"чата «{message.chat.title}»" if chat_id and message.chat else "глобальный"
+            lines = [f"🛡 <b>Топ кланов ({scope}):</b>\n"]
             for c in clans:
                 lines.append(f"{c.rank}. <b>«{c.name}»</b> — рейтинг {c.rating} (ур. {c.level})")
-            await message.reply("\n".join(lines) if clans else "Рейтинг пуст.", parse_mode="HTML")
+            await message.reply("\n".join(lines) if clans else f"🛡 <b>Топ кланов ({scope}):</b>\nРейтинг пока пуст.", parse_mode="HTML")
             return
 
 

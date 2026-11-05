@@ -137,8 +137,16 @@ async def perform_main_job(session: AsyncSession, *, user_id: int) -> tuple[int,
     return reward, exp, msg
 
 
+from app.services.gear_service import get_or_create_gear, get_gear_bonus_percent
+
+
 async def perform_side_job(session: AsyncSession, *, user_id: int, profession: str) -> tuple[int, int, str]:
-    """Выполняет подработку. Возвращает (награда_монеты, опыт, сообщение)."""
+    """Выполняет подработку.
+
+    Награда рассчитывается случайно (случайный разброс) и увеличивается
+    за счет соответствующего снаряжения/предмета игрока (рок-машина для такси,
+    байк для курьера, кофемашина, экзоскелет, инвентарь уборщика).
+    """
     prof_norm = profession.strip().lower()
     if prof_norm not in SIDE_JOBS:
         available = ", ".join(SIDE_JOBS.keys())
@@ -160,15 +168,41 @@ async def perform_side_job(session: AsyncSession, *, user_id: int, profession: s
             secs = rem % 60
             raise JobCooldownError(f"Вы пока отдыхаете после подработки! Следующий вызов через {mins} мин. {secs} сек.")
 
-    reward = random.randint(cfg.min_reward, cfg.max_reward)
-    exp = cfg.exp_reward
+    # Получаем снаряжение игрока
+    gear = await get_or_create_gear(session, user_id=user_id)
+    gear_lvl = 1
+    gear_name = ""
+
+    if prof_norm == "таксист":
+        gear_lvl = gear.taxi_car_level
+        gear_name = f"🚕 Рок-машина (ур. {gear_lvl})"
+    elif prof_norm == "курьер":
+        gear_lvl = gear.courier_bike_level
+        gear_name = f"🛵 Транспорт курьера (ур. {gear_lvl})"
+    elif prof_norm == "бариста":
+        gear_lvl = gear.barista_machine_level
+        gear_name = f"☕️ Кофемашина (ур. {gear_lvl})"
+    elif prof_norm == "грузчик":
+        gear_lvl = gear.loader_exosuit_level
+        gear_name = f"🦾 Экзоскелет (ур. {gear_lvl})"
+    elif prof_norm == "уборщик":
+        gear_lvl = gear.cleaner_gear_level
+        gear_name = f"🧼 Инвентарь (ур. {gear_lvl})"
+
+    # Случайная прибыль со сбалансированным распределением
+    base_reward = random.randint(cfg.min_reward, cfg.max_reward)
+    bonus_pct = get_gear_bonus_percent(gear_lvl)
+    gear_bonus = int(base_reward * (bonus_pct / 100.0))
+    total_reward = base_reward + gear_bonus
+
+    exp = cfg.exp_reward + (gear_lvl - 1) * 2
     story = random.choice(cfg.action_texts)
 
     await credit_coins(
         session,
         user_id=user_id,
-        amount=reward,
-        reason=f"Подработка: {cfg.title}",
+        amount=total_reward,
+        reason=f"Подработка: {cfg.title} (снаряжение ур. {gear_lvl})",
         operation_type="job_side_reward",
     )
 
@@ -176,10 +210,13 @@ async def perform_side_job(session: AsyncSession, *, user_id: int, profession: s
     job.last_side_job_at = now
     await session.flush()
 
+    bonus_line = f"⚡️ Бонус от снаряжения ({gear_name}): <b>+{gear_bonus}</b> монет (+{bonus_pct}%)\n" if gear_bonus > 0 else f"💡 <i>Прокачайте {gear_name} для роста дохода: <code>улучшить {prof_norm}</code>!</i>\n"
+
     msg = (
         f"{cfg.icon} <b>ПОДРАБОТКА: {cfg.title.upper()}</b>\n\n"
-        f"{story}\n"
-        f"💰 Оплата за заказ: <b>+{reward:,}</b> монет\n"
+        f"{story}\n\n"
+        f"💰 Оплата за заказ: <b>+{total_reward:,}</b> монет (база: {base_reward})\n"
+        f"{bonus_line}"
         f"✨ Получено опыта: <b>+{exp}</b> XP".replace(",", " ")
     )
-    return reward, exp, msg
+    return total_reward, exp, msg

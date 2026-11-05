@@ -65,6 +65,31 @@ def get_hourly_income(b_id: int, current_level: int) -> int:
     return int(cfg.base_income_hourly * (1 + (current_level - 1) * 0.6))
 
 
+def format_business_profit_overview(business_id: int, current_level: int = 1) -> str:
+    """Подробный финансовый паспорт бизнеса: доход в час, доход за 4 часа капа, окупаемость."""
+    cfg = BUSINESSES[business_id]
+    income_hr = get_hourly_income(business_id, current_level)
+    cap_income = int(income_hr * MAX_BUSINESS_ACCUMULATION_HOURS)
+    daily_income = income_hr * 24
+
+    upg_cost = get_upgrade_cost(business_id, current_level) if current_level < 10 else "МАКС"
+    next_inc = get_hourly_income(business_id, current_level + 1) if current_level < 10 else income_hr
+    diff = next_inc - income_hr
+
+    payback_days = (cfg.base_cost / daily_income) if daily_income > 0 else 0
+
+    return (
+        f"{cfg.icon} <b>ФИНАНСОВЫЙ ПАСПОРТ БИЗНЕСА: «{cfg.name}»</b>\n"
+        f"📊 Текущий уровень: <b>{current_level} / 10</b>\n"
+        f"💵 Стоимость покупки: <b>{cfg.base_cost:,}</b> монет\n"
+        f"📈 Окупаемость: ~<b>{payback_days:.1f}</b> дн. (при своевременном сборе)\n"
+        f"💰 Доход в час: <b>+{income_hr:,}</b> монет/час\n"
+        f"⏱ Накопитель кассы (за 4 часа): <b>до +{cap_income:,}</b> монет\n"
+        f"📅 Потенциальный доход в сутки: <b>+{daily_income:,}</b> монет/день\n"
+        + (f"🚀 Следующий ур. (+{diff:,}/ч): <b>{upg_cost:,}</b> монет" if isinstance(upg_cost, int) else "⭐ Достигнут максимум улучшения!")
+    ).replace(",", " ")
+
+
 async def get_player_businesses(session: AsyncSession, *, user_id: int) -> list[PlayerBusiness]:
     res = await session.scalars(
         select(PlayerBusiness).where(PlayerBusiness.user_id == user_id).order_by(PlayerBusiness.business_id)
