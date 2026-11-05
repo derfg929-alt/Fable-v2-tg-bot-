@@ -364,6 +364,8 @@ async def on_report_reject(callback: types.CallbackQuery):
 # ===================== НАЗНАЧЕНИЕ АДМИНОВ / ССЫЛКИ / НАСТРОЙКИ ЧАТА =====================
 
 @router.message(F.text.casefold().startswith("админ назначить"))
+@router.message(F.text.casefold().startswith("дать админку"))
+@router.message(F.text.casefold().startswith("назначить админа"))
 async def handle_admin_appoint(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
@@ -374,21 +376,31 @@ async def handle_admin_appoint(message: types.Message, bot: Bot):
             lvl_val = int(p)
             break
 
+    # Если уровень не указан явно, по умолчанию назначаем уровень 3 (Админ)
+    if lvl_val is None:
+        lvl_val = 3
+
     async with session_scope() as session:
         await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         target_id = await _get_target_user_id(message, session)
-        if not target_id or not lvl_val:
-            await message.reply("Использование: ответом на сообщение <code>админ назначить 3</code> или <code>админ назначить @user 3</code>", parse_mode="HTML")
+        if not target_id:
+            await message.reply(
+                "💡 <b>Использование:</b> ответом на сообщение <code>админ назначить 3</code>\n"
+                "или <code>админ назначить @user [уровень 2..5]</code> (по умолчанию ур. 3)",
+                parse_mode="HTML",
+            )
             return
 
         try:
             new_lvl = await set_admin_level(session, chat_id=message.chat.id, actor_id=message.from_user.id, target_id=target_id, new_level=lvl_val, bot=bot)
-            await message.reply(f"👑 Пользователю ID <code>{target_id}</code> установлен уровень {new_lvl} ({ROLE_NAMES[new_lvl]})!", parse_mode="HTML")
+            await message.reply(f"👑 Пользователю ID <code>{target_id}</code> успешно установлен уровень {new_lvl} ({ROLE_NAMES[new_lvl]})!", parse_mode="HTML")
         except Exception as e:
             await message.reply(f"❌ {e}")
 
 
 @router.message(F.text.casefold().startswith("админ снять"))
+@router.message(F.text.casefold().startswith("снять админку"))
+@router.message(F.text.casefold().startswith("снять админа"))
 async def handle_admin_dismiss(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
@@ -396,7 +408,10 @@ async def handle_admin_dismiss(message: types.Message, bot: Bot):
         await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         target_id = await _get_target_user_id(message, session)
         if not target_id:
-            await message.reply("Использование: ответом на сообщение <code>админ снять</code> или <code>админ снять @user</code>", parse_mode="HTML")
+            await message.reply(
+                "💡 <b>Использование:</b> ответом на сообщение <code>админ снять</code> или <code>админ снять @user</code>",
+                parse_mode="HTML",
+            )
             return
 
         try:
@@ -445,14 +460,14 @@ async def handle_whitelist(message: types.Message):
             return
 
 
-@router.message(F.text.casefold().in_(["настройки", "!настройки"]))
+@router.message(F.text.casefold().in_(["настройки", "!настройки", "админка", "!админка", "админ панель"]))
 async def handle_chat_settings_panel(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
     async with session_scope() as session:
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         if lvl < 3:
-            await message.reply("Панель настроек доступна администраторам уровня 3+")
+            await message.reply("Панель настроек и админка доступны администраторам чата уровня 3+ (Админ, Старший админ, Создатель)")
             return
 
         chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")

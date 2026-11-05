@@ -56,6 +56,30 @@ PROPERTIES: dict[int, PropertyConfig] = {
 }
 
 @dataclass(frozen=True, slots=True)
+class CarConfig:
+    id: int
+    car_key: str
+    name: str
+    icon: str
+    price: int
+    speed_kmh: int
+    description: str
+
+
+CARS: dict[int, CarConfig] = {
+    1: CarConfig(1, "lada", "Lada Vesta Sport", "🚗", 25_000, 190, "Бодрый отечественный седан для городских улиц"),
+    2: CarConfig(2, "camry", "Toyota Camry 3.5", "🚘", 75_000, 220, "Легендарный комфорт и надежность бизнес-класса"),
+    3: CarConfig(3, "bmw_m5", "BMW M5 CS", "🏎", 200_000, 305, "Баварский зверь с разгоном до сотни за 3 секунды"),
+    4: CarConfig(4, "porsche_911", "Porsche 911 Turbo S", "🏎", 450_000, 330, "Идеальный немецкий спорткар с безупречной управляемостью"),
+    5: CarConfig(5, "mercedes_g63", "Mercedes-AMG G63 Гелендваген", "🚙", 700_000, 240, "Брутальный внедорожник настоящего криминального авторитета"),
+    6: CarConfig(6, "lambo_aventador", "Lamborghini Aventador SVJ", "🏎", 1_500_000, 352, "Итальянский суперкар с ревущим атмосферным V12"),
+    7: CarConfig(7, "ferrari_sf90", "Ferrari SF90 Stradale", "🏎", 3_000_000, 340, "Гибридный гиперкар мощностью в 1000 лошадиных сил"),
+    8: CarConfig(8, "rolls_royce", "Rolls-Royce Phantom", "🚘", 6_000_000, 250, "Вершина мировой автомобильной роскоши и аристократизма"),
+    9: CarConfig(9, "bugatti_chiron", "Bugatti Chiron Super Sport", "🚀", 15_000_000, 440, "Король скорости и технологический шедевр инженерии"),
+    10: CarConfig(10, "batmobile", "Бэтмобиль Tumbler", "🦇", 40_000_000, 380, "Бронированный прототип с ракетным ускорителем"),
+}
+
+@dataclass(frozen=True, slots=True)
 class ShopItemConfig:
     id: int
     item_key: str
@@ -109,6 +133,58 @@ async def buy_property(session: AsyncSession, *, user_id: int, property_id: int)
 async def get_player_properties(session: AsyncSession, *, user_id: int) -> list[PlayerProperty]:
     res = await session.scalars(
         select(PlayerProperty).where(PlayerProperty.user_id == user_id).order_by(PlayerProperty.property_id)
+    )
+    return list(res.all())
+
+
+async def buy_car(session: AsyncSession, *, user_id: int, car_id: int) -> tuple[PlayerInventory, CarConfig]:
+    if car_id not in CARS:
+        raise ShopError(f"Машина #{car_id} не найдена в автосалоне (выберите 1..{len(CARS)})")
+
+    cfg = CARS[car_id]
+    player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
+    if not player:
+        raise PlayerNotFoundError(f"Игрок {user_id} не найден")
+
+    if player.wallet < cfg.price:
+        raise InsufficientFundsError(f"Недостаточно монет: требуется {cfg.price:,} монет, у вас {player.wallet:,}".replace(",", " "))
+
+    existing = await session.scalar(
+        select(PlayerInventory).where(
+            PlayerInventory.user_id == user_id,
+            PlayerInventory.item_id == f"car_{cfg.car_key}",
+        )
+    )
+    if existing:
+        raise ShopError(f"У вас в гараже уже есть автомобиль «{cfg.name}»!")
+
+    await debit_coins(
+        session,
+        user_id=user_id,
+        amount=cfg.price,
+        reason=f"Покупка авто #{car_id} ({cfg.name})",
+        operation_type="car_buy",
+    )
+
+    inv = PlayerInventory(
+        user_id=user_id,
+        item_id=f"car_{cfg.car_key}",
+        item_name=cfg.name,
+        category="cars",
+        quantity=1,
+        is_exclusive=False,
+    )
+    session.add(inv)
+    await session.flush()
+    return inv, cfg
+
+
+async def get_player_cars(session: AsyncSession, *, user_id: int) -> list[PlayerInventory]:
+    res = await session.scalars(
+        select(PlayerInventory).where(
+            PlayerInventory.user_id == user_id,
+            PlayerInventory.category == "cars",
+        ).order_by(PlayerInventory.id)
     )
     return list(res.all())
 

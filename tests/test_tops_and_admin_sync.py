@@ -26,11 +26,10 @@ from app.handlers.extended_moderation_handlers import (
 )
 from app.handlers.social_moderation_handlers import (
     handle_tops,
-    on_top_menu_level,
-    on_top_menu_rating,
-    on_top_menu_mine,
-    on_top_menu_biz,
-    on_top_menu_cosmo,
+    on_top_menu_rich,
+    on_top_menu_active,
+    on_top_menu_clans,
+    on_legacy_top_menu_click,
 )
 
 
@@ -146,11 +145,9 @@ async def test_all_top_categories():
 
 @pytest.mark.asyncio
 async def test_top_handlers_and_callbacks():
-    """Проверяем текстовые команды и нажатия на все кнопки категорий топов."""
-    mock_bot = MagicMock()
-
+    """Проверяем текстовые команды и нажатия на кнопки категорий топов."""
     # Текстовые команды
-    for cmd_text in ("топ", "топ уровней", "топ рейтинга", "топ шахты", "топ бизнесов", "топ космодрома"):
+    for cmd_text in ("топ", "топ богатых", "топ активных", "топ кланов"):
         msg = MagicMock()
         msg.chat = MagicMock(id=-10012345, type="supergroup", title="SuperChat")
         msg.from_user = MagicMock(id=8811001, first_name="PlayerOne")
@@ -160,15 +157,9 @@ async def test_top_handlers_and_callbacks():
         assert msg.reply.called
 
     # Тестируем callback кнопки категорий
-    for cb_func, name in [
-        (on_top_menu_level, "level"),
-        (on_top_menu_rating, "rating"),
-        (on_top_menu_mine, "mine"),
-        (on_top_menu_biz, "biz"),
-        (on_top_menu_cosmo, "cosmo"),
-    ]:
+    for cb_func in [on_top_menu_rich, on_top_menu_active, on_top_menu_clans, on_legacy_top_menu_click]:
         cb = MagicMock()
-        cb.data = f"top_menu_{name}"
+        cb.data = "top_menu_rich"
         cb.answer = AsyncMock()
         cb.message = MagicMock()
         cb.message.chat = MagicMock(id=-10012345, type="supergroup")

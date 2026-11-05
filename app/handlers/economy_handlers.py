@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
 import re
 from aiogram import Router, types, F
 from aiogram.enums import ChatType
@@ -59,10 +60,13 @@ from app.services.rating_service import buy_rating, sell_rating
 from app.services.case_service import open_case, CASES
 from app.services.shop_service import (
     buy_property,
+    buy_car,
     buy_shop_item,
     get_player_properties,
+    get_player_cars,
     get_player_shop_items,
     PROPERTIES,
+    CARS,
     SHOP_ITEMS,
 )
 from app.services.cosmodrome_service import (
@@ -211,6 +215,36 @@ async def handle_inventory_sell_cmd(message: types.Message):
                 await message.reply(res.message, parse_mode="HTML")
             except Exception as e:
                 await message.reply(f"❌ {e}")
+            return
+
+        cmd = parts[1].lower()
+        if cmd in ("инфо", "помощь", "справка", "паспорт"):
+            mine = await get_or_create_mine(session, user_id=message.from_user.id)
+            upg_cost = (mine.pickaxe_level * 5_000) if mine.pickaxe_level < 10 else "MAX"
+            upg_str = f"{upg_cost:,} монет".replace(",", " ") if isinstance(upg_cost, int) else upg_cost
+            ores_total = mine.coal + mine.iron + mine.copper + mine.silver + mine.gold
+
+            text = (
+                f"⛏ <b>РУДНИК И ШАХТА FABLE: ПОДРОБНАЯ СПРАВКА</b>\n\n"
+                f"Шахта — это источник ценных металлов и минералов! Добытая руда накапливается в вашем хранилище, откуда её можно переплавлять в слитки или продавать за монеты.\n\n"
+                f"🔨 Уровень вашей кирки: <b>{mine.pickaxe_level} / 10</b>\n"
+                f"📦 Всего накоплено руды: <b>{ores_total:,} шт.</b>\n"
+                f"🔥 Слитков переплавлено: <b>{mine.processed_metals:,} шт.</b>\n\n"
+                f"<b>Цены на скупку руды в инвентаре:</b>\n"
+                f"• 🪨 Уголь: <b>{ORE_PRICES['coal']}</b> монет (доступен с 1 ур.)\n"
+                f"• 🔩 Железо: <b>{ORE_PRICES['iron']}</b> монет (доступно с 2 ур.)\n"
+                f"• 🥉 Медь: <b>{ORE_PRICES['copper']}</b> монет (доступна с 3 ур.)\n"
+                f"• 🥈 Серебро: <b>{ORE_PRICES['silver']}</b> монет (доступно с 4 ур.)\n"
+                f"• 🥇 Золото: <b>{ORE_PRICES['gold']}</b> монет (доступно с 5 ур.)\n"
+                f"• 💎 Металлический слиток (кузница): <b>150</b> монет за слиток\n\n"
+                f"🔧 Улучшение кирки до ур. {mine.pickaxe_level + 1}: <b>{upg_str}</b>\n\n"
+                f"💡 <b>Команды шахтера:</b>\n"
+                f"• <code>шахта</code> — взмахнуть киркой и добыть породу\n"
+                f"• <code>шахта улучшить</code> — прокачать кирку (открывает редкие руды)\n"
+                f"• <code>шахта переплавка</code> — переплавить металлы в слитки в кузнице\n"
+                f"• <code>инвентарь</code> — просмотреть запасы руды и продать их"
+            ).replace(",", " ")
+            await message.reply(text, parse_mode="HTML")
             return
 
         # Проверяем, есть ли количество
@@ -397,6 +431,35 @@ async def handle_mine_cmd(message: types.Message):
             return
 
         cmd = parts[1].lower()
+        if cmd in ("инфо", "помощь", "справка", "паспорт"):
+            mine = await get_or_create_mine(session, user_id=message.from_user.id)
+            upg_cost = (mine.pickaxe_level * 5_000) if mine.pickaxe_level < 10 else "MAX"
+            upg_str = f"{upg_cost:,} монет".replace(",", " ") if isinstance(upg_cost, int) else upg_cost
+            ores_total = mine.coal + mine.iron + mine.copper + mine.silver + mine.gold
+
+            text = (
+                f"⛏ <b>РУДНИК И ШАХТА FABLE: ПОДРОБНАЯ СПРАВКА</b>\n\n"
+                f"Шахта — это источник ценных металлов и минералов! Добытая руда накапливается в вашем хранилище, откуда её можно переплавлять в слитки или продавать за монеты.\n\n"
+                f"🔨 Уровень вашей кирки: <b>{mine.pickaxe_level} / 10</b>\n"
+                f"📦 Всего накоплено руды: <b>{ores_total:,} шт.</b>\n"
+                f"🔥 Слитков переплавлено: <b>{mine.processed_metals:,} шт.</b>\n\n"
+                f"<b>Цены на скупку руды в инвентаре:</b>\n"
+                f"• 🪨 Уголь: <b>{ORE_PRICES['coal']}</b> монет (доступен с 1 ур.)\n"
+                f"• 🔩 Железо: <b>{ORE_PRICES['iron']}</b> монет (доступно с 2 ур.)\n"
+                f"• 🥉 Медь: <b>{ORE_PRICES['copper']}</b> монет (доступна с 3 ур.)\n"
+                f"• 🥈 Серебро: <b>{ORE_PRICES['silver']}</b> монет (доступно с 4 ур.)\n"
+                f"• 🥇 Золото: <b>{ORE_PRICES['gold']}</b> монет (доступно с 5 ур.)\n"
+                f"• 💎 Металлический слиток (кузница): <b>150</b> монет за слиток\n\n"
+                f"🔧 Улучшение кирки до ур. {mine.pickaxe_level + 1}: <b>{upg_str}</b>\n\n"
+                f"💡 <b>Команды шахтера:</b>\n"
+                f"• <code>шахта</code> — взмахнуть киркой и добыть породу\n"
+                f"• <code>шахта улучшить</code> — прокачать кирку (открывает редкие руды)\n"
+                f"• <code>шахта переплавка</code> — переплавить металлы в слитки в кузнице\n"
+                f"• <code>инвентарь</code> — просмотреть запасы руды и продать их"
+            ).replace(",", " ")
+            await message.reply(text, parse_mode="HTML")
+            return
+
         if cmd in ("улучшить", "прокачать", "upgrade"):
             try:
                 lvl, cost = await upgrade_pickaxe(session, user_id=message.from_user.id)
@@ -513,19 +576,109 @@ async def handle_case_open_cmd(message: types.Message):
 
 # ===================== МАГАЗИН И НЕДВИЖИМОСТЬ =====================
 
+@router.message(F.text.casefold().in_(["машины", "!машины", "авто", "!авто", "автосалон", "!автосалон"]))
+async def handle_cars_list(message: types.Message):
+    lines = [
+        "🏎 <b>ПРЕМИАЛЬНЫЙ АВТОСАЛОН FABLE (10 МОДЕЛЕЙ)</b>\n",
+        "Покупайте автомобили в личный гараж! Машины отражают ваш статус и отображаются в профиле:\n",
+    ]
+    for c_id, cfg in CARS.items():
+        lines.append(
+            f"{cfg.icon} <b>#{c_id} {cfg.name}</b> — <b>{cfg.price:,}</b> монет\n"
+            f"   ├ Макс. скорость: <b>{cfg.speed_kmh} км/ч</b>\n"
+            f"   └ <i>{cfg.description}</i>".replace(",", " ")
+        )
+    lines.append(
+        "\n💡 <i>Купить автомобиль: <code>машина купить [номер]</code> (напр. <code>машина купить 3</code>)\n"
+        "Посмотреть свой гараж: <code>гараж</code></i>"
+    )
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().in_(["гараж", "!гараж", "мои авто", "!мои авто", "мои машины"]))
+async def handle_garage(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        cars = await get_player_cars(session, user_id=message.from_user.id)
+        if not cars:
+            await message.reply("🚗 Ваш гараж пока пуст. Выберите авто в автосалоне: <code>машины</code>", parse_mode="HTML")
+            return
+
+        lines = [f"🏎 <b>ЛИЧНЫЙ ГАРАЖ ({len(cars)} авто):</b>\n"]
+        for c in cars:
+            lines.append(f"• 🚗 <b>{c.item_name}</b>")
+        lines.append("\n💡 <i>Купить новые суперкары: <code>машины</code></i>")
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().startswith("машина купить"))
+@router.message(F.text.casefold().startswith("авто купить"))
+@router.message(F.text.casefold().startswith("купить авто"))
+@router.message(F.text.casefold().startswith("купить машину"))
+async def handle_buy_car_cmd(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").split()
+    car_id = None
+    for p in reversed(parts):
+        if p.isdigit():
+            car_id = int(p)
+            break
+
+    if not car_id:
+        await message.reply("Использование: <code>машина купить [номер 1..10]</code>. Каталог: <code>машины</code>", parse_mode="HTML")
+        return
+
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            inv, cfg = await buy_car(session, user_id=message.from_user.id, car_id=car_id)
+            await message.reply(
+                f"🎉 <b>ПОЗДРАВЛЯЕМ С ПОКУПКОЙ АВТОМОБИЛЯ!</b>\n\n"
+                f"{cfg.icon} В ваш гараж доставлен: <b>«{cfg.name}»</b>!\n"
+                f"Максимальная скорость: <b>{cfg.speed_kmh} км/ч</b>\n"
+                f"Цена покупки: <b>{cfg.price:,}</b> монет.\n\n"
+                f"Автомобиль добавлен в ваш <code>гараж</code> и гордо украшает <code>профиль</code>!".replace(",", " "),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
 @router.message(F.text.casefold().in_(["недвижимость", "!недвижимость"]))
 async def handle_properties_list(message: types.Message):
     lines = [
         "🌆 <b>КАТАЛОГ НЕДВИЖИМОСТИ FABLE (10 ВИДОВ)</b>\n",
-        "Престижная недвижимость для вложения капитала и статуса в профиле:\n",
+        "Престижная недвижимость для вложения капитала, статуса и отображения в профиле:\n",
     ]
     for p_id, cfg in PROPERTIES.items():
         lines.append(f"{cfg.icon} <b>#{p_id} {cfg.name}</b> — <b>{cfg.price:,}</b> монет\n   └ <i>{cfg.description}</i>".replace(",", " "))
-    lines.append("\n💡 <i>Купить: <code>недвижимость купить [номер]</code> (напр. <code>недвижимость купить 1</code>)</i>")
+    lines.append(
+        "\n💡 <i>Купить: <code>недвижимость купить [номер]</code> (напр. <code>недвижимость купить 1</code>)\n"
+        "Мои владения: <code>моя недвижимость</code></i>"
+    )
     await message.reply("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(F.text.casefold().in_(["моя недвижимость", "!моя недвижимость"]))
+async def handle_my_properties(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        props = await get_player_properties(session, user_id=message.from_user.id)
+        if not props:
+            await message.reply("🏠 У вас пока нет купленной недвижимости. Каталог: <code>недвижимость</code>", parse_mode="HTML")
+            return
+        lines = [f"🌆 <b>ВАША НЕДВИЖИМОСТЬ ({len(props)} объектов):</b>\n"]
+        for p in props:
+            lines.append(f"• 🏠 <b>{p.name}</b>")
+        lines.append("\n💡 <i>Купить новые владения: <code>недвижимость</code></i>")
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(F.text.casefold().startswith("недвижимость купить"))
+@router.message(F.text.casefold().startswith("купить недвижимость"))
 async def handle_buy_property_cmd(message: types.Message):
     if not message.from_user:
         return
@@ -630,13 +783,18 @@ async def handle_profile(message: types.Message):
         hashrate = calculate_effective_hashrate(rigs, active_coin, mining.farm_level)
 
         # Недвижимость
-        from app.services.shop_service import get_player_properties, get_player_shop_items
+        from app.services.shop_service import get_player_properties, get_player_cars, get_player_shop_items
         props = await get_player_properties(session, user_id=p.telegram_id)
         props_str = ", ".join([f"🏠 {pr.name}" for pr in props]) if props else "Нет жилья"
 
+        # Автомобили
+        cars = await get_player_cars(session, user_id=p.telegram_id)
+        cars_str = ", ".join([f"🚗 {c.item_name}" for c in cars]) if cars else "Пешком (нет авто)"
+
         # Предметы из магазина и кейсов
         items = await get_player_shop_items(session, user_id=p.telegram_id)
-        items_str = ", ".join([f"💎 {it.item_name}" for it in items]) if items else "Пусто"
+        non_car_items = [it for it in items if it.category != "cars"]
+        items_str = ", ".join([f"💎 {it.item_name}" for it in non_car_items]) if non_car_items else "Пусто"
 
         # Брак
         spouse_str = "В активном поиске"
@@ -658,6 +816,7 @@ async def handle_profile(message: types.Message):
             f"💍 Семья: {spouse_str}\n\n"
             f"🏢 <b>Бизнесы:</b> {b_list_str}\n"
             f"⛏ <b>Майнинг-ферма:</b> {total_rigs} ригов ({hashrate:,} GH/s, активна: {active_coin})\n"
+            f"🏎 <b>Гараж / Авто:</b> {cars_str}\n"
             f"🌆 <b>Недвижимость:</b> {props_str}\n"
             f"🛍 <b>Предметы / Магазин:</b> {items_str}".replace(",", " ")
         )
@@ -809,7 +968,7 @@ async def handle_businesses(message: types.Message):
         )
 
         # Команда "бизнесы" или "бизнес" без аргументов
-        if len(parts) == 1 or parts[1].casefold() in ("список", "лист"):
+        if len(parts) == 1 or parts[1].casefold() in ("список", "лист", "инфо", "помощь"):
             user_businesses = await get_player_businesses(session, user_id=message.from_user.id)
             user_b_map = {b.business_id: b for b in user_businesses}
 
@@ -817,12 +976,14 @@ async def handle_businesses(message: types.Message):
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
             total_uncollected = 0
+            total_hourly = 0
             for ub in user_businesses:
+                inc_hour = get_hourly_income(ub.business_id, ub.level)
+                total_hourly += inc_hour
                 last = ub.last_collected_at or now
                 elapsed_hours = (now - last).total_seconds() / 3600.0
                 capped_hours = min(elapsed_hours, 4.0)
                 if capped_hours >= (1.0 / 60.0):
-                    inc_hour = get_hourly_income(ub.business_id, ub.level)
                     total_uncollected += int(inc_hour * capped_hours)
 
             from app.db.models import Player
@@ -831,9 +992,12 @@ async def handle_businesses(message: types.Message):
 
             lines = [
                 "🏢 <b>КОММЕРЧЕСКИЕ БИЗНЕСЫ FABLE</b>\n",
-                f"💰 Ваш баланс кошелька: <b>{p_wallet:,}</b> монет".replace(",", " "),
-                f"📥 В кассе предприятий готово к сбору: <b>+{total_uncollected:,}</b> монет\n".replace(",", " "),
-                "⏱ <i>Прибыль копится максимум 4 часа! Если не собирать, предприятия прекращают генерацию прибыли.</i>\n",
+                "Бизнесы — это ваш источник пассивного дохода! Вы покупаете предприятия, улучшаете их уровень и собираете прибыль в кошелёк.",
+                f"💵 Наличные в кошельке: <b>{p_wallet:,}</b> монет",
+                f"📈 Ваш совокупный доход от предприятий: <b>+{total_hourly:,}</b> монет/час",
+                f"📥 В кассе предприятий готово к сбору: <b>+{total_uncollected:,}</b> монет\n",
+                "⚠️ <b>ВАЖНО:</b> Касса копится максимум <b>4 часа</b>! Если не собирать, бизнес прекращает работу до следующего сбора.\n",
+                "<b>📋 Каталог предприятий (10 уровней развития):</b>\n",
             ]
             for b_id, cfg in BUSINESSES.items():
                 if b_id in user_b_map:
@@ -850,26 +1014,27 @@ async def handle_businesses(message: types.Message):
                     payback = (cfg.base_cost / daily) if daily > 0 else 0
 
                     lines.append(
-                        f"{cfg.icon} <b>#{b_id} {cfg.name}</b> [Ур. {ub.level}/10]\n"
-                        f"   ├ Доход: <b>+{inc:,}/ч</b> (макс. за 4ч: +{inc * 4:,} | сутки: +{daily:,})\n"
-                        f"   ├ Окупаемость: ~{payback:.1f} дн. | В кассе: <b>{b_cash:,}</b> монет\n"
-                        f"   └ Улучшение: {upg_str}".replace(",", " ")
+                        f"{cfg.icon} <b>#{b_id} {cfg.name}</b> [Владеете: Ур. {ub.level}/10]\n"
+                        f"   ├ Доход: <b>+{inc:,}/час</b> (макс за 4ч: +{inc * 4:,} | в сутки: +{daily:,})\n"
+                        f"   ├ В кассе сейчас: <b>{b_cash:,}</b> монет | Окупаемость: ~{payback:.1f} дн.\n"
+                        f"   └ Прокачка ур. {ub.level + 1}: <b>{upg_str}</b>".replace(",", " ")
                     )
                 else:
                     daily = cfg.base_income_hourly * 24
                     payback = (cfg.base_cost / daily) if daily > 0 else 0
                     lines.append(
-                        f"{cfg.icon} <b>#{b_id} {cfg.name}</b> (Не куплен)\n"
-                        f"   ├ Доход: <b>+{cfg.base_income_hourly:,}/ч</b> (сутки: +{daily:,})\n"
-                        f"   ├ Окупаемость: ~{payback:.1f} дн.\n"
-                        f"   └ Стоимость: <b>{cfg.base_cost:,}</b> монет".replace(",", " ")
+                        f"{cfg.icon} <b>#{b_id} {cfg.name}</b> (Не приобретен)\n"
+                        f"   ├ Стоимость покупки: <b>{cfg.base_cost:,}</b> монет\n"
+                        f"   ├ Базовый доход: <b>+{cfg.base_income_hourly:,}/час</b> (в сутки: +{daily:,})\n"
+                        f"   ├ Окупаемость вложений: ~{payback:.1f} дн.\n"
+                        f"   └ Купить: <code>бизнес купить {b_id}</code>".replace(",", " ")
                     )
 
             lines.append(
-                "\n<i>Команды:</i>\n"
-                "• <code>бизнес купить [номер]</code> — купить предприятие\n"
-                "• <code>бизнес улучшить [номер]</code> — прокачать уровень\n"
-                "• <code>бизнес собрать</code> — забрать кассу со всех предприятий"
+                "\n💡 <b>Команды управления бизнесом:</b>\n"
+                "• <code>бизнес купить [номер 1..10]</code> — приобрести новое предприятие\n"
+                "• <code>бизнес улучшить [номер]</code> — прокачать уровень (увеличивает доход на +60%)\n"
+                "• <code>бизнес собрать</code> — забрать накопленную прибыль со всех предприятий в кошелек"
             )
             await message.reply("\n".join(lines), parse_mode="HTML")
             return
@@ -969,7 +1134,7 @@ async def handle_mining(message: types.Message):
         mining = await get_or_create_mining(session, user_id=message.from_user.id)
 
         # Главное меню фермы
-        if len(parts) == 1 or parts[0].casefold() in ("майнинг", "!майнинг"):
+        if len(parts) == 1 or parts[0].casefold() in ("майнинг", "!майнинг") or parts[1].casefold() in ("инфо", "помощь"):
             rigs = get_rigs_dict(mining)
             total_comps = sum(rigs.values())
             active_coin = (mining.active_coin or "BTC").upper()
@@ -980,34 +1145,45 @@ async def handle_mining(message: types.Message):
             rigs_lines = []
             for r_code, cfg in MINING_RIGS.items():
                 count = rigs.get(r_code, 0)
-                rigs_lines.append(f"{cfg.icon} <b>{cfg.name}</b>: <b>{count}</b> шт. (Мощность: {cfg.hashrate} GH/s | Монеты: {', '.join(cfg.allowed_coins)} | Цена: {cfg.price:,} монет)".replace(",", " "))
+                rigs_lines.append(
+                    f"{cfg.icon} <b>{cfg.name}</b> (код: <code>{r_code}</code>)\n"
+                    f"   ├ В наличии: <b>{count} шт.</b> | Стоимость: <b>{cfg.price:,}</b> монет\n"
+                    f"   ├ Хэшрейт одного рига: <b>+{cfg.hashrate} GH/s</b>\n"
+                    f"   └ Специализация монет: <b>{', '.join(cfg.allowed_coins)}</b>".replace(",", " ")
+                )
 
-            # Расчет детальной часовой и 4-часовой добычи
+            # Расчет детальной часовой, 4-часовой и суточной добычи
             from app.services.mining_service import COIN_BASE_YIELD_PER_HASHRATE
             yield_rate = COIN_BASE_YIELD_PER_HASHRATE.get(active_coin, Decimal("0.00000005"))
             hourly_crypto = (Decimal(str(hashrate)) * yield_rate).quantize(Decimal("0.00000001"))
             cap_crypto = (hourly_crypto * Decimal("4.0")).quantize(Decimal("0.00000001"))
+            daily_crypto = (hourly_crypto * Decimal("24.0")).quantize(Decimal("0.00000001"))
             hourly_crypto_str = f"{hourly_crypto:.8f}".rstrip("0").rstrip(".")
             cap_crypto_str = f"{cap_crypto:.8f}".rstrip("0").rstrip(".")
+            daily_crypto_str = f"{daily_crypto:.8f}".rstrip("0").rstrip(".")
 
             resp = (
-                f"⛏ <b>КРИПТО-МАЙНИНГ ФЕРМА FABLE</b>\n\n"
-                f"🎯 Активная криптовалюта: <b>{active_coin}</b>\n"
-                f"⚡️ Уровень дата-центра: <b>{mining.farm_level} / 10</b> (Бонус мощности: +{(mining.farm_level - 1)*25}%)\n"
-                f"🔥 Общая вычислительная мощность: <b>{hashrate:,} GH/s</b>\n"
-                f"📈 <b>Расчет прибыли активной монеты:</b>\n"
-                f"   ├ В час: <b>+{hourly_crypto_str} {active_coin}</b> + {int(hashrate*0.5):,} монет\n"
-                f"   └ Капа (за 4ч): <b>до +{cap_crypto_str} {active_coin}</b> + {int(hashrate*2):,} монет\n"
-                f"🖥 Оборудование фермы ({total_comps} шт.):\n"
+                f"⛏ <b>КРИПТО-МАЙНИНГ ДАТА-ЦЕНТР FABLE</b>\n\n"
+                f"Майнинг позволяет добывать реальные крипто-активы прямо на ваш биржевой <code>портфель</code>, а также приносит вспомогательные игровые монеты!\n\n"
+                f"🎯 Добываемая сейчас криптовалюта: <b>{active_coin}</b>\n"
+                f"🏢 Уровень дата-центра: <b>{mining.farm_level} / 10</b> (+{(mining.farm_level - 1)*25}% бонус мощности)\n"
+                f"🔥 Суммарная мощность майнинга: <b>{hashrate:,} GH/s</b>\n"
+                f"🖥 Всего ригов на ферме: <b>{total_comps} шт.</b>\n\n"
+                f"📊 <b>Прогноз добычи выбранной монеты ({active_coin}):</b>\n"
+                f"   ├ Доход в час: <b>+{hourly_crypto_str or '0'} {active_coin}</b> (+{int(hashrate*0.5):,} монет)\n"
+                f"   ├ Накопитель кассы (за 4ч капа): <b>до +{cap_crypto_str or '0'} {active_coin}</b> (+{int(hashrate*2):,} монет)\n"
+                f"   └ В сутки (при сборе): <b>~+{daily_crypto_str or '0'} {active_coin}</b>\n\n"
+                f"⚠️ <b>Внимание:</b> Накопитель майнинга заполняется за <b>4 часа</b>, после чего добыча останавливается до нажатия <code>ферма собрать</code>!\n\n"
+                f"<b>Каталог оборудования для фермы:</b>\n"
                 + "\n".join(rigs_lines)
-                + f"\n\n🔧 Улучшение дата-центра до ур. {mining.farm_level + 1}: <b>{upg_str}</b>\n\n"
-                f"<i>Команды:</i>\n"
-                f"• <code>купить ферму</code> — приобрести базовую ферму\n"
-                f"• <code>ферма монета [BTC|ETH|TON|SOL|DOGE]</code> — переключить монету\n"
-                f"• <code>ферма купить [cpu|gpu|asic|quantum] [кол-во]</code> — купить оборудование\n"
-                f"• <code>ферма собрать</code> — перевести добытую крипту в <code>портфель</code>\n"
-                f"• <code>ферма улучшить</code> — прокачать дата-центр"
-            )
+                + f"\n\n🔧 Прокачка дата-центра до ур. {mining.farm_level + 1}: <b>{upg_str}</b>\n\n"
+                f"💡 <b>Команды управления майнингом:</b>\n"
+                f"• <code>купить ферму</code> — приобрести первый CPU-компьютер\n"
+                f"• <code>ферма купить [код_рига] [кол-во]</code> — купить риги (напр. <code>ферма купить gpu 2</code>)\n"
+                f"• <code>ферма монета [BTC|ETH|TON|SOL|DOGE]</code> — сменить добываемую монету\n"
+                f"• <code>ферма собрать</code> — отправить намайненную крипту в <code>портфель</code>\n"
+                f"• <code>ферма улучшить</code> — прокачать уровень дата-центра (+25% к мощности)"
+            ).replace(",", " ")
             await message.reply(resp, parse_mode="HTML")
             return
 
@@ -1112,10 +1288,11 @@ async def handle_cosmodrome(message: types.Message):
         cosmo = await get_or_create_cosmodrome(session, user_id=message.from_user.id)
         rockets = get_rockets_dict(cosmo)
 
-        if len(parts) == 1:
+        if len(parts) == 1 or parts[1].lower() in ("инфо", "помощь"):
             total_rockets = sum(rockets.values())
             hourly_inc = calculate_hourly_income(rockets, cosmo.level)
             cap_inc = int(hourly_inc * 4.0)
+            daily_inc = hourly_inc * 24
 
             # Накоплено прямо сейчас
             from datetime import datetime, timezone
@@ -1130,32 +1307,34 @@ async def handle_cosmodrome(message: types.Message):
             rocket_lines = []
             for r_code, cfg in ROCKETS.items():
                 cnt = rockets.get(r_code, 0)
-                status = f"<b>{cnt} шт. в ангаре</b>" if cnt > 0 else f"Цена: {cfg.price:,} монет"
+                status = f"✅ <b>В ангаре: {cnt} шт.</b>" if cnt > 0 else f"Стоимость: <b>{cfg.price:,}</b> монет"
                 daily = cfg.hourly_income * 24
                 payback = (cfg.price / daily) if daily > 0 else 0
                 rocket_lines.append(
-                    f"{cfg.icon} <b>{cfg.name}</b> [{r_code}]\n"
-                    f"   ├ Доход: <b>+{cfg.hourly_income:,}/ч</b> (сутки: +{daily:,}) | Окупаемость: ~{payback:.1f} дн.\n"
-                    f"   ├ Статус: {status} | Мин. космодром: ур. {cfg.min_cosmodrome_level}\n"
+                    f"{cfg.icon} <b>{cfg.name}</b> (код: <code>{r_code}</code>)\n"
+                    f"   ├ Статус: {status} | Требует космодром: ур. {cfg.min_cosmodrome_level}\n"
+                    f"   ├ Прибыль: <b>+{cfg.hourly_income:,}/час</b> (+{daily:,}/сутки) | Окупаемость: ~{payback:.1f} дн.\n"
                     f"   └ <i>{cfg.description}</i>".replace(",", " ")
                 )
 
             resp = (
                 f"🌌 <b>ОРБИТАЛЬНЫЙ КОСМОДРОМ FABLE</b>\n\n"
-                f"🚀 Уровень космодрома: <b>{cosmo.level} / 10</b> (Бонус к рейсам: +{(cosmo.level - 1)*20}%)\n"
-                f"🛸 Ракет в ангаре: <b>{total_rockets}</b> шт. | Всего запусков: <b>{cosmo.total_launches}</b>\n"
-                f"📈 <b>Финансовые возможности космодрома:</b>\n"
-                f"   ├ Коммерческий доход: <b>+{hourly_inc:,}</b> монет/час\n"
+                f"Космодром — это аэрокосмический комплекс! Ракеты генерируют пассивный доход от орбитальных контрактов, а также запускаются в прибыльные исследовательские экспедиции.\n\n"
+                f"🚀 Уровень комплекса: <b>{cosmo.level} / 10</b> (Бонус к прибыли: +{(cosmo.level - 1)*20}%)\n"
+                f"🛸 Всего ракет в ангаре: <b>{total_rockets}</b> шт. | Успешных экспедиций: <b>{cosmo.total_launches}</b>\n"
+                f"📈 <b>Финансовые показатели космодрома:</b>\n"
+                f"   ├ Доход от контрактов: <b>+{hourly_inc:,}</b> монет/час (в сутки: +{daily_inc:,})\n"
                 f"   ├ Накопитель кассы (за 4ч капа): <b>до +{cap_inc:,}</b> монет\n"
-                f"   └ Готово к сбору сейчас: <b>+{cur_cash:,}</b> монет\n\n"
-                f"<b>Каталог космических ракет:</b>\n"
+                f"   └ Готово к сбору прямо сейчас: <b>+{cur_cash:,}</b> монет\n\n"
+                f"⚠️ <b>Внимание:</b> Прибыль ракет копится максимум <b>4 часа</b>! Не забывайте писать <code>космодром собрать</code>.\n\n"
+                f"<b>Каталог доступных космических кораблей:</b>\n"
                 + "\n".join(rocket_lines)
                 + f"\n\n🔧 Модернизация стартовой площадки до ур. {cosmo.level + 1}: <b>{upg_str}</b>\n\n"
-                f"<i>Команды:</i>\n"
-                f"• <code>космодром купить [vostok|soyuz|falcon|proton|starship|saturn] [кол-во]</code>\n"
-                f"• <code>космодром собрать</code> — получить прибыль от коммерческих рейсов\n"
-                f"• <code>космодром запуск</code> — отправить ракету в отдельную миссию\n"
-                f"• <code>космодром улучшить</code> — прокачать стартовые площадки"
+                f"💡 <b>Команды управления космодромом:</b>\n"
+                f"• <code>космодром купить [код_ракеты] [кол-во]</code> — купить ракету (напр. <code>космодром купить vostok 1</code>)\n"
+                f"• <code>космодром собрать</code> — перевести прибыль коммерческих рейсов в кошелек\n"
+                f"• <code>космодром запуск</code> — отправить ракету в космическую экспедицию за разовой наградой\n"
+                f"• <code>космодром улучшить</code> — прокачать стартовую площадку (+20% к доходу всех ракет)"
             )
             await message.reply(resp, parse_mode="HTML")
             return
