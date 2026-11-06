@@ -37,7 +37,6 @@ class Player(Base, TimestampMixin):
         CheckConstraint("wallet >= 0", name="ck_players_wallet_nonnegative"),
         CheckConstraint("bank_balance >= 0", name="ck_players_bank_nonnegative"),
         CheckConstraint("experience >= 0", name="ck_players_experience_nonnegative"),
-        CheckConstraint("level >= 1", name="ck_players_level_positive"),
         CheckConstraint("reputation >= 0", name="ck_players_reputation_nonnegative"),
         CheckConstraint("shares >= 0", name="ck_players_shares_nonnegative"),
     )
@@ -49,7 +48,6 @@ class Player(Base, TimestampMixin):
     wallet: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     bank_balance: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     experience: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     reputation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     shares: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     custom_nickname: Mapped[str | None] = mapped_column(String(64), nullable=True)

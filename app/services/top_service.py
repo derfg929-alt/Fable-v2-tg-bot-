@@ -164,7 +164,7 @@ async def get_top_level(
         stmt = (
             select(Player)
             .where(Player.is_globally_banned.is_(False))
-            .order_by(desc(Player.level), desc(Player.experience))
+            .order_by(desc(Player.experience))
             .limit(limit)
         )
     else:
@@ -178,7 +178,7 @@ async def get_top_level(
             select(Player)
             .join(subq, subq.c.user_id == Player.telegram_id)
             .where(Player.is_globally_banned.is_(False))
-            .order_by(desc(Player.level), desc(Player.experience))
+            .order_by(desc(Player.experience))
             .limit(limit)
         )
 
@@ -190,7 +190,7 @@ async def get_top_level(
                 rank=rank,
                 user_id=player.telegram_id,
                 name=player.first_name,
-                level=player.level,
+                level=1,
                 experience=player.experience,
             )
         )

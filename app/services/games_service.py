@@ -302,8 +302,8 @@ async def play_fishing(session: AsyncSession, *, user_id: int) -> FishingResult:
     gear = await get_or_create_gear(session, user_id=user_id)
     rod_lvl = gear.fishing_rod_level
 
-    # Шанс холостой поклевки уменьшается с уровнем удочки
-    empty_prob = max(0.05, 0.25 - (rod_lvl - 1) * 0.03)
+    # Шанс холостой поклевки уменьшается с уровнем удочки (при 10 уровне удочки исключен)
+    empty_prob = max(0.0, 0.20 - (rod_lvl - 1) * 0.025)
     r = random.random()
 
     if r < empty_prob:

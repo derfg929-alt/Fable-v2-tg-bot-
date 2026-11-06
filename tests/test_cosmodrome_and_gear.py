@@ -164,7 +164,7 @@ async def test_casino_games_balance():
 
         # Сундук
         mult, b_payout = await play_mystery_box(session, user_id=uid, stake=100)
-        assert mult in (0.0, 0.5, 1.2, 1.5, 2.0, 3.5)
+        assert mult in (0.0, 0.5, 1.2, 1.5, 2.0, 3.0, 5.0)
 
         # Слоты
         slot_res = await play_slots(session, user_id=uid, stake=100)

@@ -83,12 +83,10 @@ async def test_all_top_categories():
         p2 = reg2.player
 
         p1.wallet = 1_000_000
-        p1.level = 10
         p1.experience = 500
         p1.rating = 250
 
         p2.wallet = 500_000
-        p2.level = 5
         p2.experience = 100
         p2.rating = 50
 
@@ -112,11 +110,11 @@ async def test_all_top_categories():
         assert len(top_rich) >= 2
         assert top_rich[0].user_id == u1
 
-        # 2. Топ уровней
+        # 2. Топ уровней / опыта
         top_lvl = await get_top_level(session, limit=5)
         assert len(top_lvl) >= 2
         assert top_lvl[0].user_id == u1
-        assert top_lvl[0].level == 10
+        assert top_lvl[0].experience == 500
 
         # 3. Топ рейтинга
         top_r = await get_top_rating(session, limit=5)
@@ -167,3 +165,29 @@ async def test_top_handlers_and_callbacks():
         await cb_func(cb)
         cb.answer.assert_called_once()
         cb.message.edit_text.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_profile_displays_admin_level():
+    """Проверяем, что в профиле отображается только уровень админки и опыт, а уровень персонажа отсутствует."""
+    from app.handlers.economy_handlers import handle_profile
+    from app.db.models import ChatAdmin
+    u = 88991122
+    chat_id = -100998877
+    async with session_scope() as session:
+        await get_or_create_chat(session, chat_id=chat_id, title="Test Group")
+        reg = await get_or_create_player(session, telegram_id=u, first_name="AdminTestUser")
+        p = reg.player
+        p.experience = 350
+        session.add(ChatAdmin(chat_id=chat_id, user_id=u, level=3, assigned_by=u, is_active=True))
+
+    msg = MagicMock()
+    msg.chat = MagicMock(id=chat_id, type="supergroup")
+    msg.from_user = MagicMock(id=u, first_name="AdminTestUser", username="adm_test", last_name=None)
+    msg.bot = MagicMock()
+    msg.reply = AsyncMock()
+
+    await handle_profile(msg)
+    assert msg.reply.called
+    sent_text = msg.reply.call_args[0][0]
+    assert "Уровень админки: <b>3 (Админ)</b>" in sent_text
+    assert "⭐ Уровень:" not in sent_text

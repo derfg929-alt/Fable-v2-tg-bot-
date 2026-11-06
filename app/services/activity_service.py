@@ -25,7 +25,6 @@ class ActivityRewardResult:
     reason: str
     coins: int = 0
     experience: int = 0
-    level: int | None = None
 
 
 DEFAULTS = {
@@ -200,19 +199,12 @@ async def reward_chat_message(
             return ActivityRewardResult(False, "already_processed")
 
     player.experience += xp
-    threshold = settings["experience_per_level"]
-    levels_gained = 0
-    if threshold > 0:
-        while player.experience >= threshold:
-            player.experience -= threshold
-            player.level += 1
-            levels_gained += 1
     session.add(ActivityRecord(
         chat_id=chat_id, user_id=user_id, points=1,
         message_length=len(body), reward_coins=coins,
     ))
     return ActivityRewardResult(
-        True, "awarded", coins=coins, experience=xp, level=player.level if levels_gained else None
+        True, "awarded", coins=coins, experience=xp
     )
 
 # Алиас для обработчиков

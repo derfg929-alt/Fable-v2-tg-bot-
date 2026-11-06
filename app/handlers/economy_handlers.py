@@ -762,8 +762,12 @@ async def handle_profile(message: types.Message):
             username=message.from_user.username,
         )
         p = reg.player
-        req_exp = p.level * 100
-        to_next = max(0, req_exp - p.experience)
+
+        # Уровень админки в текущем чате
+        from app.services.moderation_service import get_user_admin_level, ROLE_NAMES
+        chat_id = message.chat.id if message.chat else 0
+        admin_lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=p.telegram_id, bot=message.bot)
+        role_name = ROLE_NAMES.get(admin_lvl, "Игрок")
 
         # Никнейм
         disp_name = p.custom_nickname or p.first_name
@@ -806,8 +810,8 @@ async def handle_profile(message: types.Message):
         text = (
             f"👤 <b>Профиль игрока {disp_name}</b>\n\n"
             f"🆔 ID: <code>{p.telegram_id}</code>\n"
-            f"⭐ Уровень: <b>{p.level}</b>\n"
-            f"✨ Опыт: <b>{p.experience} / {req_exp}</b> (до след.: {to_next})\n"
+            f"🛡 Уровень админки: <b>{admin_lvl} ({role_name})</b>\n"
+            f"✨ Опыт: <b>{p.experience:,}</b> XP\n"
             f"💰 Кошелек: <b>{p.wallet:,}</b> монет\n"
             f"🏦 Банк: <b>{p.bank_balance:,}</b> монет\n"
             f"📈 Биржевые акции: <b>{p.shares}</b> ед.\n"
