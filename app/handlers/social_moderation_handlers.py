@@ -530,7 +530,7 @@ async def on_captcha_solve(callback: types.CallbackQuery):
             await callback.answer("❌ Это не ваша капча или время истекло!", show_alert=True)
 
 
-@router.message(F.text.casefold().startswith("мут"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["мут", "!мут", "/mute", "замутить"])))
 async def handle_mute(message: types.Message):
     if not message.chat or message.chat.type == types.ChatType.PRIVATE:
         return
@@ -538,7 +538,7 @@ async def handle_mute(message: types.Message):
 
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
-        if not target_id or len(parts) < 2:
+        if not target_id or (len(parts) < 2 and not message.reply_to_message):
             await message.reply("Использование: ответом на сообщение <code>мут 30м [причина]</code> или <code>мут @user 30м [причина]</code>", parse_mode="HTML")
             return
 
@@ -563,7 +563,6 @@ async def handle_mute(message: types.Message):
                 reason=reason,
                 bot=message.bot,
             )
-            # Применение мута в Telegram через ChatPermissions
             tg_status = ""
             if message.bot:
                 try:
@@ -596,7 +595,7 @@ async def handle_mute(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().startswith("размут"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["размут", "!размут", "/unmute", "снять мут"])))
 async def handle_unmute(message: types.Message):
     if not message.chat or message.chat.type == types.ChatType.PRIVATE:
         return
@@ -635,7 +634,29 @@ async def handle_unmute(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().startswith("варн"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["варны", "!варны", "преды", "!преды"])))
+async def handle_view_warns(message: types.Message):
+    """Просмотр активных предупреждений пользователя."""
+    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+        return
+    async with session_scope() as session:
+        target_id = await _get_target_user_id(message, session) or message.from_user.id
+        warns = await get_active_warns(session, chat_id=message.chat.id, target_id=target_id)
+        if not warns:
+            await message.reply(f"✅ У пользователя ID <code>{target_id}</code> нет активных предупреждений.", parse_mode="HTML")
+            return
+
+        lines = [f"⚠️ <b>Активные предупреждения пользователя ID <code>{target_id}</code> ({len(warns)}/5):</b>\n"]
+        for idx, w in enumerate(warns, start=1):
+            date_str = w.created_at.strftime("%d.%m.%Y %H:%M") if w.created_at else ""
+            lines.append(f"{idx}. {w.reason} <i>({date_str})</i> — от ID {w.moderator_id}")
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in [
+    "варн", "!варн", "пред", "!пред", "предупреждение", "!предупреждение",
+    "снять варн", "снять пред", "разварн", "!разварн"
+])))
 async def handle_warn(message: types.Message):
     text = (message.text or "").strip()
     parts = text.split()
@@ -646,7 +667,7 @@ async def handle_warn(message: types.Message):
             await message.reply("Использование: ответом на сообщение <code>варн [причина]</code> или <code>варн @user [причина]</code>", parse_mode="HTML")
             return
 
-        if "снять" in text:
+        if any(w in text.casefold() for w in ("снять", "разварн", "unwarn")):
             try:
                 ok = await revoke_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, bot=message.bot)
                 await message.reply("✅ Предупреждение снято." if ok else "У пользователя нет активных предупреждений.")
@@ -662,7 +683,9 @@ async def handle_warn(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().in_(["админ список", "!админ список"]))
+@router.message(F.text.casefold().in_([
+    "админ список", "!админ список", "состав", "!состав", "стаф", "!стаф", "админы", "!админы"
+]))
 async def handle_admin_list(message: types.Message):
     if not message.chat or message.chat.type == types.ChatType.PRIVATE:
         return
@@ -675,3 +698,86 @@ async def handle_admin_list(message: types.Message):
         for p, lvl, role in admins:
             lines.append(f"• <b>{p.first_name}</b> — Уровень {lvl} ({role})")
         await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["чистка", "!чистка", "очистка", "!очистка"])))
+async def handle_chat_purge(message: types.Message):
+    """Очистка/удаление сообщений в чате для модераторов (ур. 2+)."""
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        return
+    parts = (message.text or "").split()
+    count = 10
+    if len(parts) > 1 and parts[1].isdigit():
+        count = min(100, max(1, int(parts[1])))
+
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot)
+        if lvl < 2:
+            await message.reply("Для чистки сообщений требуются права модератора (ур. 2+)")
+            return
+
+    # Удаляем сообщение с вызовом команды и предыдущие сообщения
+    deleted = 0
+    if message.bot:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        cur_id = message.message_id
+        for mid in range(cur_id - 1, max(1, cur_id - count - 1), -1):
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=mid)
+                deleted += 1
+            except Exception:
+                continue
+
+    try:
+        notify = await message.answer(f"🧹 Удалено сообщений: <b>{deleted}</b>", parse_mode="HTML")
+        import asyncio
+        await asyncio.sleep(3)
+        await notify.delete()
+    except Exception:
+        pass
+
+
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["закрепить", "!закрепить", "пин", "!пин", "pin"])))
+async def handle_pin_message(message: types.Message):
+    """Закрепление сообщения в группе для админов (ур. 3+)."""
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        return
+    if not message.reply_to_message:
+        await message.reply("Ответьте на сообщение, которое нужно закрепить: <code>закрепить</code>", parse_mode="HTML")
+        return
+
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot)
+        if lvl < 3:
+            await message.reply("Закреплять сообщения могут администраторы (ур. 3+)")
+            return
+
+    if message.bot:
+        try:
+            await message.bot.pin_chat_message(chat_id=message.chat.id, message_id=message.reply_to_message.message_id)
+            await message.reply("📌 Сообщение успешно закреплено!")
+        except Exception as e:
+            await message.reply(f"❌ Не удалось закрепить сообщение: {e}")
+
+
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["открепить", "!открепить", "анпин", "!анпин", "unpin"])))
+async def handle_unpin_message(message: types.Message):
+    """Открепление сообщения в группе для админов (ур. 3+)."""
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        return
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot)
+        if lvl < 3:
+            await message.reply("Откреплять сообщения могут администраторы (ур. 3+)")
+            return
+
+    if message.bot:
+        try:
+            target_msg_id = message.reply_to_message.message_id if message.reply_to_message else None
+            await message.bot.unpin_chat_message(chat_id=message.chat.id, message_id=target_msg_id)
+            await message.reply("🔓 Сообщение откреплено!")
+        except Exception as e:
+            await message.reply(f"❌ Не удалось открепить сообщение: {e}")

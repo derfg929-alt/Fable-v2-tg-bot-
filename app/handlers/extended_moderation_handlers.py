@@ -154,7 +154,9 @@ async def on_new_chat_member(event: types.ChatMemberUpdated, bot: Bot):
 
 # ===================== КИК / БАН / РАЗБАН =====================
 
-@router.message(F.text.casefold().startswith("кик"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in [
+    "кик", "!кик", "/kick", "кикнуть", "!кикнуть"
+])))
 async def handle_kick(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
@@ -186,7 +188,9 @@ async def handle_kick(message: types.Message, bot: Bot):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().startswith("бан"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in [
+    "бан", "!бан", "/ban", "забанить", "!забанить"
+])))
 async def handle_ban(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
@@ -217,7 +221,9 @@ async def handle_ban(message: types.Message, bot: Bot):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().startswith("разбан"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in [
+    "разбан", "!разбан", "/unban", "снять бан"
+])))
 async def handle_unban(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
@@ -363,9 +369,10 @@ async def on_report_reject(callback: types.CallbackQuery):
 
 # ===================== НАЗНАЧЕНИЕ АДМИНОВ / ССЫЛКИ / НАСТРОЙКИ ЧАТА =====================
 
-@router.message(F.text.casefold().startswith("админ назначить"))
-@router.message(F.text.casefold().startswith("дать админку"))
-@router.message(F.text.casefold().startswith("назначить админа"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in [
+    "админ назначить", "!админ назначить", "дать админку", "!дать админку", "назначить админа",
+    "повысить", "!повысить", "+админ", "!+админ"
+])))
 async def handle_admin_appoint(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
@@ -398,9 +405,10 @@ async def handle_admin_appoint(message: types.Message, bot: Bot):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().startswith("админ снять"))
-@router.message(F.text.casefold().startswith("снять админку"))
-@router.message(F.text.casefold().startswith("снять админа"))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in [
+    "админ снять", "!админ снять", "снять админку", "!снять админку", "снять админа",
+    "понизить", "!понизить", "-админ", "!-админ", "разжаловать"
+])))
 async def handle_admin_dismiss(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
