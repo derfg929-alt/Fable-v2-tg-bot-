@@ -15,6 +15,8 @@ from app.db.session import session_scope
 from app.services.owner_service import (
     verify_owner,
     list_chats_summary,
+    list_players_wealth_summary,
+    get_player_wealth_details,
     set_chat_bot_state,
     set_player_global_ban,
     reset_global_economy,
@@ -35,9 +37,10 @@ async def _build_admin_panel_payload(owner_id: int):
 
     builder = InlineKeyboardBuilder()
     builder.button(text="🏢 Список чатов", callback_data="owner_menu_chats")
+    builder.button(text="💰 Балансы игроков", callback_data="owner_menu_balances")
     builder.button(text="📊 Статистика", callback_data="owner_menu_stats")
     builder.button(text="⚠️ Сброс экономики", callback_data="owner_eco_reset_prompt")
-    builder.adjust(2, 1)
+    builder.adjust(2, 2)
 
     active_cnt = sum(1 for c in chats if c.is_active)
     total_cnt = len(chats)
@@ -60,6 +63,8 @@ async def _build_admin_panel_payload(owner_id: int):
         f"🏢 <b>Подключенные чаты ({active_cnt}/{total_cnt} активны):</b>\n"
         f"{chats_text}\n\n"
         f"<b>Доступные глобальные команды:</b>\n"
+        f"• <code>балансы</code> / <code>кто сколько</code> — балансы всех игроков\n"
+        f"• <code>инфо [ID]</code> — баланс и состояние конкретного игрока\n"
         f"• <code>настройки чаты</code> — полный список подключенных групп\n"
         f"• <code>настройки стоп [ID]</code> — отключить бота в группе\n"
         f"• <code>настройки старт [ID]</code> — включить бота в группе\n"
@@ -131,6 +136,107 @@ async def on_owner_menu_chats(callback: types.CallbackQuery):
             await callback.message.edit_text("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
         except Exception:
             pass
+
+
+@router.callback_query(F.data == "owner_menu_balances")
+async def on_owner_menu_balances(callback: types.CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    async with session_scope() as session:
+        players = await list_players_wealth_summary(session, owner_id=callback.from_user.id, limit=20)
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
+
+        if not players:
+            try:
+                await callback.message.edit_text("💰 В базе пока нет зарегистрированных игроков.", reply_markup=builder.as_markup())
+            except Exception:
+                pass
+            return
+
+        lines = ["💰 <b>Балансы игроков Fable (топ по богатству):</b>\n"]
+        for p in players:
+            name = p.first_name or f"ID {p.telegram_id}"
+            uname = f" (@{p.username})" if p.username else ""
+            total = p.wallet + p.bank_balance
+            lines.append(
+                f"• <b>{name}</b>{uname} [<code>{p.telegram_id}</code>]\n"
+                f"   💵 Кошелек: {p.wallet:,} | 🏦 Банк: {p.bank_balance:,} | Всего: <b>{total:,}</b>"
+            )
+
+        text = "\n".join(lines).replace(",", " ")
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
+
+
+@router.message(F.text.casefold().in_(["балансы", "!балансы", "кто сколько", "!кто сколько"]))
+async def handle_owner_players_balances(message: types.Message):
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    async with session_scope() as session:
+        players = await list_players_wealth_summary(session, owner_id=message.from_user.id, limit=25)
+        if not players:
+            await message.reply("В базе пока нет игроков.")
+            return
+
+        lines = ["💰 <b>Балансы игроков Fable (топ по богатству):</b>\n"]
+        for p in players:
+            name = p.first_name or f"ID {p.telegram_id}"
+            uname = f" (@{p.username})" if p.username else ""
+            total = p.wallet + p.bank_balance
+            lines.append(
+                f"• <b>{name}</b>{uname} (ID: <code>{p.telegram_id}</code>)\n"
+                f"   💵 На руках: {p.wallet:,} | 🏦 В банке: {p.bank_balance:,} | Всего: <b>{total:,}</b>"
+            )
+        await message.reply("\n".join(lines).replace(",", " "), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().startswith("инфо"))
+async def handle_owner_player_info(message: types.Message):
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    target_id = None
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id = message.reply_to_message.from_user.id
+    elif len(parts) >= 2 and parts[1].isdigit():
+        target_id = int(parts[1])
+
+    if not target_id:
+        await message.reply("Использование: <code>инфо [ID]</code> или ответом на сообщение игрока", parse_mode="HTML")
+        return
+
+    async with session_scope() as session:
+        p = await get_player_wealth_details(session, owner_id=message.from_user.id, target_id=target_id)
+        if not p:
+            await message.reply(f"❌ Игрок с ID <code>{target_id}</code> не найден в базе данных.", parse_mode="HTML")
+            return
+
+        total_wealth = p.wallet + p.bank_balance
+        ban_status = f"🔴 Забанен ({p.global_ban_reason})" if p.is_globally_banned else "🟢 Активен"
+        reg_date = p.created_at.strftime("%d.%m.%Y %H:%M") if p.created_at else "Неизвестно"
+
+        text = (
+            f"👤 <b>ИНФОРМАЦИЯ ОБ ИГРОКЕ</b>\n\n"
+            f"ID: <code>{p.telegram_id}</code>\n"
+            f"Имя: <b>{p.first_name}</b>\n"
+            f"Юзернейм: <b>@{p.username or 'отсутствует'}</b>\n"
+            f"Статус: {ban_status}\n"
+            f"Регистрация: <i>{reg_date}</i>\n\n"
+            f"💵 В кошельке: <b>{p.wallet:,}</b> монет\n"
+            f"🏦 В банке: <b>{p.bank_balance:,}</b> монет\n"
+            f"💰 Общее состояние: <b>{total_wealth:,}</b> монет\n"
+            f"📈 Акций: <b>{p.shares:,}</b> шт.\n"
+            f"⭐ Опыт: <b>{p.experience:,}</b> XP"
+        ).replace(",", " ")
+        await message.reply(text, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "owner_menu_stats")

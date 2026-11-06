@@ -59,6 +59,27 @@ async def list_chats_summary(
     return list(res.all())
 
 
+async def list_players_wealth_summary(
+    session: AsyncSession, *, owner_id: int, limit: int = 25
+) -> list[Player]:
+    """Возвращает список игроков с их балансами кошелька и банка, отсортированный по общему богатству."""
+    verify_owner(owner_id)
+    res = await session.scalars(
+        select(Player)
+        .order_by((Player.wallet + Player.bank_balance).desc())
+        .limit(limit)
+    )
+    return list(res.all())
+
+
+async def get_player_wealth_details(
+    session: AsyncSession, *, owner_id: int, target_id: int
+) -> Player | None:
+    """Возвращает данные о балансах конкретного игрока."""
+    verify_owner(owner_id)
+    return await session.get(Player, target_id)
+
+
 async def set_chat_bot_state(
     session: AsyncSession,
     *,

@@ -299,8 +299,8 @@ async def duel_shoot(
     aim_counts = state.get("aim_counts", {})
     actor_aim = aim_counts.get(str(actor_id), 0)
 
-    # Механика ТЗ: Каждое прицеливание добавляет 10 процентных пунктов. Максимальный шанс — 95%.
-    hit_chance = min(0.95, 0.10 + (actor_aim * 0.10))
+    # Базовый шанс попадания увеличен до 25% (каждое прицеливание дает +10%, макс 95%)
+    hit_chance = min(0.95, 0.25 + (actor_aim * 0.10))
     is_hit = random.random() <= hit_chance
 
     opponent_id = duel.opponent_id if actor_id == duel.user_id else duel.user_id

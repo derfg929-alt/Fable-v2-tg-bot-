@@ -92,11 +92,11 @@ async def claim_daily_bonus(session: AsyncSession, *, user_id: int) -> DailyBonu
 # ===================== МИНИ-ИГРЫ =====================
 
 async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple[int, int, bool, int]:
-    """Кости: бросок игрока vs бота с ограничением эмиссии монет."""
+    """Кости: бросок игрока vs бота с повышенным шансом на лудку (выплата 2.0x)."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
-    if stake > 500_000:
-        raise InvalidAmountError("Максимальная ставка в костях: 500 000 монет")
+    if stake > 1_000_000:
+        raise InvalidAmountError("Максимальная ставка в костях: 1 000 000 монет")
 
     player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
     if not player or player.wallet < stake:
@@ -107,13 +107,16 @@ async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple
     p_roll = random.randint(1, 6)
     b_roll = random.randint(1, 6)
 
+    # Небольшой перевес в пользу игрока при лудке (переброс при проигрыше в 15% случаев)
+    if p_roll < b_roll and random.random() < 0.15:
+        p_roll = random.randint(b_roll, 6)
+
     is_win = p_roll > b_roll
     is_draw = p_roll == b_roll
     payout = 0
 
     if is_win:
-        # Комиссия казино 5% для сдерживания инфляции (выплата 1.9x)
-        payout = int(stake * 1.9)
+        payout = int(stake * 2.0)
         await credit_coins(session, user_id=user_id, amount=payout, reason="Выигрыш в костях", operation_type="game_dice_win")
     elif is_draw:
         payout = stake
@@ -123,11 +126,11 @@ async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple
 
 
 async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, stake: int) -> tuple[str, bool, int]:
-    """Монетка: орел или решка с честным балансом выплат 1.9x."""
+    """Монетка: орел или решка с честной удвоенной выплатой 2.0x и повышенным шансом победы (54%)."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
-    if stake > 500_000:
-        raise InvalidAmountError("Максимальная ставка в монетке: 500 000 монет")
+    if stake > 1_000_000:
+        raise InvalidAmountError("Максимальная ставка в монетке: 1 000 000 монет")
 
     player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
     if not player or player.wallet < stake:
@@ -135,11 +138,19 @@ async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, sta
 
     await burn_coins(session, user_id=user_id, amount=stake, reason="Ставка в монетке", operation_type="game_coinflip_stake")
 
-    outcome = random.choice(["орел", "решка"])
-    is_win = (choice.lower() in ("орел", "орёл", "heads") and outcome == "орел") or \
-             (choice.lower() in ("решка", "tails") and outcome == "решка")
+    norm_choice = choice.lower()
+    is_user_heads = norm_choice in ("орел", "орёл", "heads")
 
-    payout = int(stake * 1.9) if is_win else 0
+    # Повышенный шанс на лудку: 54% на победу игрока
+    if random.random() < 0.54:
+        outcome = "орел" if is_user_heads else "решка"
+    else:
+        outcome = "решка" if is_user_heads else "орел"
+
+    is_win = (is_user_heads and outcome == "орел") or \
+             (norm_choice in ("решка", "tails") and outcome == "решка")
+
+    payout = int(stake * 2.0) if is_win else 0
     if is_win:
         await credit_coins(session, user_id=user_id, amount=payout, reason="Выигрыш в монетке", operation_type="game_coinflip_win")
 
@@ -147,11 +158,11 @@ async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, sta
 
 
 async def play_mystery_box(session: AsyncSession, *, user_id: int, stake: int) -> tuple[float, int]:
-    """Таинственный сундук: сбалансированное распределение с меньшим числом выигрышей."""
+    """Таинственный сундук: улучшенные шансы и более щедрые множители."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
-    if stake > 500_000:
-        raise InvalidAmountError("Максимальная ставка в сундуке: 500 000 монет")
+    if stake > 1_000_000:
+        raise InvalidAmountError("Максимальная ставка в сундуке: 1 000 000 монет")
 
     player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
     if not player or player.wallet < stake:
@@ -159,8 +170,8 @@ async def play_mystery_box(session: AsyncSession, *, user_id: int, stake: int) -
 
     await burn_coins(session, user_id=user_id, amount=stake, reason="Открытие сундука", operation_type="game_box_stake")
 
-    # Сбалансированный house edge: 40% полный ноль, 30% возврат 0.5x, 15% 1.2x, 10% 1.5x, 4% 2.0x, 1% 3.5x
-    mult = random.choices([0.0, 0.5, 1.2, 1.5, 2.0, 3.5], weights=[0.40, 0.30, 0.15, 0.10, 0.04, 0.01])[0]
+    # Повышенные шансы на лудку: 0x снижен с 40% до 22%, увеличены шансы на x1.5, x2.0, x5.0
+    mult = random.choices([0.0, 0.5, 1.2, 1.5, 2.0, 3.0, 5.0], weights=[0.22, 0.23, 0.20, 0.18, 0.10, 0.05, 0.02])[0]
     payout = int(stake * mult)
     if payout > 0:
         await credit_coins(session, user_id=user_id, amount=payout, reason=f"Выигрыш в сундуке (x{mult})", operation_type="game_box_win")
@@ -229,19 +240,19 @@ FISHING_PRICES: dict[str, int] = {
 }
 
 FISHING_LOOT = [
-    ("empty", "Ничего не поймано", 0, 0.25, None),
-    ("common", "Карась", 60, 0.45, "карась"),
-    ("rare", "Щука", 250, 0.20, "щука"),
-    ("epic", "Золотая рыбка", 1200, 0.08, "золотая рыбка"),
-    ("legendary", "Древний сундук с сокровищами", 6000, 0.02, "сундук с сокровищами"),
+    ("empty", "Ничего не поймано", 0, 0.30, None),
+    ("common", "Карась", 60, 0.55, "карась"),
+    ("rare", "Щука", 250, 0.12, "щука"),
+    ("epic", "Золотая рыбка", 1200, 0.025, "золотая рыбка"),
+    ("legendary", "Древний сундук с сокровищами", 6000, 0.005, "сундук с сокровищами"),
 ]
 
 HUNTING_LOOT = [
-    ("failure", "Зверь убежал", 0, 0.30, None),
-    ("common", "Заяц", 75, 0.40, "заяц"),
-    ("rare", "Олень", 320, 0.20, "олень"),
-    ("epic", "Медведь", 1500, 0.08, "медведь"),
-    ("legendary", "Мифический дракон", 7500, 0.02, "дракон"),
+    ("failure", "Зверь убежал", 0, 0.35, None),
+    ("common", "Заяц", 75, 0.50, "заяц"),
+    ("rare", "Олень", 320, 0.12, "олень"),
+    ("epic", "Медведь", 1500, 0.025, "медведь"),
+    ("legendary", "Мифический дракон", 7500, 0.005, "дракон"),
 ]
 
 # Реальные символы Telegram-слотов (4 символа, закодированные по 2 бита)
@@ -298,11 +309,12 @@ async def play_fishing(session: AsyncSession, *, user_id: int) -> FishingResult:
     if r < empty_prob:
         category, item_name, reward_coins, item_key = "empty", "Ничего не поймано", 0, None
     else:
+        # Уменьшенные шансы на дорогой дроп (золотая рыбка и сундук)
         weights = [
-            0.50,
-            0.28 + (rod_lvl - 1) * 0.02,
-            0.15 + (rod_lvl - 1) * 0.015,
-            0.05 + (rod_lvl - 1) * 0.01,
+            0.70,
+            0.22 + (rod_lvl - 1) * 0.01,
+            0.06 + (rod_lvl - 1) * 0.005,
+            0.01 + (rod_lvl - 1) * 0.002,
         ]
         chosen = random.choices(FISHING_LOOT[1:], weights=weights)[0]
         category, item_name, reward_coins, _, item_key = chosen
@@ -385,18 +397,19 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
     gear = await get_or_create_gear(session, user_id=user_id)
     rifle_lvl = gear.hunting_rifle_level
 
-    # Промах снижается с прокачкой оружия (от 25% до 3%)
-    miss_prob = max(0.03, 0.25 - (rifle_lvl - 1) * 0.03)
+    # Промах снижается с прокачкой оружия (при 10 уровне оружия промах исключен)
+    miss_prob = max(0.0, 0.20 - (rifle_lvl - 1) * 0.025)
     r = random.random()
 
     if r < miss_prob:
         category, target_name, reward_coins, item_key = "failure", "Зверь убежал", 0, None
     else:
+        # Уменьшенные шансы на дорогой трофей (медведь и дракон)
         weights = [
-            0.52,
-            0.28 + (rifle_lvl - 1) * 0.015,
-            0.14 + (rifle_lvl - 1) * 0.015,
-            0.04 + (rifle_lvl - 1) * 0.01,
+            0.70,
+            0.22 + (rifle_lvl - 1) * 0.01,
+            0.06 + (rifle_lvl - 1) * 0.005,
+            0.01 + (rifle_lvl - 1) * 0.002,
         ]
         chosen = random.choices(HUNTING_LOOT[1:], weights=weights)[0]
         category, target_name, reward_coins, _, item_key = chosen
@@ -450,13 +463,13 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
 
 
 async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_value: int | None = None) -> SlotResult:
-    """Слоты: списание ставки, вращение барабанов, расчет выигрыша, сжигание при проигрыше.
-    Поддерживает реальное значение Telegram dice (1..64) с аутентичными символами слотов и реальными шансами.
+    """Слоты: списание ставки, вращение барабанов, расчет выигрыша с повышенными шансами.
+    Генерирует классические символы и высокие коэффициенты.
     """
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
-    if stake > 500_000:
-        raise InvalidAmountError("Максимальная ставка в слотах: 500 000 монет")
+    if stake > 1_000_000:
+        raise InvalidAmountError("Максимальная ставка в слотах: 1 000 000 монет")
 
     player = await session.scalar(
         select(Player).where(Player.telegram_id == user_id).with_for_update()
@@ -479,8 +492,24 @@ async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_va
     if dice_value is not None:
         reels = decode_telegram_slot_dice(dice_value)
     else:
-        roll = random.randint(1, 64)
-        reels = decode_telegram_slot_dice(roll)
+        # Повышенные шансы на лудку:
+        # 5% джекпот 777, 12% три одинаковых символа, 35% пара, остальное разные
+        spin_type = random.choices(["jackpot", "three", "pair", "diff"], weights=[0.05, 0.12, 0.38, 0.45])[0]
+        symbols_pool = ["🍇", "🍋", "BAR", "🍒", "🔔"]
+        if spin_type == "jackpot":
+            reels = ("7️⃣", "7️⃣", "7️⃣")
+        elif spin_type == "three":
+            sym = random.choice(symbols_pool)
+            reels = (sym, sym, sym)
+        elif spin_type == "pair":
+            sym = random.choice(["7️⃣"] + symbols_pool)
+            other = random.choice([s for s in (["7️⃣"] + symbols_pool) if s != sym])
+            slots_list = [sym, sym, other]
+            random.shuffle(slots_list)
+            reels = (slots_list[0], slots_list[1], slots_list[2])
+        else:
+            shuffled = random.sample(["7️⃣"] + symbols_pool, 3)
+            reels = (shuffled[0], shuffled[1], shuffled[2])
 
     r1, r2, r3 = reels
     is_win = False
@@ -496,10 +525,11 @@ async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_va
             multiplier = 5.0   # Три лимона (1/64)
         elif r1 == "BAR":
             multiplier = 5.0   # Три BAR (1/64)
+        else:
+            multiplier = 5.0
     elif r1 == r2 or r2 == r3 or r1 == r3:
         # Пара одинаковых символов
         is_win = True
-        # Если совпала пара семерок 7️⃣
         if (r1 == "7️⃣" and r2 == "7️⃣") or (r2 == "7️⃣" and r3 == "7️⃣") or (r1 == "7️⃣" and r3 == "7️⃣"):
             multiplier = 1.2
         else:

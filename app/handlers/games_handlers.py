@@ -195,35 +195,28 @@ async def handle_slots(message: types.Message):
         return
     stake = int(parts[1])
 
-    dice_val = None
-    if message.bot and message.chat:
-        try:
-            dice_msg = await message.answer_dice(emoji="🎰")
-            if dice_msg and dice_msg.dice:
-                dice_val = dice_msg.dice.value
-                import asyncio
-                await asyncio.sleep(2.0)
-        except Exception:
-            dice_val = None
-
     async with session_scope() as session:
         await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
         try:
-            res = await play_slots(session, user_id=message.from_user.id, stake=stake, dice_value=dice_val)
-            reels_str = " | ".join(res.reels)
+            res = await play_slots(session, user_id=message.from_user.id, stake=stake)
+            reels_str = f"| {res.reels[0]} | {res.reels[1]} | {res.reels[2]} |"
             if res.is_win:
                 await message.reply(
                     f"🎰 <b>СЛОТЫ</b> 🎰\n\n"
-                    f"[{reels_str}]\n\n"
+                    f"╔═════════════╗\n"
+                    f"   {reels_str}   \n"
+                    f"╚═════════════╝\n\n"
                     f"🎉 <b>ВЫИГРЫШ!</b> Коэффициент: <b>x{res.multiplier:.1f}</b>\n"
-                    f"Выплата: <b>+{res.payout}</b> монет!",
+                    f"💰 Выплата: <b>+{res.payout:,}</b> монет!".replace(",", " "),
                     parse_mode="HTML",
                 )
             else:
                 await message.reply(
                     f"🎰 <b>СЛОТЫ</b> 🎰\n\n"
-                    f"[{reels_str}]\n\n"
-                    f"💀 <b>Проигрыш!</b> Ставка {stake} монет сгорела.",
+                    f"╔═════════════╗\n"
+                    f"   {reels_str}   \n"
+                    f"╚═════════════╝\n\n"
+                    f"💀 <b>Проигрыш!</b> Ставка {stake:,} монет сгорела.".replace(",", " "),
                     parse_mode="HTML",
                 )
         except Exception as e:
