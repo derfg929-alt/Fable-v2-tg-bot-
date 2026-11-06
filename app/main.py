@@ -11,7 +11,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.config import get_settings
-from app.db.session import check_database_connection, dispose_engine, engine
+from app.db.session import check_database_connection, dispose_engine, engine, init_json_database
 
 # --- УМНЫЙ ПОИСК BASE ---
 try:
@@ -77,24 +77,12 @@ async def main() -> None:
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
-    logger.info("Проверка подключения к базе данных PostgreSQL...")
+    logger.info("Проверка и инициализация JSON-базы данных...")
     if not await check_database_connection():
-        logger.critical("Не удалось подключиться к базе данных PostgreSQL!")
+        logger.critical("Не удалось инициализировать базу данных!")
         sys.exit(1)
     
-    logger.info("Подключение к PostgreSQL успешно.")
-
-    # ==========================================
-    # БЛОК СОЗДАНИЯ ТАБЛИЦ
-    # ==========================================
-    logger.info("Проверка и создание таблиц в базе данных...")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Все таблицы успешно созданы/проверены.")
-    except Exception as e:
-        logger.error(f"Ошибка при создании таблиц: {e}")
-    # ==========================================
+    logger.info("База данных успешно инициализирована.")
 
     bot = Bot(
         token=settings.bot_token_value,

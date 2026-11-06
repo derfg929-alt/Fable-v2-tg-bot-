@@ -8,3 +8,6 @@ __pycache__/
 env/
 venv/
 *.log
+data/bot_database.db
+data/bot_database.db*
+data/*.tmp
