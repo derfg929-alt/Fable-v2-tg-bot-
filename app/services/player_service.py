@@ -85,7 +85,6 @@ async def get_or_create_player(
             wallet=0,
             bank_balance=0,
             experience=0,
-            level=1,
             reputation=0,
             is_globally_banned=False,
         )

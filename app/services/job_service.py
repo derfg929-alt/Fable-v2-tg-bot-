@@ -112,9 +112,9 @@ async def perform_main_job(session: AsyncSession, *, user_id: int) -> tuple[int,
             secs = rem % 60
             raise JobCooldownError(f"Вы устали после смены! Следующая работа доступна через {mins} мин. {secs} сек.")
 
-    # Баланс дохода: 150 базово + 40 за каждый уровень игрока
-    reward = 150 + player.level * 40
-    exp = 20 + player.level * 5
+    # Баланс дохода основной работы
+    reward = 200
+    exp = 25
 
     await credit_coins(
         session,
