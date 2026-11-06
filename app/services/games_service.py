@@ -463,13 +463,14 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
 
 
 async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_value: int | None = None) -> SlotResult:
-    """Слоты: списание ставки, вращение барабанов, расчет выигрыша с повышенными шансами.
-    Генерирует классические символы и высокие коэффициенты.
+    """Слоты: списание ставки, вращение барабанов, сбалансированные шансы как в классических казино.
+    RTP ~94-96%, защита от бесконечного выигрыша миллионов и предотвращение постоянных сливов.
     """
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
-    if stake > 1_000_000:
-        raise InvalidAmountError("Максимальная ставка в слотах: 1 000 000 монет")
+    # Ограничение максимальной ставки в слотах (максимум 50 000 за спин, чтобы избежать выигрыша миллионов)
+    if stake > 50_000:
+        raise InvalidAmountError("Максимальная ставка в слотах: 50 000 монет")
 
     player = await session.scalar(
         select(Player).where(Player.telegram_id == user_id).with_for_update()
@@ -492,9 +493,13 @@ async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_va
     if dice_value is not None:
         reels = decode_telegram_slot_dice(dice_value)
     else:
-        # Повышенные шансы на лудку:
-        # 5% джекпот 777, 12% три одинаковых символа, 35% пара, остальное разные
-        spin_type = random.choices(["jackpot", "three", "pair", "diff"], weights=[0.05, 0.12, 0.38, 0.45])[0]
+        # Реалистичные шансы:
+        # 1.5% джекпот 777 (как в реальных барабанах 1/64)
+        # 8.5% три одинаковых символа (x5)
+        # 35.0% пара одинаковых символов (частичный возврат/небольшой выигрыш x0.8 - x1.2)
+        # 55.0% разные символы (проигрыш)
+        # Итоговая частота побед/возвратов: ~45%, RTP ~94.7%
+        spin_type = random.choices(["jackpot", "three", "pair", "diff"], weights=[0.015, 0.085, 0.35, 0.55])[0]
         symbols_pool = ["🍇", "🍋", "BAR", "🍒", "🔔"]
         if spin_type == "jackpot":
             reels = ("7️⃣", "7️⃣", "7️⃣")

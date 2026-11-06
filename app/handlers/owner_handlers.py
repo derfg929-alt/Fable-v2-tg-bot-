@@ -77,9 +77,12 @@ async def _build_admin_panel_payload(owner_id: int):
     return text, builder.as_markup()
 
 
-@router.message(F.text.casefold().in_(["понель", "!понель", "панель", "!панель", "админка"]))
+@router.message(F.text.casefold().in_(["понель", "!понель", "панель", "!панель", "панель управления", "овнер панель"]))
 async def handle_admin_panel(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    # Если в группе, панель владельца не должна перехватывать групповую админку
+    if message.chat and message.chat.type != types.ChatType.PRIVATE:
         return
     text, markup = await _build_admin_panel_payload(message.from_user.id)
     await message.reply(text, reply_markup=markup, parse_mode="HTML")

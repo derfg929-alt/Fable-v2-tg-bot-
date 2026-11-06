@@ -14,17 +14,21 @@ class Settings(BaseSettings):
         validate_default=True,
     )
 
-    bot_token: SecretStr = Field(alias="BOT_TOKEN")
+    bot_token: SecretStr = Field(default=SecretStr("123456:dummy_token_default"), alias="BOT_TOKEN")
     owner_id: int = Field(default=8039111975, alias="OWNER_ID", gt=0)
     database_url: SecretStr = Field(
-        default=SecretStr("postgresql+asyncpg://fable:fable@localhost:5432/fable"),
+        default=SecretStr("sqlite+aiosqlite:///data/bot_database.db"),
         alias="DATABASE_URL",
+    )
+    json_database_path: str = Field(
+        default="data/bot_database.json",
+        alias="JSON_DATABASE_PATH",
     )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", alias="LOG_LEVEL"
     )
 
-    # Настройки подключения к PostgreSQL.
+    # Настройки пула подключений.
     db_pool_size: int = Field(default=10, alias="DB_POOL_SIZE", ge=1, le=50)
     db_max_overflow: int = Field(default=20, alias="DB_MAX_OVERFLOW", ge=0, le=100)
     db_pool_timeout: int = Field(default=30, alias="DB_POOL_TIMEOUT", ge=1, le=300)
@@ -53,11 +57,6 @@ class Settings(BaseSettings):
     @classmethod
     def validate_database_url(cls, value: SecretStr) -> SecretStr:
         url = value.get_secret_value().strip()
-        if not url.startswith(("postgresql://", "postgresql+asyncpg://")):
-            raise ValueError(
-                "DATABASE_URL должен быть PostgreSQL URL "
-                "(например, postgresql+asyncpg://user:password@localhost:5432/fable)"
-            )
         return SecretStr(url)
 
     @property
