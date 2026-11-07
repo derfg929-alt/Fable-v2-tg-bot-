@@ -19,6 +19,7 @@ from app.services.moderation_service import (
     remove_link_whitelist,
     list_link_whitelist,
     parse_duration_string,
+    extract_moderation_args,
     sync_chat_creator_and_admins,
     ROLE_NAMES,
 )
@@ -191,10 +192,11 @@ async def handle_kick(message: types.Message, bot: Bot):
 async def handle_ban(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
+    raw_text = (message.text or "").strip()
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
         if not target_id:
-            await message.reply("Использование: ответом на сообщение <code>бан [причина]</code> или <code>бан @user [причина]</code>", parse_mode="HTML")
+            await message.reply("Использование: ответом на сообщение <code>бан [срок] [причина]</code> или <code>бан @user [срок] [причина]</code>", parse_mode="HTML")
             return
 
         from app.services.moderation_service import ensure_player_and_chat_exist
@@ -205,19 +207,35 @@ async def handle_ban(message: types.Message, bot: Bot):
             bot=bot,
         )
 
-        parts = (message.text or "").split()
-        reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Блокировка модератором"
+        dur, dur_str, reason = extract_moderation_args(
+            full_text=raw_text,
+            target_id=target_id,
+            default_duration=None,
+        )
         try:
-            await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="ban", reason=reason, bot=bot)
+            case = await record_ban_or_kick(
+                session,
+                chat_id=message.chat.id,
+                moderator_id=message.from_user.id,
+                target_id=target_id,
+                action="ban",
+                reason=reason,
+                duration=dur,
+                bot=bot,
+            )
             tg_status = ""
             try:
-                await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id)
+                until_date = case.expires_at if case.expires_at else None
+                await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id, until_date=until_date)
                 tg_status = " <i>(в Telegram заблокирован)</i>"
             except Exception as tg_err:
                 tg_status = f"\n⚠️ <i>Примечание: Telegram не дал заблокировать участника ({tg_err}). Проверьте права бота (требуется админ с правом бана)!</i>"
+
+            time_line = f"⏱ Срок бана: <b>{dur_str}</b>\n" if dur_str else ""
             await message.reply(
                 f"⛔️ <b>ПОЛЬЗОВАТЕЛЬ ЗАБЛОКИРОВАН (БАН)!</b>\n\n"
                 f"👤 Нарушитель: ID <code>{target_id}</code>\n"
+                f"{time_line}"
                 f"📝 Причина: <i>{reason}</i>\n"
                 f"👮‍♂️ Администратор: ID <code>{message.from_user.id}</code>{tg_status}",
                 parse_mode="HTML",
@@ -282,13 +300,12 @@ async def handle_freeze(message: types.Message, bot: Bot):
             await message.reply("🔓 Заморозка чата снята. Участники снова могут писать сообщения.")
             return
 
-        parts = text.split()
-        dur_str = parts[2] if len(parts) >= 3 else "10м"
+        rest_freeze = text.split(maxsplit=1)[1] if len(text.split()) > 1 else "10м"
         try:
-            dur = parse_duration_string(dur_str)
+            dur = parse_duration_string(rest_freeze)
             until = datetime.now(timezone.utc) + dur
             await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=until.isoformat(), min_level=3)
-            await message.reply(f"❄️ Чат заморожен на {dur_str}. Обычные участники временно не могут отправлять сообщения.")
+            await message.reply(f"❄️ Чат заморожен на {rest_freeze}. Обычные участники временно не могут отправлять сообщения.")
         except Exception as e:
             await message.reply(f"❌ {e}")
 

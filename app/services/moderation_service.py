@@ -76,20 +76,219 @@ URL_REGEX = re.compile(
 
 
 def parse_duration_string(duration_str: str) -> timedelta:
-    """Парсит строки вида '30м', '2ч', '7д' в timedelta."""
-    match = re.match(r"^(\d+)([мчдmhd])$", duration_str.strip().lower())
-    if not match:
-        raise ModerationError("Неверный формат времени. Пример: 30м, 2ч, 7д")
-    val, unit = int(match.group(1)), match.group(2)
-    if val <= 0:
-        raise ModerationError("Срок должен быть больше 0")
-    if unit in ("м", "m"):
-        return timedelta(minutes=val)
-    elif unit in ("ч", "h"):
-        return timedelta(hours=val)
-    elif unit in ("д", "d"):
-        return timedelta(days=val)
-    raise ModerationError("Неизвестная единица измерения времени")
+    """Парсит строки с длительностью в timedelta.
+    Поддерживает:
+      - Секунды: '67000 сек', '67000 секунд', '500с', '100s'
+      - Минуты: '120 мин', '30м', '45 минут', 'полчаса'
+      - Часы: '1 час 30 минут', 'час 30', 'час 2', '2 часа', 'на 2 часа', 'на час', '1ч 30м', '2ч'
+      - Дни: '1 день', '3 дня', '7д', '1д'
+      - Недели и месяцы: '1 неделя', '1 месяц'
+      - Бессрочно: 'навсегда', 'вечно'
+    """
+    s = duration_str.strip().lower()
+    if s.startswith("на "):
+        s = s[3:].strip()
+
+    patterns = [
+        # Xд Yч Zм
+        (
+            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|minutes?|m)?$",
+            lambda m: timedelta(days=int(m.group(1)), hours=int(m.group(2)), minutes=int(m.group(3) or 0)),
+        ),
+        # Xд Yч
+        (
+            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)$",
+            lambda m: timedelta(days=int(m.group(1)), hours=int(m.group(2))),
+        ),
+        # Xч Yм ('1ч 30м', '1ч30м', '2 часа 15 минут', '1 ч 45')
+        (
+            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)?$",
+            lambda m: timedelta(hours=int(m.group(1)), minutes=int(m.group(2))),
+        ),
+        # 'час 2' / 'час два' / 'час-два' / '1-2 часа' -> 2 часа
+        (
+            r"^(?:час\s*[-–—]\s*(?:два|2)|час\s+(?:два|2)|1\s*[-–—]\s*2\s*(?:ч|часа|часов))$",
+            lambda m: timedelta(hours=2),
+        ),
+        # 'час 30' / 'час 15' / 'час 45'
+        (
+            r"^(?:один\s+)?час\s*(\d{1,2})\s*(?:м|мин|минут|минуты|minutes?|m)?$",
+            lambda m: timedelta(hours=1, minutes=int(m.group(1))),
+        ),
+        # Секунды: '67000 сек', '67000 секунд', '500с', '100s'
+        (
+            r"^(\d+)\s*(?:с|сек|секунд|секунды|секунда|seconds?|sec|s)$",
+            lambda m: timedelta(seconds=int(m.group(1))),
+        ),
+        # Одиночные с числами: дни, часы, минуты
+        (
+            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)$",
+            lambda m: timedelta(days=int(m.group(1))),
+        ),
+        (
+            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)$",
+            lambda m: timedelta(hours=int(m.group(1))),
+        ),
+        (
+            r"^(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)$",
+            lambda m: timedelta(minutes=int(m.group(1))),
+        ),
+        # Слова без чисел
+        (r"^(?:полчаса|пол-часа)$", lambda m: timedelta(minutes=30)),
+        (r"^(?:час|один час)$", lambda m: timedelta(hours=1)),
+        (r"^(?:два часа)$", lambda m: timedelta(hours=2)),
+        (r"^(?:три часа)$", lambda m: timedelta(hours=3)),
+        (r"^(?:день|сутки|один день)$", lambda m: timedelta(days=1)),
+        (r"^(?:два дня)$", lambda m: timedelta(days=2)),
+        (r"^(?:три дня)$", lambda m: timedelta(days=3)),
+        (r"^(?:неделя|неделю|одну неделю)$", lambda m: timedelta(days=7)),
+        (r"^(?:месяц|один месяц)$", lambda m: timedelta(days=30)),
+        (r"^(?:навсегда|вечно)$", lambda m: timedelta(days=3650)),
+    ]
+
+    for pat, func in patterns:
+        m = re.match(pat, s, re.IGNORECASE)
+        if m:
+            res = func(m)
+            if res.total_seconds() <= 0:
+                raise ModerationError("Срок должен быть больше 0")
+            return res
+
+    raise ModerationError("Неверный формат времени. Примеры: 67000 сек, 30м, 1ч 30м, 2 часа, на час 2, 1д")
+
+
+def extract_moderation_args(
+    full_text: str,
+    target_id: int | None = None,
+    default_duration: timedelta | None = timedelta(minutes=30),
+) -> tuple[timedelta | None, str, str]:
+    """Извлекает срок наказания (timedelta | None), строковое представление срока и причину.
+    Корректно обрабатывает:
+      - 'мут на 67000 сек спам'
+      - 'мут 120 мин флуд'
+      - 'мут 1 час 30 спам'
+      - 'мут на час 2 флуд'
+      - 'мут 2ч мат'
+      - 'мут @user 1ч 30м оффтоп'
+      - 'бан на 2 дня реклама'
+      - 'бан читы' (бессрочно)
+    """
+    tokens = full_text.strip().split()
+    if not tokens:
+        disp = "30 мин." if default_duration == timedelta(minutes=30) else "навсегда"
+        return default_duration, disp, "Нарушение порядка"
+
+    cmd = tokens[0]
+    rest = full_text.strip()[len(cmd):].strip()
+
+    # Удаляем упоминание пользователя или цифровой ID в начале аргументов, если есть
+    if rest.startswith("@"):
+        parts = rest.split(maxsplit=1)
+        rest = parts[1] if len(parts) > 1 else ""
+    elif target_id and rest.startswith(str(target_id)):
+        parts = rest.split(maxsplit=1)
+        rest = parts[1] if len(parts) > 1 else ""
+
+    rest = rest.strip()
+    s_work = rest
+    leading_na = False
+    if re.match(r"^на\s+", s_work, re.IGNORECASE):
+        s_work = re.sub(r"^на\s+", "", s_work, count=1, flags=re.IGNORECASE).strip()
+        leading_na = True
+
+    patterns = [
+        # Xд Yч Zм
+        (
+            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|minutes?|m)?\b",
+            lambda m: (timedelta(days=int(m.group(1)), hours=int(m.group(2)), minutes=int(m.group(3) or 0)), f"{m.group(1)} д. {m.group(2)} ч. {m.group(3) or 0} мин."),
+        ),
+        # Xд Yч
+        (
+            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)\b",
+            lambda m: (timedelta(days=int(m.group(1)), hours=int(m.group(2))), f"{m.group(1)} д. {m.group(2)} ч."),
+        ),
+        # Xч Yм
+        (
+            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)?\b",
+            lambda m: (timedelta(hours=int(m.group(1)), minutes=int(m.group(2))), f"{m.group(1)} ч. {m.group(2)} мин."),
+        ),
+        # 'час 2' / 'час два' / 'час-два' / '1-2 часа' -> 2 часа
+        (
+            r"^(?:час\s*[-–—]\s*(?:два|2)|час\s+(?:два|2)|1\s*[-–—]\s*2\s*(?:ч|часа|часов))\b",
+            lambda m: (timedelta(hours=2), "2 ч."),
+        ),
+        # 'час 30' / 'час 15' / 'час 45'
+        (
+            r"^(?:один\s+)?час\s*(\d{1,2})\s*(?:м|мин|минут|минуты|minutes?|m)?\b",
+            lambda m: (timedelta(hours=1, minutes=int(m.group(1))), f"1 ч. {m.group(1)} мин."),
+        ),
+        # Секунды: '67000 сек', '67000 секунд', '500с', '100s'
+        (
+            r"^(\d+)\s*(?:с|сек|секунд|секунды|секунда|seconds?|sec|s)\b",
+            lambda m: (timedelta(seconds=int(m.group(1))), f"{m.group(1)} сек."),
+        ),
+        # Одиночные с числами: дни, часы, минуты
+        (
+            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\b",
+            lambda m: (timedelta(days=int(m.group(1))), f"{m.group(1)} д."),
+        ),
+        (
+            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)\b",
+            lambda m: (timedelta(hours=int(m.group(1))), f"{m.group(1)} ч."),
+        ),
+        (
+            r"^(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)\b",
+            lambda m: (timedelta(minutes=int(m.group(1))), f"{m.group(1)} мин."),
+        ),
+        # Слова без чисел
+        (r"^(?:полчаса|пол-часа)\b", lambda m: (timedelta(minutes=30), "30 мин.")),
+        (r"^(?:час|один час)\b", lambda m: (timedelta(hours=1), "1 ч.")),
+        (r"^(?:два часа)\b", lambda m: (timedelta(hours=2), "2 ч.")),
+        (r"^(?:три часа)\b", lambda m: (timedelta(hours=3), "3 ч.")),
+        (r"^(?:день|сутки|один день)\b", lambda m: (timedelta(days=1), "1 д.")),
+        (r"^(?:два дня)\b", lambda m: (timedelta(days=2), "2 д.")),
+        (r"^(?:три дня)\b", lambda m: (timedelta(days=3), "3 д.")),
+        (r"^(?:неделя|неделю|одну неделю)\b", lambda m: (timedelta(days=7), "7 д.")),
+        (r"^(?:месяц|один месяц)\b", lambda m: (timedelta(days=30), "30 д.")),
+        (r"^(?:навсегда|вечно)\b", lambda m: (None, "навсегда")),
+    ]
+
+    matched_td = None
+    matched_disp = ""
+    matched_len = 0
+
+    for pat, func in patterns:
+        m = re.match(pat, s_work, re.IGNORECASE)
+        if m:
+            matched_td, matched_disp = func(m)
+            matched_len = m.end()
+            break
+
+    if matched_td is not None or matched_disp == "навсегда":
+        reason = s_work[matched_len:].strip()
+        reason = re.sub(r"^[,\-–—:]\s*", "", reason).strip()
+        if target_id and reason.startswith(str(target_id)):
+            reason = reason[len(str(target_id)):].strip()
+        elif reason.startswith("@"):
+            parts = reason.split(maxsplit=1)
+            reason = parts[1] if len(parts) > 1 else ""
+        return matched_td, matched_disp, reason or "Нарушение порядка"
+
+    reason = rest
+    if leading_na:
+        reason = "на " + s_work
+    clean_words = []
+    for w in reason.split():
+        if w.startswith("@") or (target_id and w == str(target_id)):
+            continue
+        clean_words.append(w)
+    final_reason = " ".join(clean_words).strip() or "Нарушение порядка"
+    default_disp = (
+        "30 мин."
+        if default_duration == timedelta(minutes=30)
+        else ("навсегда" if default_duration is None else f"{int(default_duration.total_seconds() // 60)} мин.")
+    )
+    return default_duration, default_disp, final_reason
 
 
 async def get_user_admin_level(
@@ -545,10 +744,16 @@ async def record_ban_or_kick(
     target_id: int,
     action: str,  # 'ban' or 'kick'
     reason: str | None = None,
+    duration: timedelta | None = None,
     bot=None,
 ) -> ModerationCase:
-    """Фиксация бана или кика (требуется ур. 3+ для бана/кика)."""
+    """Фиксация бана или кика (требуется ур. 3+ для бана/кика).
+    Если указан duration, рассчитывается expires_at для временного бана.
+    """
     await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=3, bot=bot)
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + duration if (duration and action == "ban") else None
 
     case = ModerationCase(
         chat_id=chat_id,
@@ -556,6 +761,7 @@ async def record_ban_or_kick(
         moderator_id=moderator_id,
         action=action,
         reason=reason or "Не указана",
+        expires_at=expires_at,
         is_active=True,
     )
     session.add(case)
@@ -566,7 +772,10 @@ async def record_ban_or_kick(
         target_id=target_id,
         action=action,
         reason=reason,
-        details={},
+        details={
+            "duration_sec": int(duration.total_seconds()) if duration else None,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        },
     )
     session.add(log_entry)
     await session.flush()
