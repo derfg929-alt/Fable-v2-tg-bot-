@@ -351,9 +351,19 @@ async def on_report_accept(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             await handle_report(session, report_id=rep_id, moderator_id=callback.from_user.id, resolution="accepted")
-            await callback.message.edit_text(f"🚩 Жалоба #{rep_id} ПРИНЯТА модератором ID {callback.from_user.id}.")
+            try:
+                await callback.answer("Жалоба принята!")
+            except Exception:
+                pass
+            try:
+                await callback.message.edit_text(f"🚩 Жалоба #{rep_id} ПРИНЯТА модератором ID {callback.from_user.id}.")
+            except Exception:
+                pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data.startswith("rep_rej_"))
@@ -362,9 +372,19 @@ async def on_report_reject(callback: types.CallbackQuery):
     async with session_scope() as session:
         try:
             await handle_report(session, report_id=rep_id, moderator_id=callback.from_user.id, resolution="rejected")
-            await callback.message.edit_text(f"🚩 Жалоба #{rep_id} ОТКЛОНЕНА модератором ID {callback.from_user.id}.")
+            try:
+                await callback.answer("Жалоба отклонена!")
+            except Exception:
+                pass
+            try:
+                await callback.message.edit_text(f"🚩 Жалоба #{rep_id} ОТКЛОНЕНА модератором ID {callback.from_user.id}.")
+            except Exception:
+                pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 # ===================== НАЗНАЧЕНИЕ АДМИНОВ / ССЫЛКИ / НАСТРОЙКИ ЧАТА =====================
@@ -521,4 +541,7 @@ async def on_preset_select(callback: types.CallbackQuery):
             except Exception:
                 pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass

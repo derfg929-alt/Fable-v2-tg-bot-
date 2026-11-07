@@ -350,7 +350,10 @@ async def on_inventory_sell_click(callback: types.CallbackQuery):
                     parse_mode="HTML",
                 )
             except Exception as e:
-                await callback.answer(f"❌ {e}", show_alert=True)
+                try:
+                    await callback.answer(f"❌ {e}", show_alert=True)
+                except Exception:
+                    pass
             return
 
         item_key = data_parts[2]
@@ -361,14 +364,20 @@ async def on_inventory_sell_click(callback: types.CallbackQuery):
         try:
             res = await sell_inventory_item(session, user_id=user_id, item_query=item_key, quantity=qty)
             inv_data = await get_full_player_inventory(session, user_id=user_id)
-            await callback.answer(f"✅ +{res.total_earned} монет!", show_alert=True)
+            try:
+                await callback.answer(f"✅ +{res.total_earned} монет!", show_alert=True)
+            except Exception:
+                pass
             await callback.message.edit_text(
                 f"{res.message}\n\n<i>Обновленный инвентарь:</i>",
                 reply_markup=_build_inventory_keyboard(inv_data),
                 parse_mode="HTML",
             )
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 # ===================== РАБОТА И ПОДРАБОТКА =====================
