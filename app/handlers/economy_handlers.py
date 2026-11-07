@@ -806,21 +806,41 @@ async def handle_buy_shop_item_cmd(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().in_(["профиль", "!профиль"]))
+@router.message(F.text.casefold().in_(["профиль", "!профиль", "/profile"]))
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["кто ты", "!кто ты", "профиль ", "!профиль "])))
 async def handle_profile(message: types.Message):
     if not message.from_user:
         return
-    async with session_scope() as session:
-        reg = await get_or_create_player(
-            session,
-            telegram_id=message.from_user.id,
-            first_name=message.from_user.first_name,
-            last_name=message.from_user.last_name,
-            username=message.from_user.username,
-        )
-        p = reg.player
+    raw_text = getattr(message, "text", "")
+    text_val = str(raw_text or "").strip().lower()
 
-        # Уровень админки в текущем чате
+    async with session_scope() as session:
+        # Если команда "кто ты" или "профиль @user", ищем целевого пользователя
+        target_id = None
+        if isinstance(raw_text, str) and any(text_val.startswith(p) for p in ["кто ты", "!кто ты", "профиль ", "!профиль "]):
+            from app.services.moderation_service import extract_target_user_id
+            target_id = await extract_target_user_id(message, session)
+            if not target_id:
+                await message.reply("Использование: ответом на сообщение <code>кто ты</code> или <code>кто ты @user</code>", parse_mode="HTML")
+                return
+
+        if target_id:
+            from app.db.models import Player
+            p = await session.get(Player, target_id)
+            if not p:
+                await message.reply(f"❌ Профиль пользователя ID <code>{target_id}</code> не найден в базе данных.", parse_mode="HTML")
+                return
+        else:
+            reg = await get_or_create_player(
+                session,
+                telegram_id=message.from_user.id,
+                first_name=message.from_user.first_name,
+                last_name=message.from_user.last_name,
+                username=message.from_user.username,
+            )
+            p = reg.player
+
+        # Уровень админки (ранг) в текущем чате
         from app.services.moderation_service import get_user_admin_level, ROLE_NAMES
         chat_id = message.chat.id if message.chat else 0
         admin_lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=p.telegram_id, bot=message.bot)
@@ -864,15 +884,17 @@ async def handle_profile(message: types.Message):
             spouse_name = spouse_player.custom_nickname or spouse_player.first_name if spouse_player else f"ID {p.married_to}"
             spouse_str = f"💍 В браке с <b>{spouse_name}</b>"
 
+        from app.services.player_service import format_time_in_bot
+        time_in_bot = format_time_in_bot(p.registered_at)
+
         text = (
             f"👤 <b>Профиль игрока {disp_name}</b>\n\n"
             f"🆔 ID: <code>{p.telegram_id}</code>\n"
-            f"🛡 Уровень админки: <b>{admin_lvl} ({role_name})</b>\n"
-            f"✨ Опыт: <b>{p.experience:,}</b> XP\n"
+            f"🛡 Ранг: <b>{admin_lvl} ({role_name})</b>\n"
+            f"⏳ В боте: <b>{time_in_bot}</b>\n"
             f"💰 Кошелек: <b>{p.wallet:,}</b> монет\n"
             f"🏦 Банк: <b>{p.bank_balance:,}</b> монет\n"
             f"📈 Биржевые акции: <b>{p.shares}</b> ед.\n"
-            f"⭐ Рейтинг: <b>{p.rating:,}</b> очков\n"
             f"🤝 Репутация: <b>{p.reputation}</b>\n"
             f"💍 Семья: {spouse_str}\n\n"
             f"🏢 <b>Бизнесы:</b> {b_list_str}\n"

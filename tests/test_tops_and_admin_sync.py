@@ -168,7 +168,7 @@ async def test_top_handlers_and_callbacks():
 
 @pytest.mark.asyncio
 async def test_profile_displays_admin_level():
-    """Проверяем, что в профиле отображается только уровень админки и опыт, а уровень персонажа отсутствует."""
+    """Проверяем, что в профиле отображается ранг админки, а рейтинг и опыт отсутствуют."""
     from app.handlers.economy_handlers import handle_profile
     from app.db.models import ChatAdmin
     u = 88991122
@@ -178,6 +178,7 @@ async def test_profile_displays_admin_level():
         reg = await get_or_create_player(session, telegram_id=u, first_name="AdminTestUser")
         p = reg.player
         p.experience = 350
+        p.rating = 100
         session.add(ChatAdmin(chat_id=chat_id, user_id=u, level=3, assigned_by=u, is_active=True))
 
     msg = MagicMock()
@@ -189,5 +190,7 @@ async def test_profile_displays_admin_level():
     await handle_profile(msg)
     assert msg.reply.called
     sent_text = msg.reply.call_args[0][0]
-    assert "Уровень админки: <b>3 (Админ)</b>" in sent_text
+    assert "Ранг: <b>3 (Админ)</b>" in sent_text
+    assert "⭐ Рейтинг:" not in sent_text
+    assert "✨ Опыт:" not in sent_text
     assert "⭐ Уровень:" not in sent_text

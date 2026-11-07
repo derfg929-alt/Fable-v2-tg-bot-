@@ -21,6 +21,7 @@ from app.services.moderation_service import (
     parse_duration_string,
     sync_chat_creator_and_admins,
     ROLE_NAMES,
+    extract_target_user_id,
 )
 from app.services.chat_settings_service import (
     get_or_create_chat,
@@ -36,27 +37,7 @@ router = Router(name="extended_moderation_router")
 
 
 async def _get_target_user_id(message: types.Message, session) -> int | None:
-    if message.reply_to_message and message.reply_to_message.from_user:
-        return message.reply_to_message.from_user.id
-    if message.entities:
-        for ent in message.entities:
-            if ent.type == "text_mention" and ent.user:
-                return ent.user.id
-    import re
-    text = message.text or ""
-    match = re.search(r"@([a-zA-Z0-9_]+)", text)
-    if match:
-        uname = match.group(1).lower()
-        from app.db.models import Player
-        from sqlalchemy import select, func
-        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
-        if p:
-            return p.telegram_id
-    parts = text.split()
-    for part in parts[1:]:
-        if part.isdigit() and len(part) >= 6:
-            return int(part)
-    return None
+    return await extract_target_user_id(message, session)
 
 
 # ===================== ВХОД НОВОГО УЧАСТНИКА / ПРИВЕТСТВИЕ И КАПЧА =====================
@@ -191,9 +172,10 @@ async def handle_kick(message: types.Message, bot: Bot):
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in [
     "бан", "!бан", "/ban", "забанить", "!забанить"
 ])))
-async def handle_ban(message: types.Message, bot: Bot):
-    if not message.chat or message.chat.type == ChatType.PRIVATE:
+async def handle_ban(message: types.Message, bot: Bot = None):
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
+    bot = bot or getattr(message, "bot", None)
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
         if not target_id:

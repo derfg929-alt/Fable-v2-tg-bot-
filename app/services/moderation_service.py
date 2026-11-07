@@ -75,9 +75,58 @@ URL_REGEX = re.compile(
 )
 
 
+async def extract_target_user_id(message, session) -> int | None:
+    """Извлекает ID целевого пользователя для модерации:
+    1. Ответ на сообщение (reply_to_message).
+    2. Кликабельное упоминание (text_mention с объектом user).
+    3. Упоминание через никнейм (@username) через entity или регулярку.
+    4. Числовой Telegram ID в тексте сообщения.
+    """
+    if getattr(message, "reply_to_message", None) and message.reply_to_message.from_user:
+        return message.reply_to_message.from_user.id
+
+    entities = getattr(message, "entities", None) or []
+    for ent in entities:
+        if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+            return ent.user.id
+
+    text = getattr(message, "text", "") or ""
+
+    # Проверка entity 'mention' (@username)
+    for ent in entities:
+        if getattr(ent, "type", None) == "mention":
+            mention_str = text[ent.offset:ent.offset + ent.length].lstrip("@").lower()
+            if mention_str:
+                from app.db.models import Player
+                p = await session.scalar(select(Player).where(func.lower(Player.username) == mention_str))
+                if p:
+                    return p.telegram_id
+
+    # Regex для @username
+    match = re.search(r"@([a-zA-Z0-9_]{3,32})", text)
+    if match:
+        uname = match.group(1).lower()
+        from app.db.models import Player
+        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
+        if p:
+            return p.telegram_id
+
+    # Проверка числового ID пользователя в аргументах команды
+    parts = text.split()
+    for part in parts[1:]:
+        clean_part = part.strip()
+        if clean_part.isdigit() and len(clean_part) >= 5:
+            return int(clean_part)
+
+    return None
+
+
 def parse_duration_string(duration_str: str) -> timedelta:
-    """Парсит строки вида '30м', '2ч', '7д' в timedelta."""
-    match = re.match(r"^(\d+)([мчдmhd])$", duration_str.strip().lower())
+    """Парсит строки вида '30м', '30m', '2ч', '2h', '7д', '7d', '10' (по умолч. минут) в timedelta."""
+    s = duration_str.strip().lower()
+    if s.isdigit():
+        return timedelta(minutes=int(s))
+    match = re.match(r"^(\d+)([мчдmhd])$", s)
     if not match:
         raise ModerationError("Неверный формат времени. Пример: 30м, 2ч, 7д")
     val, unit = int(match.group(1)), match.group(2)
