@@ -69,7 +69,10 @@ async def handle_bait_claim(callback: types.CallbackQuery):
             reason="Захват чат-дропа (байт)",
             operation_type="reward",
         )
-    await callback.answer(f"🎉 Вы перехватили дроп и получили +{bonus_coins} монет!", show_alert=True)
+    try:
+        await callback.answer(f"🎉 Вы перехватили дроп и получили +{bonus_coins} монет!", show_alert=True)
+    except Exception:
+        pass
     if callback.message:
         try:
             await callback.message.edit_text(
@@ -462,7 +465,10 @@ async def on_marry_accept_click(callback: types.CallbackQuery):
                 parse_mode="HTML",
             )
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data.startswith("marry_no_"))
@@ -576,7 +582,10 @@ async def on_duel_accept(callback: types.CallbackQuery):
             except Exception:
                 pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data.startswith("duel_dec_"))
@@ -594,7 +603,10 @@ async def on_duel_decline(callback: types.CallbackQuery):
             except Exception:
                 pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data.startswith("duel_aim_"))
@@ -627,7 +639,10 @@ async def on_duel_aim(callback: types.CallbackQuery):
             except Exception:
                 pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data.startswith("duel_shoot_"))
@@ -674,4 +689,7 @@ async def on_duel_shoot(callback: types.CallbackQuery):
                 except Exception:
                     pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass

@@ -284,14 +284,27 @@ async def handle_clan(message: types.Message):
 async def on_clan_delete_confirm(callback: types.CallbackQuery):
     creator_id = int(callback.data.split("_")[3])
     if callback.from_user.id != creator_id:
-        await callback.answer("Только создатель может подтвердить удаление клана!", show_alert=True)
+        try:
+            await callback.answer("Только создатель может подтвердить удаление клана!", show_alert=True)
+        except Exception:
+            pass
         return
     async with session_scope() as session:
         try:
             name = await delete_clan(session, user_id=callback.from_user.id)
-            await callback.message.edit_text(f"💥 Клан «{name}» был успешно распущен.")
+            try:
+                await callback.answer("Клан удален!")
+            except Exception:
+                pass
+            try:
+                await callback.message.edit_text(f"💥 Клан «{name}» был успешно распущен.")
+            except Exception:
+                pass
         except Exception as e:
-            await callback.answer(f"❌ {e}", show_alert=True)
+            try:
+                await callback.answer(f"❌ {e}", show_alert=True)
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data == "clan_del_cancel")
@@ -515,7 +528,10 @@ async def handle_rules(message: types.Message):
 async def on_rules_accept(callback: types.CallbackQuery):
     async with session_scope() as session:
         await accept_rules(session, chat_id=callback.message.chat.id, user_id=callback.from_user.id)
-        await callback.answer("✅ Вы успешно приняли правила чата!", show_alert=True)
+        try:
+            await callback.answer("✅ Вы успешно приняли правила чата!", show_alert=True)
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("captcha_solve_"))
@@ -524,10 +540,19 @@ async def on_captcha_solve(callback: types.CallbackQuery):
     async with session_scope() as session:
         ok = await solve_captcha(session, challenge_token=token, actor_id=callback.from_user.id)
         if ok:
-            await callback.answer("✅ Капча пройдена!", show_alert=True)
-            await callback.message.delete()
+            try:
+                await callback.answer("✅ Капча пройдена!", show_alert=True)
+            except Exception:
+                pass
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
         else:
-            await callback.answer("❌ Это не ваша капча или время истекло!", show_alert=True)
+            try:
+                await callback.answer("❌ Это не ваша капча или время истекло!", show_alert=True)
+            except Exception:
+                pass
 
 
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["мут", "!мут", "/mute", "замутить"])))

@@ -65,6 +65,16 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(extended_moderation_router)
     dp.include_router(ai_router)
     dp.message.middleware(MessageActivityAndSecurityMiddleware())
+
+    # Глобальный обработчик для необработанных кнопок или ошибок в CallbackQuery,
+    # чтобы у пользователя никогда не зависал индикатор загрузки ("часики")
+    @dp.callback_query()
+    async def global_fallback_callback_handler(callback: types.CallbackQuery):
+        try:
+            await callback.answer()
+        except Exception:
+            pass
+
     return dp
 
 

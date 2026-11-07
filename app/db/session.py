@@ -100,6 +100,133 @@ def _is_sqlite_backend() -> bool:
     return "sqlite" in str(engine.url)
 
 
+async def _migrate_legacy_schema(conn) -> None:
+    """Синхронизирует схему БД для поддержки обновленных моделей (удаление/релаксация NOT NULL для players.level и missing columns)."""
+    # 1. PostgreSQL миграция
+    try:
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_name = 'players'
+                ) THEN
+                    -- Удаляем ограничение ck_players_level_positive если есть
+                    BEGIN
+                        ALTER TABLE players DROP CONSTRAINT IF EXISTS ck_players_level_positive;
+                    EXCEPTION WHEN OTHERS THEN
+                        NULL;
+                    END;
+
+                    -- Если колонка level есть в таблице players, снимаем NOT NULL и удаляем её
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'players' AND column_name = 'level'
+                    ) THEN
+                        BEGIN
+                            ALTER TABLE players ALTER COLUMN level DROP NOT NULL;
+                            ALTER TABLE players ALTER COLUMN level SET DEFAULT 1;
+                        EXCEPTION WHEN OTHERS THEN
+                            NULL;
+                        END;
+                        BEGIN
+                            ALTER TABLE players DROP COLUMN IF EXISTS level;
+                        EXCEPTION WHEN OTHERS THEN
+                            NULL;
+                        END;
+                    END IF;
+
+                    -- Проверяем наличие всех актуальных колонок модели Player
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns WHERE table_name = 'players' AND column_name = 'shares'
+                    ) THEN
+                        BEGIN
+                            ALTER TABLE players ADD COLUMN shares BIGINT NOT NULL DEFAULT 0;
+                        EXCEPTION WHEN OTHERS THEN NULL;
+                        END;
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns WHERE table_name = 'players' AND column_name = 'rating'
+                    ) THEN
+                        BEGIN
+                            ALTER TABLE players ADD COLUMN rating BIGINT NOT NULL DEFAULT 0;
+                        EXCEPTION WHEN OTHERS THEN NULL;
+                        END;
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns WHERE table_name = 'players' AND column_name = 'custom_nickname'
+                    ) THEN
+                        BEGIN
+                            ALTER TABLE players ADD COLUMN custom_nickname VARCHAR(64);
+                        EXCEPTION WHEN OTHERS THEN NULL;
+                        END;
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns WHERE table_name = 'players' AND column_name = 'married_to'
+                    ) THEN
+                        BEGIN
+                            ALTER TABLE players ADD COLUMN married_to BIGINT;
+                        EXCEPTION WHEN OTHERS THEN NULL;
+                        END;
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns WHERE table_name = 'players' AND column_name = 'referred_by'
+                    ) THEN
+                        BEGIN
+                            ALTER TABLE players ADD COLUMN referred_by BIGINT;
+                        EXCEPTION WHEN OTHERS THEN NULL;
+                        END;
+                    END IF;
+                END IF;
+            END $$;
+        """))
+    except Exception:
+        # Для SQLite или иных СУБД (например, в тестовой среде)
+        try:
+            check_table = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='players'"))
+            if check_table.scalar_one_or_none():
+                cols_res = await conn.execute(text("PRAGMA table_info(players)"))
+                cols = [row[1] for row in cols_res.fetchall()]
+                if "level" in cols:
+                    try:
+                        await conn.execute(text("ALTER TABLE players DROP COLUMN level"))
+                    except Exception:
+                        pass
+                if "shares" not in cols:
+                    try:
+                        await conn.execute(text("ALTER TABLE players ADD COLUMN shares BIGINT NOT NULL DEFAULT 0"))
+                    except Exception:
+                        pass
+                if "rating" not in cols:
+                    try:
+                        await conn.execute(text("ALTER TABLE players ADD COLUMN rating BIGINT NOT NULL DEFAULT 0"))
+                    except Exception:
+                        pass
+                if "custom_nickname" not in cols:
+                    try:
+                        await conn.execute(text("ALTER TABLE players ADD COLUMN custom_nickname VARCHAR(64)"))
+                    except Exception:
+                        pass
+                if "married_to" not in cols:
+                    try:
+                        await conn.execute(text("ALTER TABLE players ADD COLUMN married_to BIGINT"))
+                    except Exception:
+                        pass
+                if "referred_by" not in cols:
+                    try:
+                        await conn.execute(text("ALTER TABLE players ADD COLUMN referred_by BIGINT"))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
 async def init_database() -> None:
     """Инициализирует таблицы и схему базы данных при старте."""
     global _initialized_db
@@ -107,6 +234,7 @@ async def init_database() -> None:
         return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_legacy_schema(conn)
 
     # Если работает SQLite (тестовая среда), восстанавливаем сохраненные данные при наличии
     if _is_sqlite_backend():
