@@ -841,7 +841,7 @@ async def handle_profile(message: types.Message):
             )
             p = reg.player
 
-        # Уровень админки в текущем чате
+        # Уровень админки в текущем чате (Звонок)
         from app.services.moderation_service import get_user_admin_level, ROLE_NAMES
         chat_id = message.chat.id if message.chat else 0
         admin_lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=p.telegram_id, bot=message.bot)
@@ -850,61 +850,38 @@ async def handle_profile(message: types.Message):
         # Никнейм
         disp_name = p.custom_nickname or p.first_name
 
-        # Время нахождения в боте
-        time_in_fable_str = format_time_in_fable(getattr(p, "created_at", None))
-
-        # Бизнесы
-        user_businesses = await get_player_businesses(session, user_id=p.telegram_id)
-        if user_businesses:
-            b_list_str = ", ".join([f"{BUSINESSES[b.business_id].icon} {BUSINESSES[b.business_id].name} (Ур.{b.level})" for b in user_businesses if b.business_id in BUSINESSES])
+        # Первое появление в боте
+        first_seen_dt = getattr(p, "registered_at", None) or getattr(p, "created_at", None)
+        if first_seen_dt:
+            first_seen_str = first_seen_dt.strftime("%d.%m.%Y %H:%M UTC")
         else:
-            b_list_str = "Нет предприятий"
+            first_seen_str = "Неизвестно"
 
-        # Фермы
-        mining = await get_or_create_mining(session, user_id=p.telegram_id)
-        rigs = get_rigs_dict(mining)
-        total_rigs = sum(rigs.values())
-        active_coin = (mining.active_coin or "BTC").upper()
-        hashrate = calculate_effective_hashrate(rigs, active_coin, mining.farm_level)
+        # Активность в текущем чате (день, неделя, месяц, год, все время)
+        from app.services.activity_service import get_chat_activity_breakdown
+        act = await get_chat_activity_breakdown(session, chat_id=chat_id, user_id=p.telegram_id)
 
-        # Недвижимость
-        from app.services.shop_service import get_player_properties, get_player_cars, get_player_shop_items
-        props = await get_player_properties(session, user_id=p.telegram_id)
-        props_str = ", ".join([f"🏠 {pr.name}" for pr in props]) if props else "Нет жилья"
+        # Время последней активности
+        last_act_dt = act["last_active"]
+        if last_act_dt:
+            last_act_str = last_act_dt.strftime("%d.%m.%Y %H:%M UTC")
+        else:
+            last_act_str = "Активности в этом чате ещё не зафиксировано"
 
-        # Автомобили
-        cars = await get_player_cars(session, user_id=p.telegram_id)
-        cars_str = ", ".join([f"🚗 {c.item_name}" for c in cars]) if cars else "Пешком (нет авто)"
-
-        # Предметы из магазина и кейсов
-        items = await get_player_shop_items(session, user_id=p.telegram_id)
-        non_car_items = [it for it in items if it.category != "cars"]
-        items_str = ", ".join([f"💎 {it.item_name}" for it in non_car_items]) if non_car_items else "Пусто"
-
-        # Брак
-        spouse_str = "В активном поиске"
-        if p.married_to:
-            spouse_player = await session.get(Player, p.married_to)
-            spouse_name = spouse_player.custom_nickname or spouse_player.first_name if spouse_player else f"ID {p.married_to}"
-            spouse_str = f"💍 В браке с <b>{spouse_name}</b>"
+        chat_label = f"«{message.chat.title}»" if (message.chat and message.chat.title) else "этом чате"
 
         text = (
             f"👤 <b>Профиль игрока {disp_name}</b>\n\n"
             f"🆔 ID: <code>{p.telegram_id}</code>\n"
-            f"🛡 Уровень админки: <b>{admin_lvl} ({role_name})</b>\n"
-            f"⏳ Время нахождения в мире Fable: <b>{time_in_fable_str}</b>\n"
-            f"✨ Опыт: <b>{p.experience:,}</b> XP\n"
-            f"💰 Кошелек: <b>{p.wallet:,}</b> монет\n"
-            f"🏦 Банк: <b>{p.bank_balance:,}</b> монет\n"
-            f"📈 Биржевые акции: <b>{p.shares}</b> ед.\n"
-            f"⭐ Рейтинг: <b>{p.rating:,}</b> очков\n"
-            f"🤝 Репутация: <b>{p.reputation}</b>\n"
-            f"💍 Семья: {spouse_str}\n\n"
-            f"🏢 <b>Бизнесы:</b> {b_list_str}\n"
-            f"⛏ <b>Майнинг-ферма:</b> {total_rigs} ригов ({hashrate:,} GH/s, активна: {active_coin})\n"
-            f"🏎 <b>Гараж / Авто:</b> {cars_str}\n"
-            f"🌆 <b>Недвижимость:</b> {props_str}\n"
-            f"🛍 <b>Предметы / Магазин:</b> {items_str}".replace(",", " ")
+            f"🔔 Звонок: <b>{admin_lvl} ({role_name})</b>\n"
+            f"🗓 Первое появление в боте: <b>{first_seen_str}</b>\n"
+            f"⏱ Последний актив в чате: <b>{last_act_str}</b>\n\n"
+            f"📊 <b>Активность в {chat_label}:</b>\n"
+            f"• За день: <b>{act['day']:,}</b> сообщ.\n"
+            f"• За неделю: <b>{act['week']:,}</b> сообщ.\n"
+            f"• За месяц: <b>{act['month']:,}</b> сообщ.\n"
+            f"• За год: <b>{act['year']:,}</b> сообщ.\n"
+            f"• За всё время: <b>{act['all_time']:,}</b> сообщ.".replace(",", " ")
         )
         await message.reply(text, parse_mode="HTML")
 

@@ -207,5 +207,100 @@ async def reward_chat_message(
         True, "awarded", coins=coins, experience=xp
     )
 
+async def get_chat_activity_breakdown(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    user_id: int,
+    now: datetime | None = None,
+) -> dict:
+    """Возвращает активность игрока в конкретном чате:
+    день, неделя, месяц, год, все время, а также время последней активности.
+    """
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+
+    # 1. Последняя активность
+    last_active = await session.scalar(
+        select(func.max(ActivityRecord.created_at)).where(
+            ActivityRecord.chat_id == chat_id,
+            ActivityRecord.user_id == user_id,
+        )
+    )
+
+    # 2. Активность за день (24 часа)
+    day_since = moment - timedelta(days=1)
+    day_count = (
+        await session.scalar(
+            select(func.count(ActivityRecord.id)).where(
+                ActivityRecord.chat_id == chat_id,
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.created_at >= day_since,
+            )
+        )
+        or 0
+    )
+
+    # 3. Активность за неделю (7 дней)
+    week_since = moment - timedelta(days=7)
+    week_count = (
+        await session.scalar(
+            select(func.count(ActivityRecord.id)).where(
+                ActivityRecord.chat_id == chat_id,
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.created_at >= week_since,
+            )
+        )
+        or 0
+    )
+
+    # 4. Активность за месяц (30 дней)
+    month_since = moment - timedelta(days=30)
+    month_count = (
+        await session.scalar(
+            select(func.count(ActivityRecord.id)).where(
+                ActivityRecord.chat_id == chat_id,
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.created_at >= month_since,
+            )
+        )
+        or 0
+    )
+
+    # 5. Активность за год (365 дней)
+    year_since = moment - timedelta(days=365)
+    year_count = (
+        await session.scalar(
+            select(func.count(ActivityRecord.id)).where(
+                ActivityRecord.chat_id == chat_id,
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.created_at >= year_since,
+            )
+        )
+        or 0
+    )
+
+    # 6. За все время
+    all_time_count = (
+        await session.scalar(
+            select(func.count(ActivityRecord.id)).where(
+                ActivityRecord.chat_id == chat_id,
+                ActivityRecord.user_id == user_id,
+            )
+        )
+        or 0
+    )
+
+    return {
+        "day": day_count,
+        "week": week_count,
+        "month": month_count,
+        "year": year_count,
+        "all_time": all_time_count,
+        "last_active": last_active,
+    }
+
+
 # Алиас для обработчиков
 process_message_activity = reward_chat_message

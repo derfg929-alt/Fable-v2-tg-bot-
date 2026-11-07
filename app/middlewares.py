@@ -22,6 +22,28 @@ from app.services.moderation_service import is_link_allowed, get_user_admin_leve
 from app.services.chat_settings_service import get_or_create_chat, has_accepted_rules
 
 
+class CallbackAnswerMiddleware(BaseMiddleware):
+    """Гарантирует вызов callback.answer() для любых inline-кнопок,
+    предотвращая вечную загрузку ("часики") даже при необработанных или упавших событиях.
+    """
+    async def __call__(
+        self,
+        handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: types.TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        if not isinstance(event, types.CallbackQuery):
+            return await handler(event, data)
+
+        try:
+            return await handler(event, data)
+        finally:
+            try:
+                await event.answer()
+            except Exception:
+                pass
+
+
 class MessageActivityAndSecurityMiddleware(BaseMiddleware):
     async def __call__(
         self,

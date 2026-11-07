@@ -155,6 +155,14 @@ async def handle_kick(message: types.Message, bot: Bot):
             await message.reply("Использование: ответом на сообщение <code>кик [причина]</code> или <code>кик @user [причина]</code>", parse_mode="HTML")
             return
 
+        from app.services.moderation_service import ensure_player_and_chat_exist
+        await ensure_player_and_chat_exist(
+            session,
+            chat_id=message.chat.id,
+            user_ids=[message.from_user.id, target_id],
+            bot=bot,
+        )
+
         parts = (message.text or "").split()
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Исключение модератором"
         try:
@@ -189,6 +197,14 @@ async def handle_ban(message: types.Message, bot: Bot):
             await message.reply("Использование: ответом на сообщение <code>бан [причина]</code> или <code>бан @user [причина]</code>", parse_mode="HTML")
             return
 
+        from app.services.moderation_service import ensure_player_and_chat_exist
+        await ensure_player_and_chat_exist(
+            session,
+            chat_id=message.chat.id,
+            user_ids=[message.from_user.id, target_id],
+            bot=bot,
+        )
+
         parts = (message.text or "").split()
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Блокировка модератором"
         try:
@@ -221,6 +237,13 @@ async def handle_unban(message: types.Message, bot: Bot):
         if not target_id:
             await message.reply("Использование: ответом на сообщение <code>разбан</code> или <code>разбан @user</code>", parse_mode="HTML")
             return
+        from app.services.moderation_service import ensure_player_and_chat_exist
+        await ensure_player_and_chat_exist(
+            session,
+            chat_id=message.chat.id,
+            user_ids=[message.from_user.id, target_id],
+            bot=bot,
+        )
         try:
             lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
             if lvl < 3:

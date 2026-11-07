@@ -191,6 +191,57 @@ async def sync_chat_creator_and_admins(session: AsyncSession, *, chat_id: int, b
         return None
 
 
+async def ensure_player_and_chat_exist(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    user_ids: Sequence[int],
+    bot=None,
+) -> None:
+    """Гарантирует существование чата и игроков в БД перед операциями модерации.
+    Предотвращает ForeignKeyViolationError в moderation_cases, chat_admins и т.д.
+    """
+    # 1. Гарантируем запись чата
+    chat_stmt = insert(Chat).values(
+        telegram_id=chat_id,
+        title=f"Chat {chat_id}",
+        chat_type="supergroup" if chat_id < 0 else "private",
+        is_active=True,
+    ).on_conflict_do_nothing(index_elements=[Chat.telegram_id])
+    await session.execute(chat_stmt)
+
+    # 2. Гарантируем записи игроков
+    for uid in user_ids:
+        if not uid or uid <= 0:
+            continue
+        first_name = "Пользователь"
+        username = None
+        if bot:
+            try:
+                member = await bot.get_chat_member(chat_id=chat_id, user_id=uid)
+                u = getattr(member, "user", None)
+                if u:
+                    fn = getattr(u, "first_name", None)
+                    un = getattr(u, "username", None)
+                    if isinstance(fn, str) and fn:
+                        first_name = fn
+                    if isinstance(un, str):
+                        username = un
+            except Exception:
+                pass
+
+        p_stmt = insert(Player).values(
+            telegram_id=uid,
+            first_name=first_name,
+            username=username,
+            wallet=0,
+            bank_balance=0,
+            experience=0,
+            reputation=0,
+        ).on_conflict_do_nothing(index_elements=[Player.telegram_id])
+        await session.execute(p_stmt)
+
+
 async def check_can_moderate(
     session: AsyncSession,
     *,
@@ -201,6 +252,9 @@ async def check_can_moderate(
     bot=None,
 ) -> tuple[int, int]:
     """Проверяет право модератора наказывать цель."""
+    await ensure_player_and_chat_exist(
+        session, chat_id=chat_id, user_ids=[moderator_id, target_id], bot=bot
+    )
     mod_level = await get_user_admin_level(session, chat_id=chat_id, user_id=moderator_id, bot=bot)
     if mod_level < min_required_level:
         raise PermissionDeniedError(
@@ -226,6 +280,9 @@ async def set_admin_level(
     bot=None,
 ) -> int:
     """Назначение роли / уровня администратора с соблюдением всех правил иерархии."""
+    await ensure_player_and_chat_exist(
+        session, chat_id=chat_id, user_ids=[actor_id, target_id], bot=bot
+    )
     actor_level = await get_user_admin_level(session, chat_id=chat_id, user_id=actor_id, bot=bot)
     target_level = await get_user_admin_level(session, chat_id=chat_id, user_id=target_id, bot=bot)
 
