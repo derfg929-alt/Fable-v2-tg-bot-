@@ -485,6 +485,27 @@ async def handle_mine_cmd(message: types.Message):
 
 # ===================== РЕЙТИНГ =====================
 
+@router.message(F.text.casefold().in_(["рейтинг", "!рейтинг", "/rating"]))
+async def handle_rating_info_cmd(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        reg = await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        p = reg.player
+        from app.services.rating_service import BUY_RATING_PRICE, SELL_RATING_PRICE
+        text = (
+            f"⭐ <b>ИГРОВОЙ РЕЙТИНГ И ВЛИЯНИЕ FABLE</b>\n\n"
+            f"Ваш текущий рейтинг: <b>{p.rating:,}</b> очков\n\n"
+            f"📊 <b>Курс обмена очков рейтинга:</b>\n"
+            f"• Покупка: <b>{BUY_RATING_PRICE}</b> монет за 1 очко\n"
+            f"• Продажа: <b>{SELL_RATING_PRICE}</b> монет за 1 очко\n\n"
+            f"💡 <b>Команды:</b>\n"
+            f"• <code>купить рейтинг [кол-во]</code> — повысить авторитет\n"
+            f"• <code>продать рейтинг [кол-во]</code> — обменять очки на монеты"
+        ).replace(",", " ")
+        await message.reply(text, parse_mode="HTML")
+
+
 @router.message(F.text.casefold().startswith("купить рейтинг"))
 async def handle_buy_rating_cmd(message: types.Message):
     if not message.from_user:
@@ -534,6 +555,33 @@ async def handle_sell_rating_cmd(message: types.Message):
             )
         except Exception as e:
             await message.reply(f"❌ {e}")
+
+
+# ===================== ДОСТИЖЕНИЯ И КВЕСТЫ =====================
+
+@router.message(F.text.casefold().in_([
+    "квесты", "!квесты", "/quests", "квест", "!квест", "/quest",
+    "достижения", "!достижения", "/achievements", "ачивки", "!ачивки"
+]))
+async def handle_achievements_cmd(message: types.Message):
+    if not message.from_user:
+        return
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        from app.services.achievement_service import get_player_achievements, list_achievements
+        all_ach = await list_achievements(session)
+        user_ach = await get_player_achievements(session, user_id=message.from_user.id)
+        unlocked_ids = {a.id for a in user_ach}
+
+        lines = [
+            f"🏆 <b>ИГРОВЫЕ ДОСТИЖЕНИЯ И КВЕСТЫ FABLE ({len(unlocked_ids)}/{len(all_ach)})</b>\n",
+            "Выполняйте испытания и получайте ценные награды в монетах:\n",
+        ]
+        for ach in all_ach:
+            status_icon = "✅" if ach.id in unlocked_ids else "🔒"
+            lines.append(f"{status_icon} <b>{ach.title}</b> — +{ach.reward_coins:,} монет\n   └ <i>{ach.description}</i>".replace(",", " "))
+
+        await message.reply("\n".join(lines), parse_mode="HTML")
 
 
 # ===================== КЕЙСЫ =====================

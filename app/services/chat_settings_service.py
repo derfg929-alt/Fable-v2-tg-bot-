@@ -101,6 +101,48 @@ async def update_chat_setting(
     return current_settings
 
 
+async def toggle_ai_moderation(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    admin_id: int,
+    enabled: bool,
+) -> bool:
+    """Включение или выключение ИИ-админки / ИИ-модератора чата (ур. 3+)."""
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    if lvl < 3:
+        raise PermissionDeniedError("Управлять ИИ-админкой могут администраторы чата (ур. 3+)")
+    chat = await get_or_create_chat(session, chat_id=chat_id)
+    cur_settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+    cur_settings["ai_admin_enabled"] = enabled
+    chat.settings = cur_settings
+    await session.flush()
+    return enabled
+
+
+async def set_ai_moderation_strictness(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    admin_id: int,
+    strictness: str,
+) -> str:
+    """Установка уровня строгости ИИ-модерации чата (low, medium, strict) (ур. 3+)."""
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    if lvl < 3:
+        raise PermissionDeniedError("Настраивать строгость ИИ-админки могут администраторы чата (ур. 3+)")
+    valid_modes = {"low", "medium", "strict", "низкий", "средний", "строгий"}
+    val = strictness.lower().strip()
+    if val not in valid_modes:
+        val = "medium"
+    chat = await get_or_create_chat(session, chat_id=chat_id)
+    cur_settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+    cur_settings["ai_admin_strictness"] = val
+    chat.settings = cur_settings
+    await session.flush()
+    return val
+
+
 async def apply_chat_preset(
     session: AsyncSession,
     *,

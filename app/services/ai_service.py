@@ -89,3 +89,19 @@ async def ask_grok(
     except Exception as e:
         logger.exception("Непредвиденная ошибка при запросе к Grok AI: %s", e)
         return "⚠️ Произошла ошибка при обработке запроса к Grok AI."
+
+
+async def analyze_chat_moderation_ai(
+    chat_title: str,
+    recent_events_text: str,
+) -> str:
+    """Интеллектуальный анализ активности чата и рекомендации для владельца/администраторов."""
+    prompt = (
+        f"Ты — виртуальный ИИ-администратор чата «{chat_title}». "
+        f"Проанализируй следующую сводку активности и событий:\n"
+        f"{recent_events_text}\n\n"
+        f"Дай краткий, профессиональный и полезный отчет для владельца чата: "
+        f"1. Оценка безопасности и токсичности. 2. Рекомендации по настройкам чата. "
+        f"3. Общий вердикт. Форматируй красиво для Telegram (HTML)."
+    )
+    return await ask_grok(prompt)

@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     bot_token: SecretStr = Field(default=SecretStr("123456:dummy_token_default"), alias="BOT_TOKEN")
     owner_id: int = Field(default=8039111975, alias="OWNER_ID", gt=0)
     database_url: SecretStr = Field(
-        default=SecretStr("sqlite+aiosqlite:///data/bot_database.db"),
+        default=SecretStr("postgresql+asyncpg://fable:fable@localhost:5432/fable"),
         alias="DATABASE_URL",
     )
     json_database_path: str = Field(
