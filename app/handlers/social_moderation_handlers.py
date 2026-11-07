@@ -578,6 +578,14 @@ async def handle_mute(message: types.Message):
             await message.reply("Использование: ответом на сообщение <code>мут 30м [причина]</code> или <code>мут @user 30м [причина]</code>", parse_mode="HTML")
             return
 
+        from app.services.moderation_service import ensure_player_and_chat_exist
+        await ensure_player_and_chat_exist(
+            session,
+            chat_id=message.chat.id,
+            user_ids=[message.from_user.id, target_id],
+            bot=message.bot,
+        )
+
         # Find duration
         dur_str = "30м"
         reason_parts = []
@@ -640,6 +648,13 @@ async def handle_unmute(message: types.Message):
         if not target_id:
             await message.reply("Использование: ответом на сообщение <code>размут</code> или <code>размут @user</code>", parse_mode="HTML")
             return
+        from app.services.moderation_service import ensure_player_and_chat_exist
+        await ensure_player_and_chat_exist(
+            session,
+            chat_id=message.chat.id,
+            user_ids=[message.from_user.id, target_id],
+            bot=message.bot,
+        )
         try:
             await revoke_mute(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, bot=message.bot)
             tg_status = ""
@@ -715,6 +730,14 @@ async def handle_warn(message: types.Message):
         if not target_id:
             await message.reply("Использование: ответом на сообщение <code>варн [причина]</code> или <code>варн @user [причина]</code>", parse_mode="HTML")
             return
+
+        from app.services.moderation_service import ensure_player_and_chat_exist
+        await ensure_player_and_chat_exist(
+            session,
+            chat_id=message.chat.id,
+            user_ids=[message.from_user.id, target_id],
+            bot=message.bot,
+        )
 
         if any(w in text.casefold() for w in ("снять", "разварн", "unwarn")):
             try:

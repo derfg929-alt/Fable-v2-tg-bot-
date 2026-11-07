@@ -33,7 +33,7 @@ from app.handlers.games_handlers import router as games_router
 from app.handlers.social_moderation_handlers import router as social_moderation_router
 from app.handlers.extended_moderation_handlers import router as extended_moderation_router
 from app.handlers.ai_handlers import router as ai_router
-from app.middlewares import MessageActivityAndSecurityMiddleware
+from app.middlewares import MessageActivityAndSecurityMiddleware, CallbackAnswerMiddleware
 from app.handlers.owner_handlers import router as owner_router
 from app.tasks.background import (
     background_bank_interest_worker,
@@ -65,6 +65,7 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(extended_moderation_router)
     dp.include_router(ai_router)
     dp.message.middleware(MessageActivityAndSecurityMiddleware())
+    dp.callback_query.middleware(CallbackAnswerMiddleware())
 
     # Глобальный обработчик для необработанных кнопок или ошибок в CallbackQuery,
     # чтобы у пользователя никогда не зависал индикатор загрузки ("часики")
