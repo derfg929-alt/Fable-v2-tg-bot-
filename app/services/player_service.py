@@ -140,3 +140,28 @@ async def update_player_identity(
         player.username = _clean_optional_name(username, limit=64)
 
     return player
+
+
+def format_time_in_fable(created_at) -> str:
+    """Форматирует длительность нахождения в мире Fable в читаемый русский текст."""
+    from datetime import datetime, timezone
+    if not created_at:
+        return "только прибыл(а)"
+    now = datetime.now(timezone.utc)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    delta = now - created_at
+    total_seconds = max(0, int(delta.total_seconds()))
+
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+
+    parts = []
+    if days > 0:
+        parts.append(f"{days} д.")
+    if hours > 0 or days > 0:
+        parts.append(f"{hours} ч.")
+    parts.append(f"{minutes} мин.")
+
+    return " ".join(parts)

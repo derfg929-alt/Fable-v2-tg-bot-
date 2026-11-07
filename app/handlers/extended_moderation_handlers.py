@@ -36,26 +36,37 @@ router = Router(name="extended_moderation_router")
 
 
 async def _get_target_user_id(message: types.Message, session) -> int | None:
-    if message.reply_to_message and message.reply_to_message.from_user:
-        return message.reply_to_message.from_user.id
-    if message.entities:
-        for ent in message.entities:
-            if ent.type == "text_mention" and ent.user:
-                return ent.user.id
+    reply = getattr(message, "reply_to_message", None)
+    if reply is not None:
+        user = getattr(reply, "from_user", None)
+        uid = getattr(user, "id", None)
+        if isinstance(uid, int):
+            return uid
+
+    entities = getattr(message, "entities", None)
+    if isinstance(entities, (list, tuple)):
+        for ent in entities:
+            if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+                uid = getattr(ent.user, "id", None)
+                if isinstance(uid, int):
+                    return uid
+
     import re
-    text = message.text or ""
-    match = re.search(r"@([a-zA-Z0-9_]+)", text)
-    if match:
-        uname = match.group(1).lower()
-        from app.db.models import Player
-        from sqlalchemy import select, func
-        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
-        if p:
-            return p.telegram_id
-    parts = text.split()
-    for part in parts[1:]:
-        if part.isdigit() and len(part) >= 6:
-            return int(part)
+    raw_text = getattr(message, "text", "")
+    if isinstance(raw_text, str):
+        match = re.search(r"@([a-zA-Z0-9_]+)", raw_text)
+        if match:
+            uname = match.group(1).lower()
+            from app.db.models import Player
+            from sqlalchemy import select, func
+            p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
+            if p:
+                return p.telegram_id
+
+        parts = raw_text.split()
+        for part in parts[1:]:
+            if part.isdigit() and len(part) >= 6:
+                return int(part)
     return None
 
 
@@ -70,20 +81,9 @@ async def on_bot_added_my_chat_member(event: types.ChatMemberUpdated, bot: Bot):
         async with session_scope() as session:
             await get_or_create_chat(session, chat_id=chat.id, title=chat.title or "")
             if adder and not getattr(adder, "is_bot", False):
-                await get_or_create_player(session, telegram_id=adder.id, first_name=getattr(adder, "first_name", "Владелец"), username=getattr(adder, "username", None))
-                stmt = insert(ChatAdmin).values(
-                    chat_id=chat.id,
-                    user_id=adder.id,
-                    level=5,
-                    assigned_by=adder.id,
-                    is_active=True,
-                ).on_conflict_do_update(
-                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
-                    set_={"level": 5, "is_active": True},
-                )
-                await session.execute(stmt)
+                await get_or_create_player(session, telegram_id=adder.id, first_name=getattr(adder, "first_name", "Пользователь"), username=getattr(adder, "username", None))
 
-            # Также всегда синхронизируем истинного создателя группы и админов Telegram
+            # Синхронизируем только истинного создателя группы (он получает ур. 5)
             await sync_chat_creator_and_admins(session, chat_id=chat.id, bot=bot)
 
         await bot.send_message(chat_id=chat.id, text=get_greeting_text(), parse_mode="HTML")
@@ -101,20 +101,9 @@ async def on_bot_added_new_chat_members(message: types.Message, bot: Bot):
             async with session_scope() as session:
                 await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
                 if adder and not getattr(adder, "is_bot", False):
-                    await get_or_create_player(session, telegram_id=adder.id, first_name=getattr(adder, "first_name", "Владелец"), username=getattr(adder, "username", None))
-                    stmt = insert(ChatAdmin).values(
-                        chat_id=message.chat.id,
-                        user_id=adder.id,
-                        level=5,
-                        assigned_by=adder.id,
-                        is_active=True,
-                    ).on_conflict_do_update(
-                        index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
-                        set_={"level": 5, "is_active": True},
-                    )
-                    await session.execute(stmt)
+                    await get_or_create_player(session, telegram_id=adder.id, first_name=getattr(adder, "first_name", "Пользователь"), username=getattr(adder, "username", None))
 
-                # Синхронизируем истинного владельца группы (creator)
+                # Синхронизируем только истинного владельца группы (creator)
                 await sync_chat_creator_and_admins(session, chat_id=message.chat.id, bot=bot)
 
             await message.answer(get_greeting_text(), parse_mode="HTML")

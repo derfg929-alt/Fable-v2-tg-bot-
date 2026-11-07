@@ -134,18 +134,8 @@ async def get_user_admin_level(
                 await session.execute(stmt)
                 return 5
             elif status == "administrator":
-                stmt = insert(ChatAdmin).values(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    level=3,
-                    assigned_by=user_id,
-                    is_active=True,
-                ).on_conflict_do_update(
-                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
-                    set_={"level": 3, "is_active": True},
-                )
-                await session.execute(stmt)
-                return 3
+                # Обычные администраторы Telegram не получают админку бота автоматически
+                return 1
         except Exception:
             pass
 
@@ -153,7 +143,8 @@ async def get_user_admin_level(
 
 
 async def sync_chat_creator_and_admins(session: AsyncSession, *, chat_id: int, bot) -> int | None:
-    """Синхронизирует владельца (создателя) и администраторов чата через Telegram Bot API.
+    """Синхронизирует владельца (создателя) чата через Telegram Bot API.
+    Админку (ур. 5) автоматически получает только создатель группы.
     Возвращает telegram_id создателя чата, если найден.
     """
     if not bot:
@@ -170,31 +161,30 @@ async def sync_chat_creator_and_admins(session: AsyncSession, *, chat_id: int, b
             if status in ("creator", "owner"):
                 creator_id = user.id
                 level = 5
-            elif status == "administrator":
-                level = 3
+
+                # Убеждаемся, что создатель существует в БД игроков
+                p_stmt = insert(Player).values(
+                    telegram_id=user.id,
+                    first_name=user.first_name or "Создатель",
+                    username=user.username,
+                ).on_conflict_do_nothing(index_elements=[Player.telegram_id])
+                await session.execute(p_stmt)
+
+                # Синхронизируем уровень только создателя
+                stmt = insert(ChatAdmin).values(
+                    chat_id=chat_id,
+                    user_id=user.id,
+                    level=level,
+                    assigned_by=user.id,
+                    is_active=True,
+                ).on_conflict_do_update(
+                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
+                    set_={"level": level, "is_active": True},
+                )
+                await session.execute(stmt)
             else:
+                # Обычные администраторы Telegram не получают права автоматически
                 continue
-
-            # Убеждаемся, что игрок существует
-            p_stmt = insert(Player).values(
-                telegram_id=user.id,
-                first_name=user.first_name or "Участник",
-                username=user.username,
-            ).on_conflict_do_nothing(index_elements=[Player.telegram_id])
-            await session.execute(p_stmt)
-
-            # Синхронизируем уровень
-            stmt = insert(ChatAdmin).values(
-                chat_id=chat_id,
-                user_id=user.id,
-                level=level,
-                assigned_by=user.id,
-                is_active=True,
-            ).on_conflict_do_update(
-                index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
-                set_={"level": level, "is_active": True},
-            )
-            await session.execute(stmt)
 
         return creator_id
     except Exception:

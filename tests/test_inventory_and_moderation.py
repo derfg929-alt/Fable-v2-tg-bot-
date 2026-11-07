@@ -126,17 +126,24 @@ async def test_telegram_moderation_sync_and_permissions():
         await get_or_create_player(session, telegram_id=regular_user_id, first_name="User")
         await session.flush()
 
-        # Проверяем авто-синхронизацию уровня прав создателя и администратора Telegram
+        # Проверяем авто-синхронизацию уровня прав создателя: ур. 5
         lvl_creator = await get_user_admin_level(session, chat_id=chat_id, user_id=creator_id, bot=mock_bot)
         assert lvl_creator == 5
 
+        # Администраторы Telegram не получают права автоматически (ур. 1)
         lvl_mod = await get_user_admin_level(session, chat_id=chat_id, user_id=moderator_id, bot=mock_bot)
-        assert lvl_mod == 3
+        assert lvl_mod == 1
 
         lvl_user = await get_user_admin_level(session, chat_id=chat_id, user_id=regular_user_id, bot=mock_bot)
         assert lvl_user == 1
 
-        # Мут: админ (ур 3) мутит обычного пользователя (ур 1)
+        # Создатель назначает модератора на ур. 3
+        from app.services.moderation_service import set_admin_level
+        await set_admin_level(session, chat_id=chat_id, actor_id=creator_id, target_id=moderator_id, new_level=3, bot=mock_bot)
+        lvl_mod_after = await get_user_admin_level(session, chat_id=chat_id, user_id=moderator_id, bot=mock_bot)
+        assert lvl_mod_after == 3
+
+        # Мут: назначенный админ (ур 3) мутит обычного пользователя (ур 1)
         mute_case = await issue_mute(
             session,
             chat_id=chat_id,

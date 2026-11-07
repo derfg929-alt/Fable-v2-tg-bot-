@@ -69,25 +69,36 @@ router = Router(name="social_moderation_router")
 
 
 async def _get_target_user_id(message: types.Message, session) -> int | None:
-    if message.reply_to_message and message.reply_to_message.from_user:
-        return message.reply_to_message.from_user.id
-    if message.entities:
-        for ent in message.entities:
-            if ent.type == "text_mention" and ent.user:
-                return ent.user.id
-    text = message.text or ""
-    match = re.search(r"@([a-zA-Z0-9_]+)", text)
-    if match:
-        uname = match.group(1).lower()
-        from app.db.models import Player
-        from sqlalchemy import select, func
-        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
-        if p:
-            return p.telegram_id
-    parts = text.split()
-    for part in parts[1:]:
-        if part.isdigit() and len(part) >= 6:
-            return int(part)
+    reply = getattr(message, "reply_to_message", None)
+    if reply is not None:
+        user = getattr(reply, "from_user", None)
+        uid = getattr(user, "id", None)
+        if isinstance(uid, int):
+            return uid
+
+    entities = getattr(message, "entities", None)
+    if isinstance(entities, (list, tuple)):
+        for ent in entities:
+            if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+                uid = getattr(ent.user, "id", None)
+                if isinstance(uid, int):
+                    return uid
+
+    raw_text = getattr(message, "text", "")
+    if isinstance(raw_text, str):
+        match = re.search(r"@([a-zA-Z0-9_]+)", raw_text)
+        if match:
+            uname = match.group(1).lower()
+            from app.db.models import Player
+            from sqlalchemy import select, func
+            p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
+            if p:
+                return p.telegram_id
+
+        parts = raw_text.split()
+        for part in parts[1:]:
+            if part.isdigit() and len(part) >= 6:
+                return int(part)
     return None
 
 
@@ -505,7 +516,7 @@ async def on_legacy_top_menu_click(callback: types.CallbackQuery):
 
 @router.message(F.text.casefold().in_(["правила", "!правила"]))
 async def handle_rules(message: types.Message):
-    if not message.chat or message.chat.type in (types.ChatType.PRIVATE,):
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         await message.reply("Правила настраиваются отдельно в каждой группе.")
         return
 
@@ -557,7 +568,7 @@ async def on_captcha_solve(callback: types.CallbackQuery):
 
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["мут", "!мут", "/mute", "замутить"])))
 async def handle_mute(message: types.Message):
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     parts = (message.text or "").split()
 
@@ -622,7 +633,7 @@ async def handle_mute(message: types.Message):
 
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["размут", "!размут", "/unmute", "снять мут"])))
 async def handle_unmute(message: types.Message):
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
@@ -659,22 +670,35 @@ async def handle_unmute(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["варны", "!варны", "преды", "!преды"])))
+@router.message(F.text.casefold().func(lambda t: any(t == prefix or t.startswith(f"{prefix} ") for prefix in ["варны", "!варны", "/warns", "преды", "!преды"])))
 async def handle_view_warns(message: types.Message):
-    """Просмотр активных предупреждений пользователя."""
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    """Просмотр счётчика и активных предупреждений пользователя в чате."""
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     async with session_scope() as session:
-        target_id = await _get_target_user_id(message, session) or message.from_user.id
-        warns = await get_active_warns(session, chat_id=message.chat.id, target_id=target_id)
-        if not warns:
-            await message.reply(f"✅ У пользователя ID <code>{target_id}</code> нет активных предупреждений.", parse_mode="HTML")
+        target_id = await _get_target_user_id(message, session)
+        if not target_id and message.from_user:
+            target_id = message.from_user.id
+        if not target_id:
             return
 
-        lines = [f"⚠️ <b>Активные предупреждения пользователя ID <code>{target_id}</code> ({len(warns)}/5):</b>\n"]
+        warns = await get_active_warns(session, chat_id=message.chat.id, target_id=target_id)
+        chat_title = message.chat.title or "этом чате"
+        if not warns:
+            await message.reply(
+                f"✅ <b>Счётчик варнов: 0/5</b>\n\n"
+                f"У пользователя ID <code>{target_id}</code> нет активных предупреждений в «{chat_title}».",
+                parse_mode="HTML",
+            )
+            return
+
+        lines = [
+            f"⚠️ <b>Счётчик варнов: {len(warns)}/5</b>\n"
+            f"Предупреждения пользователя ID <code>{target_id}</code> в «{chat_title}»:\n"
+        ]
         for idx, w in enumerate(warns, start=1):
             date_str = w.created_at.strftime("%d.%m.%Y %H:%M") if w.created_at else ""
-            lines.append(f"{idx}. {w.reason} <i>({date_str})</i> — от ID {w.moderator_id}")
+            lines.append(f"{idx}. <b>{w.reason}</b> <i>({date_str})</i> — от модератора ID {w.moderator_id}")
         await message.reply("\n".join(lines), parse_mode="HTML")
 
 
@@ -709,10 +733,10 @@ async def handle_warn(message: types.Message):
 
 
 @router.message(F.text.casefold().in_([
-    "админ список", "!админ список", "состав", "!состав", "стаф", "!стаф", "админы", "!админы"
+    "админы", "!админы", "/admins", "админ список", "!админ список", "состав", "!состав", "стаф", "!стаф", "администраторы", "!администраторы"
 ]))
 async def handle_admin_list(message: types.Message):
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     async with session_scope() as session:
         admins = await get_chat_admins(session, chat_id=message.chat.id)
@@ -721,7 +745,9 @@ async def handle_admin_list(message: types.Message):
             return
         lines = [f"🛡 <b>Администрация чата «{message.chat.title}»:</b>\n"]
         for p, lvl, role in admins:
-            lines.append(f"• <b>{p.first_name}</b> — Уровень {lvl} ({role})")
+            name = p.custom_nickname or p.first_name or f"ID {p.telegram_id}"
+            uname_part = f" (@{p.username})" if p.username else ""
+            lines.append(f"• <b>{name}</b>{uname_part} — Ранг {lvl} ({role})")
         await message.reply("\n".join(lines), parse_mode="HTML")
 
 
