@@ -51,6 +51,7 @@ from app.services.moderation_service import (
     get_chat_admins,
     parse_duration_string,
     ROLE_NAMES,
+    extract_target_user_id,
 )
 from app.services.chat_settings_service import (
     get_or_create_chat,
@@ -69,26 +70,7 @@ router = Router(name="social_moderation_router")
 
 
 async def _get_target_user_id(message: types.Message, session) -> int | None:
-    if message.reply_to_message and message.reply_to_message.from_user:
-        return message.reply_to_message.from_user.id
-    if message.entities:
-        for ent in message.entities:
-            if ent.type == "text_mention" and ent.user:
-                return ent.user.id
-    text = message.text or ""
-    match = re.search(r"@([a-zA-Z0-9_]+)", text)
-    if match:
-        uname = match.group(1).lower()
-        from app.db.models import Player
-        from sqlalchemy import select, func
-        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
-        if p:
-            return p.telegram_id
-    parts = text.split()
-    for part in parts[1:]:
-        if part.isdigit() and len(part) >= 6:
-            return int(part)
-    return None
+    return await extract_target_user_id(message, session)
 
 
 # ===================== КОМАНДЫ И ПОМОЩЬ =====================
@@ -557,24 +539,27 @@ async def on_captcha_solve(callback: types.CallbackQuery):
 
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["мут", "!мут", "/mute", "замутить"])))
 async def handle_mute(message: types.Message):
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     parts = (message.text or "").split()
 
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
-        if not target_id or (len(parts) < 2 and not message.reply_to_message):
-            await message.reply("Использование: ответом на сообщение <code>мут 30м [причина]</code> или <code>мут @user 30м [причина]</code>", parse_mode="HTML")
+        if not target_id:
+            await message.reply("Использование: ответом на сообщение <code>мут [время] [причина]</code> или <code>мут @user [время] [причина]</code>", parse_mode="HTML")
             return
 
-        # Find duration
+        # Find duration and reason
         dur_str = "30м"
         reason_parts = []
+        found_duration = False
         for p in parts[1:]:
-            if re.match(r"^(\d+)([мчдmhd])$", p.lower()):
-                dur_str = p
-            elif not p.startswith("@") and not (p.isdigit() and int(p) == target_id):
-                reason_parts.append(p)
+            p_clean = p.strip()
+            if not found_duration and re.match(r"^(\d+)([мчдmhd]?)$", p_clean.lower()) and not (p_clean.isdigit() and int(p_clean) == target_id):
+                dur_str = p_clean
+                found_duration = True
+            elif not p_clean.startswith("@") and not (p_clean.isdigit() and int(p_clean) == target_id):
+                reason_parts.append(p_clean)
         reason = " ".join(reason_parts) or "Нарушение порядка"
 
         try:
@@ -622,7 +607,7 @@ async def handle_mute(message: types.Message):
 
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["размут", "!размут", "/unmute", "снять мут"])))
 async def handle_unmute(message: types.Message):
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
@@ -662,7 +647,7 @@ async def handle_unmute(message: types.Message):
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["варны", "!варны", "преды", "!преды"])))
 async def handle_view_warns(message: types.Message):
     """Просмотр активных предупреждений пользователя."""
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session) or message.from_user.id
@@ -683,6 +668,8 @@ async def handle_view_warns(message: types.Message):
     "снять варн", "снять пред", "разварн", "!разварн"
 ])))
 async def handle_warn(message: types.Message):
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        return
     text = (message.text or "").strip()
     parts = text.split()
 
@@ -709,19 +696,22 @@ async def handle_warn(message: types.Message):
 
 
 @router.message(F.text.casefold().in_([
-    "админ список", "!админ список", "состав", "!состав", "стаф", "!стаф", "админы", "!админы"
+    "админ список", "!админ список", "/admins", "состав", "!состав", "стаф", "!стаф", "админы", "!админы", "админ"
 ]))
 async def handle_admin_list(message: types.Message):
-    if not message.chat or message.chat.type == types.ChatType.PRIVATE:
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     async with session_scope() as session:
+        from app.services.moderation_service import sync_chat_creator_and_admins
+        if message.bot:
+            await sync_chat_creator_and_admins(session, chat_id=message.chat.id, bot=message.bot)
         admins = await get_chat_admins(session, chat_id=message.chat.id)
         if not admins:
             await message.reply("В чате еще не назначены администраторы Fable.")
             return
         lines = [f"🛡 <b>Администрация чата «{message.chat.title}»:</b>\n"]
         for p, lvl, role in admins:
-            lines.append(f"• <b>{p.first_name}</b> — Уровень {lvl} ({role})")
+            lines.append(f"• <b>{p.first_name}</b> — Ранг {lvl} ({role})")
         await message.reply("\n".join(lines), parse_mode="HTML")
 
 

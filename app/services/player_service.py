@@ -24,6 +24,39 @@ class PlayerRegistration:
     created: bool
 
 
+def format_time_in_bot(registered_at) -> str:
+    """Возвращает строку времени нахождения игрока в боте."""
+    if not registered_at:
+        return "недавно"
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if registered_at.tzinfo is None:
+        registered_at = registered_at.replace(tzinfo=timezone.utc)
+    delta = now - registered_at
+    days = delta.days
+    seconds = delta.seconds
+    if days < 0:
+        return "только что"
+    if days == 0:
+        hours = seconds // 3600
+        if hours == 0:
+            minutes = max(1, seconds // 60)
+            return f"{minutes} мин. назад"
+        return f"{hours} ч. назад"
+    if days == 1:
+        return "вчера"
+    if days < 7:
+        return f"{days} дн. назад"
+    if days < 30:
+        weeks = max(1, days // 7)
+        return f"{weeks} нед. назад"
+    if days < 365:
+        months = max(1, days // 30)
+        return f"{months} мес. назад"
+    years = max(1, days // 365)
+    return f"{years} г. назад"
+
+
 def _clean_optional_name(value: str | None, *, limit: int) -> str | None:
     """Нормализует необязательные поля Telegram-профиля."""
     if value is None:
