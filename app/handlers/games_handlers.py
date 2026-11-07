@@ -23,6 +23,8 @@ from app.services.games_service import (
     play_dice,
     play_coinflip,
     play_mystery_box,
+    play_crash_game,
+    play_shooting_range_game,
 )
 from app.services.duel_service import (
     create_duel_invite,
@@ -77,6 +79,91 @@ async def handle_bait_claim(callback: types.CallbackQuery):
             )
         except Exception:
             pass
+
+
+@router.message(F.text.casefold().in_(["игры", "!игры", "/games", "казино", "!казино", "/casino"]))
+async def handle_games_menu(message: types.Message):
+    """Интерактивное меню игрового зала Fable."""
+    text = (
+        "🎰 <b>ИГРОВОЙ ЗАЛ И КАЗИНО FABLE</b> 🎲\n\n"
+        "Испытай свою удачу в захватывающих мини-играх проекта!\n\n"
+        "<b>Доступные игры:</b>\n"
+        "• 🎰 <code>слоты [ставка]</code> — классический трехбарабанный автомат\n"
+        "• 🎡 <code>рулетка [красное|черное|число] [ставка]</code> — европейская рулетка\n"
+        "• 🎲 <code>кости [ставка]</code> — бросок кубиков против бота\n"
+        "• 🪙 <code>монетка [орел|решка] [ставка]</code> — орел или решка (удвоение)\n"
+        "• 📦 <code>сундук [ставка]</code> — мистический сундук с множителями\n"
+        "• 🚀 <code>краш [ставка]</code> — поймай максимальный множитель до краша\n"
+        "• 🎯 <code>тир [ставка]</code> — меткая стрельба по мишеням\n"
+        "• 🐟 <code>рыбалка</code> / 🏹 <code>охота</code> — промысел и ценные трофеи\n"
+        "• ⚔️ <code>дуэль @пользователь [ставка]</code> — дуэль между игроками\n"
+        "• 🎁 <code>бонус</code> — ежедневная награда за визит"
+    )
+    await message.reply(text, parse_mode="HTML")
+
+
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["краш", "!краш", "/crash"])))
+async def handle_crash(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.reply("Использование: <code>краш 100</code>", parse_mode="HTML")
+        return
+    stake = int(parts[1])
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            mult, is_win, payout = await play_crash_game(session, user_id=message.from_user.id, stake=stake)
+            if is_win:
+                await message.reply(
+                    f"🚀 <b>ИГРА КРАШ</b> 🚀\n\n"
+                    f"График взлетел до: <b>x{mult:.2f}</b>!\n"
+                    f"🎉 <b>ПОБЕДА!</b> Вы успели забрать ставку!\n"
+                    f"💰 Выплата: <b>+{payout:,}</b> монет!".replace(",", " "),
+                    parse_mode="HTML",
+                )
+            else:
+                await message.reply(
+                    f"🚀 <b>ИГРА КРАШ</b> 🚀\n\n"
+                    f"💥 КРАШ! График рухнул на отметке: <b>x{mult:.2f}</b>!\n"
+                    f"💀 Ставка {stake:,} монет сгорела.".replace(",", " "),
+                    parse_mode="HTML",
+                )
+        except Exception as e:
+            await message.reply(f"❌ {e}")
+
+
+@router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["тир", "!тир", "/shooting"])))
+async def handle_shooting_range(message: types.Message):
+    if not message.from_user:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.reply("Использование: <code>тир 100</code>", parse_mode="HTML")
+        return
+    stake = int(parts[1])
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
+        try:
+            target, mult, payout = await play_shooting_range_game(session, user_id=message.from_user.id, stake=stake)
+            if payout > 0:
+                await message.reply(
+                    f"🎯 <b>СТРЕЛКОВЫЙ ТИР</b> 🎯\n\n"
+                    f"Результат выстрела: <b>{target}</b>!\n"
+                    f"Коэффициент меткости: <b>x{mult:.1f}</b>\n"
+                    f"🎉 Выигрыш: <b>+{payout:,}</b> монет!".replace(",", " "),
+                    parse_mode="HTML",
+                )
+            else:
+                await message.reply(
+                    f"🎯 <b>СТРЕЛКОВЫЙ ТИР</b> 🎯\n\n"
+                    f"Результат выстрела: <b>{target}</b>!\n"
+                    f"💀 Пуля прошла мимо. Ставка {stake:,} монет потеряна.".replace(",", " "),
+                    parse_mode="HTML",
+                )
+        except Exception as e:
+            await message.reply(f"❌ {e}")
 
 
 @router.message(F.text.casefold().in_(["бонус", "!бонус", "ежедневный бонус"]))

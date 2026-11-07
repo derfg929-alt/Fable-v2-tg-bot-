@@ -23,6 +23,7 @@ from app.db.models import DailyBonus, GameSession, GlobalSetting, Player
 from app.services.economy_service import (
     burn_coins,
     credit_coins,
+    debit_coins,
     InsufficientFundsError,
     InvalidAmountError,
     PlayerNotFoundError,
@@ -571,6 +572,84 @@ async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_va
         payout=payout,
         net_profit=payout - stake,
     )
+
+
+async def play_crash_game(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    stake: int,
+) -> tuple[float, bool, int]:
+    """Игра 'Краш': генерация множителя и расчет выигрыша."""
+    if stake <= 0:
+        raise GameError("Ставка должна быть больше нуля")
+    if stake > 50_000:
+        raise GameError("Максимальная ставка: 50 000 монет")
+
+    player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
+    if not player:
+        raise PlayerNotFoundError(f"Игрок {user_id} не найден")
+    if player.wallet < stake:
+        raise InsufficientFundsError(f"Недостаточно монет: ставка {stake:,}, баланс {player.wallet:,}".replace(",", " "))
+
+    await debit_coins(session, user_id=user_id, amount=stake, reason="Ставка в игре Краш", operation_type="game_bet")
+
+    r = random.random()
+    if r < 0.48:
+        mult = round(random.uniform(1.5, 4.5), 2)
+        is_win = True
+        payout = int(stake * mult)
+        await credit_coins(session, user_id=user_id, amount=payout, reason=f"Выигрыш в Краш (x{mult})", operation_type="game_win")
+    else:
+        mult = round(random.uniform(1.0, 1.4), 2)
+        is_win = False
+        payout = 0
+
+    return mult, is_win, payout
+
+
+async def play_shooting_range_game(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    stake: int,
+) -> tuple[str, float, int]:
+    """Мини-игра 'Тир': стрельба по мишеням."""
+    if stake <= 0:
+        raise GameError("Ставка должна быть больше нуля")
+    if stake > 50_000:
+        raise GameError("Максимальная ставка: 50 000 монет")
+
+    player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
+    if not player:
+        raise PlayerNotFoundError(f"Игрок {user_id} не найден")
+    if player.wallet < stake:
+        raise InsufficientFundsError(f"Недостаточно монет: ставка {stake:,}, баланс {player.wallet:,}".replace(",", " "))
+
+    await debit_coins(session, user_id=user_id, amount=stake, reason="Выстрел в Тире", operation_type="game_bet")
+
+    targets = [
+        ("🎯 В «яблочко» (Центр)", 3.0, 0.20),
+        ("🦆 Движущаяся утка", 2.0, 0.30),
+        ("🥫 Жестяная банка", 1.2, 0.25),
+        ("💨 Промах по мишени", 0.0, 0.25),
+    ]
+
+    r = random.random()
+    accum = 0.0
+    chosen_target = targets[-1]
+    for target_name, mult, prob in targets:
+        accum += prob
+        if r <= accum:
+            chosen_target = (target_name, mult, prob)
+            break
+
+    target_name, mult, _ = chosen_target
+    payout = int(stake * mult)
+    if payout > 0:
+        await credit_coins(session, user_id=user_id, amount=payout, reason=f"Попадание в Тире: {target_name}", operation_type="game_win")
+
+    return target_name, mult, payout
 
 
 async def play_roulette(

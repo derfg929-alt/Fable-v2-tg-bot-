@@ -468,11 +468,15 @@ async def handle_whitelist(message: types.Message):
             return
 
 
-@router.message(F.text.casefold().in_(["настройки", "!настройки", "админка", "!админка", "админ панель"]))
+@router.message(F.text.casefold().in_([
+    "настройки", "!настройки", "/settings", "админка", "!админка", "/admin", "админ панель", "!админ панель"
+]))
 async def handle_chat_settings_panel(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         return
     async with session_scope() as session:
+        # Автоматическая синхронизация истинного создателя чата (ур. 5) и администраторов из Telegram
+        await sync_chat_creator_and_admins(session, chat_id=message.chat.id, bot=bot)
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         if lvl < 3:
             await message.reply("Панель настроек и админка доступны администраторам чата уровня 3+ (Админ, Старший админ, Создатель)")
@@ -489,6 +493,7 @@ async def handle_chat_settings_panel(message: types.Message, bot: Bot):
 
         text = (
             f"⚙️ <b>Панель настроек чата «{message.chat.title}»</b>\n\n"
+            f"👑 Ваш статус: <b>{ROLE_NAMES.get(lvl, 'Админ')} (ур. {lvl})</b>\n\n"
             f"Текущий пресет: <b>{s.get('preset', 'normal')}</b>\n"
             f"Антиссылки: <b>{'Вкл' if s.get('links_restricted', True) else 'Выкл'}</b>\n"
             f"Капча при входе: <b>{'Вкл' if s.get('captcha_enabled', False) else 'Выкл'}</b>\n"

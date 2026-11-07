@@ -54,28 +54,35 @@ _initialized_db = False
 _db_transaction_lock = asyncio.Lock()
 
 
-def create_database_engine() -> AsyncEngine:
-    """Создаёт engine для асинхронной работы базы данных."""
+def create_database_engine(custom_url: str | None = None) -> AsyncEngine:
+    """Создаёт engine для асинхронной работы базы данных (PostgreSQL / SQLite)."""
     config = get_settings()
-    database_url = _build_async_database_url(config.database_url_value)
+    database_url = _build_async_database_url(custom_url or config.database_url_value)
 
     if "sqlite" in database_url and ":memory:" not in database_url:
         db_file = database_url.split("///")[-1]
         os.makedirs(os.path.dirname(os.path.abspath(db_file)), exist_ok=True)
 
-    connect_args = {}
     if "postgresql" in database_url:
-        connect_args = {
-            "server_settings": {
-                "application_name": "fable_bot",
-                "timezone": "UTC",
-            }
-        }
+        return create_async_engine(
+            database_url,
+            echo=config.log_level == "DEBUG",
+            pool_pre_ping=True,
+            pool_size=config.db_pool_size,
+            max_overflow=config.db_max_overflow,
+            pool_timeout=config.db_pool_timeout,
+            pool_recycle=1800,
+            connect_args={
+                "server_settings": {
+                    "application_name": "fable_bot",
+                    "timezone": "UTC",
+                }
+            },
+        )
 
     return create_async_engine(
         database_url,
         echo=config.log_level == "DEBUG",
-        connect_args=connect_args,
     )
 
 
@@ -88,24 +95,42 @@ SessionFactory: Final[async_sessionmaker[AsyncSession]] = async_sessionmaker(
 )
 
 
-async def init_json_database() -> None:
-    """Инициализирует таблицы и загружает сохраненные данные из JSON при старте."""
+def _is_sqlite_backend() -> bool:
+    """Проверяет, используется ли SQLite backend (в локальных тестах)."""
+    return "sqlite" in str(engine.url)
+
+
+async def init_database() -> None:
+    """Инициализирует таблицы и схему базы данных при старте."""
     global _initialized_db
     if _initialized_db:
         return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Загружаем данные из JSON в SQLite
-    async with SessionFactory() as session:
-        await json_db_manager.restore_to_session(session)
+    # Если работает SQLite (тестовая среда), восстанавливаем сохраненные данные при наличии
+    if _is_sqlite_backend():
+        async with SessionFactory() as session:
+            await json_db_manager.restore_to_session(session)
     _initialized_db = True
+
+
+# Для обратной совместимости
+init_json_database = init_database
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
     """Dependency для обработчиков: гарантирует закрытие сессии."""
-    await init_json_database()
-    async with _db_transaction_lock:
+    await init_database()
+    if _is_sqlite_backend():
+        async with _db_transaction_lock:
+            async with SessionFactory() as session:
+                try:
+                    yield session
+                except BaseException:
+                    await session.rollback()
+                    raise
+    else:
         async with SessionFactory() as session:
             try:
                 yield session
@@ -116,15 +141,23 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
-    """Контекст транзакции с автоматическим commit или rollback и синхронизацией с JSON."""
-    await init_json_database()
-    async with _db_transaction_lock:
+    """Контекст транзакции с автоматическим commit или rollback."""
+    await init_database()
+    if _is_sqlite_backend():
+        async with _db_transaction_lock:
+            async with SessionFactory() as session:
+                try:
+                    async with session.begin():
+                        yield session
+                    await json_db_manager.dump_from_session(session)
+                except BaseException:
+                    await session.rollback()
+                    raise
+    else:
         async with SessionFactory() as session:
             try:
                 async with session.begin():
                     yield session
-                # После успешного завершения транзакции сбрасываем состояние в JSON-файл
-                await json_db_manager.dump_from_session(session)
             except BaseException:
                 await session.rollback()
                 raise
@@ -133,7 +166,7 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 async def check_database_connection() -> bool:
     """Проверяет работоспособность базы данных."""
     try:
-        await init_json_database()
+        await init_database()
         async with engine.connect() as connection:
             result = await connection.execute(text("SELECT 1"))
             return result.scalar_one() == 1
@@ -142,7 +175,8 @@ async def check_database_connection() -> bool:
 
 
 async def dispose_engine() -> None:
-    """Закрывает соединения пула и сохраняет состояние в JSON."""
-    async with SessionFactory() as session:
-        await json_db_manager.dump_from_session(session)
+    """Закрывает соединения пула."""
+    if _is_sqlite_backend():
+        async with SessionFactory() as session:
+            await json_db_manager.dump_from_session(session)
     await engine.dispose()
