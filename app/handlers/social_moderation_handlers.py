@@ -50,6 +50,7 @@ from app.services.moderation_service import (
     list_link_whitelist,
     get_chat_admins,
     parse_duration_string,
+    extract_moderation_args,
     ROLE_NAMES,
 )
 from app.services.chat_settings_service import (
@@ -570,12 +571,13 @@ async def on_captcha_solve(callback: types.CallbackQuery):
 async def handle_mute(message: types.Message):
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
-    parts = (message.text or "").split()
+    raw_text = (message.text or "").strip()
+    parts = raw_text.split()
 
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
         if not target_id or (len(parts) < 2 and not message.reply_to_message):
-            await message.reply("Использование: ответом на сообщение <code>мут 30м [причина]</code> или <code>мут @user 30м [причина]</code>", parse_mode="HTML")
+            await message.reply("Использование: ответом на сообщение <code>мут 30м [причина]</code> или <code>мут @user 1 час 30 [причина]</code>", parse_mode="HTML")
             return
 
         from app.services.moderation_service import ensure_player_and_chat_exist
@@ -586,18 +588,18 @@ async def handle_mute(message: types.Message):
             bot=message.bot,
         )
 
-        # Find duration
-        dur_str = "30м"
-        reason_parts = []
-        for p in parts[1:]:
-            if re.match(r"^(\d+)([мчдmhd])$", p.lower()):
-                dur_str = p
-            elif not p.startswith("@") and not (p.isdigit() and int(p) == target_id):
-                reason_parts.append(p)
-        reason = " ".join(reason_parts) or "Нарушение порядка"
+        from datetime import timedelta
+        dur, dur_str, reason = extract_moderation_args(
+            full_text=raw_text,
+            target_id=target_id,
+            default_duration=timedelta(minutes=30),
+        )
 
         try:
-            dur = parse_duration_string(dur_str)
+            if dur is None or dur.total_seconds() <= 0:
+                dur = timedelta(days=365)
+                dur_str = "навсегда"
+
             case = await issue_mute(
                 session,
                 chat_id=message.chat.id,
