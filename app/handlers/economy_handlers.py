@@ -13,7 +13,8 @@ from aiogram.enums import ChatType
 from aiogram.filters import Command
 
 from app.db.session import session_scope
-from app.services.player_service import get_or_create_player
+from app.services.player_service import get_or_create_player, format_time_in_fable
+from app.db.models import Player
 from app.services.bank_service import deposit_to_bank, withdraw_from_bank, get_player_bank_account
 from app.services.transfer_service import transfer_coins_with_tax
 from app.services.history_service import get_economy_history
@@ -92,28 +93,37 @@ router = Router(name="economy_router")
 
 
 async def _extract_target_user_id(message: types.Message, session) -> int | None:
-    if message.reply_to_message and message.reply_to_message.from_user:
-        return message.reply_to_message.from_user.id
-    if message.entities:
-        for ent in message.entities:
-            if ent.type == "text_mention" and ent.user:
-                return ent.user.id
-    # Проверка упоминания по username или ID
-    text = message.text or ""
-    match = re.search(r"@([a-zA-Z0-9_]+)", text)
-    if match:
-        uname = match.group(1).lower()
-        from app.db.models import Player
-        from sqlalchemy import select, func
-        p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
-        if p:
-            return p.telegram_id
+    reply = getattr(message, "reply_to_message", None)
+    if reply is not None:
+        user = getattr(reply, "from_user", None)
+        uid = getattr(user, "id", None)
+        if isinstance(uid, int):
+            return uid
 
-    # Проверка ID
-    parts = text.split()
-    for part in parts[1:]:
-        if part.isdigit() and len(part) >= 6:
-            return int(part)
+    entities = getattr(message, "entities", None)
+    if isinstance(entities, (list, tuple)):
+        for ent in entities:
+            if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+                uid = getattr(ent.user, "id", None)
+                if isinstance(uid, int):
+                    return uid
+
+    # Проверка упоминания по username или ID
+    raw_text = getattr(message, "text", "")
+    if isinstance(raw_text, str):
+        match = re.search(r"@([a-zA-Z0-9_]+)", raw_text)
+        if match:
+            uname = match.group(1).lower()
+            from app.db.models import Player
+            from sqlalchemy import select, func
+            p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
+            if p:
+                return p.telegram_id
+
+        parts = raw_text.split()
+        for part in parts[1:]:
+            if part.isdigit() and len(part) >= 6:
+                return int(part)
     return None
 
 
@@ -806,19 +816,30 @@ async def handle_buy_shop_item_cmd(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().in_(["профиль", "!профиль"]))
+@router.message(F.text.casefold().func(lambda t: t in [
+    "профиль", "!профиль", "/profile", "кто ты", "!кто ты", "/whois", "ты кто", "!ты кто"
+] or any(t.startswith(prefix) for prefix in [
+    "профиль ", "!профиль ", "/profile ", "кто ты ", "!кто ты "
+])))
 async def handle_profile(message: types.Message):
     if not message.from_user:
         return
     async with session_scope() as session:
-        reg = await get_or_create_player(
-            session,
-            telegram_id=message.from_user.id,
-            first_name=message.from_user.first_name,
-            last_name=message.from_user.last_name,
-            username=message.from_user.username,
-        )
-        p = reg.player
+        target_id = await _extract_target_user_id(message, session)
+        if target_id and target_id != message.from_user.id:
+            p = await session.get(Player, target_id)
+            if not p:
+                await message.reply("❌ Пользователь не найден в мире Fable.")
+                return
+        else:
+            reg = await get_or_create_player(
+                session,
+                telegram_id=message.from_user.id,
+                first_name=message.from_user.first_name,
+                last_name=message.from_user.last_name,
+                username=message.from_user.username,
+            )
+            p = reg.player
 
         # Уровень админки в текущем чате
         from app.services.moderation_service import get_user_admin_level, ROLE_NAMES
@@ -828,6 +849,9 @@ async def handle_profile(message: types.Message):
 
         # Никнейм
         disp_name = p.custom_nickname or p.first_name
+
+        # Время нахождения в боте
+        time_in_fable_str = format_time_in_fable(getattr(p, "created_at", None))
 
         # Бизнесы
         user_businesses = await get_player_businesses(session, user_id=p.telegram_id)
@@ -868,6 +892,7 @@ async def handle_profile(message: types.Message):
             f"👤 <b>Профиль игрока {disp_name}</b>\n\n"
             f"🆔 ID: <code>{p.telegram_id}</code>\n"
             f"🛡 Уровень админки: <b>{admin_lvl} ({role_name})</b>\n"
+            f"⏳ Время нахождения в мире Fable: <b>{time_in_fable_str}</b>\n"
             f"✨ Опыт: <b>{p.experience:,}</b> XP\n"
             f"💰 Кошелек: <b>{p.wallet:,}</b> монет\n"
             f"🏦 Банк: <b>{p.bank_balance:,}</b> монет\n"

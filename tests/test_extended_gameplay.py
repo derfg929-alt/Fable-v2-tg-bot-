@@ -221,10 +221,15 @@ async def test_social_and_math():
 
 @pytest.mark.asyncio
 async def test_chat_creator_admin_assignment():
-    """Тест автоматического получения уровня 5 владельцем при добавлении бота в чат."""
+    """Тест автоматического получения уровня 5 создателем при добавлении бота в чат."""
     chat_id = -100999111
     adder_id = 777010
     bot = AsyncMock()
+
+    creator_member = MagicMock()
+    creator_member.status = "creator"
+    creator_member.user = MagicMock(id=adder_id, first_name="ChatOwner", username="owner_tg", is_bot=False)
+    bot.get_chat_administrators = AsyncMock(return_value=[creator_member])
 
     event = MagicMock()
     event.chat = Chat(id=chat_id, title="Owner Group", type="supergroup")
