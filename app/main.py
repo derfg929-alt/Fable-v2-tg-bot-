@@ -5,7 +5,7 @@ import asyncio
 import logging
 import sys
 
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -57,24 +57,35 @@ def create_dispatcher() -> Dispatcher:
         await message.answer(get_greeting_text(), parse_mode="HTML")
     # ------------------------------------
 
-    dp.include_router(owner_router)
-    dp.include_router(economy_router)
-    dp.include_router(exchange_router)
-    dp.include_router(games_router)
-    dp.include_router(social_moderation_router)
-    dp.include_router(extended_moderation_router)
-    dp.include_router(ai_router)
-    dp.message.middleware(MessageActivityAndSecurityMiddleware())
-    dp.callback_query.middleware(CallbackAnswerMiddleware())
+    all_subrouters = [
+        owner_router,
+        economy_router,
+        exchange_router,
+        games_router,
+        social_moderation_router,
+        extended_moderation_router,
+        ai_router,
+    ]
+    for r in all_subrouters:
+        r._parent_router = None
+        dp.include_router(r)
 
-    # Глобальный обработчик для необработанных кнопок или ошибок в CallbackQuery,
-    # чтобы у пользователя никогда не зависал индикатор загрузки ("часики")
-    @dp.callback_query()
+    # Фоллбэк роутер подключается ПОСЛЕДНИМ среди всех роутеров.
+    # В aiogram 3 хэндлеры на самом dp.callback_query срабатывают ДО дочерних роутеров!
+    # Поэтому общий перехватчик необработанных кнопок должен находиться в последнем дочернем роутере.
+    fallback_router = Router(name="fallback_callback_router")
+
+    @fallback_router.callback_query()
     async def global_fallback_callback_handler(callback: types.CallbackQuery):
         try:
             await callback.answer()
         except Exception:
             pass
+
+    dp.include_router(fallback_router)
+
+    dp.message.middleware(MessageActivityAndSecurityMiddleware())
+    dp.callback_query.middleware(CallbackAnswerMiddleware())
 
     return dp
 
