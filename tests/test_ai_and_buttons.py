@@ -206,3 +206,88 @@ async def test_ask_grok_with_mocked_api():
         with patch("aiohttp.ClientSession", return_value=mock_session_cm):
             resp = await ask_grok("Как дела?", user_name="Игрок")
             assert resp == "Привет! Я Фабле ИИ."
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_callback_routing_not_intercepted_by_fallback():
+    """Проверяем, что create_dispatcher() корректно доставляет CallbackQuery до нужных хэндлеров,
+    а не перехватывает их глобальным фоллбэком.
+    """
+    from aiogram import Bot
+    from app.main import create_dispatcher
+
+    bot = Bot(token="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ_1234567")
+    bot.session = MagicMock()
+    bot.session.side_effect = AsyncMock(return_value=True)
+
+    dp = create_dispatcher()
+
+    # 1. Проверяем кнопку 'top_menu_rich'
+    raw_top_update = {
+        "update_id": 201,
+        "callback_query": {
+            "id": "cb_top_1",
+            "from": {"id": 111222333, "is_bot": False, "first_name": "ButtonTester"},
+            "message": {
+                "message_id": 50,
+                "date": 1700000000,
+                "chat": {"id": -100998877, "type": "supergroup", "title": "Test Group"},
+                "text": "Топ игроков",
+            },
+            "chat_instance": "ci_top",
+            "data": "top_menu_rich",
+        },
+    }
+    update = types.Update.model_validate(raw_top_update, context={"bot": bot})
+    await dp.feed_update(bot=bot, update=update)
+
+    called_methods = [c[0][1].__class__.__name__ for c in bot.session.call_args_list]
+    # Должен быть вызван EditMessageText от хэндлера on_top_menu_rich, а не только AnswerCallbackQuery
+    assert "EditMessageText" in called_methods
+
+    # 2. Проверяем кнопку владельца 'owner_menu_stats'
+    bot.session.reset_mock()
+    raw_owner_update = {
+        "update_id": 202,
+        "callback_query": {
+            "id": "cb_owner_1",
+            "from": {"id": 8039111975, "is_bot": False, "first_name": "OwnerTester"},
+            "message": {
+                "message_id": 51,
+                "date": 1700000000,
+                "chat": {"id": 8039111975, "type": "private"},
+                "text": "Панель управления Fable",
+            },
+            "chat_instance": "ci_owner",
+            "data": "owner_menu_stats",
+        },
+    }
+    update_owner = types.Update.model_validate(raw_owner_update, context={"bot": bot})
+    await dp.feed_update(bot=bot, update=update_owner)
+
+    owner_called_methods = [c[0][1].__class__.__name__ for c in bot.session.call_args_list]
+    assert "EditMessageText" in owner_called_methods
+
+    # 3. Проверяем неизвестную кнопку — должна сработать fallback_callback_router и ответить
+    bot.session.reset_mock()
+    raw_unknown_update = {
+        "update_id": 203,
+        "callback_query": {
+            "id": "cb_unknown_1",
+            "from": {"id": 111222333, "is_bot": False, "first_name": "ButtonTester"},
+            "message": {
+                "message_id": 52,
+                "date": 1700000000,
+                "chat": {"id": -100998877, "type": "supergroup"},
+                "text": "Любой текст",
+            },
+            "chat_instance": "ci_unkn",
+            "data": "some_completely_unknown_callback",
+        },
+    }
+    update_unknown = types.Update.model_validate(raw_unknown_update, context={"bot": bot})
+    await dp.feed_update(bot=bot, update=update_unknown)
+
+    unknown_called_methods = [c[0][1].__class__.__name__ for c in bot.session.call_args_list]
+    assert "AnswerCallbackQuery" in unknown_called_methods
+    assert "EditMessageText" not in unknown_called_methods
