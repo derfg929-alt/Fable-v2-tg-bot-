@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 import aiohttp
 
@@ -28,9 +29,7 @@ async def ask_grok(
     """Отправляет запрос к ИИ (Groq Cloud API или xAI Grok) и возвращает сгенерированный ответ."""
     try:
         settings = get_settings()
-        # Проверяем grok_api_key_value в первую очередь (он возвращает effective_ai_api_key в реальном Settings)
-        # либо явно effective_ai_api_key / groq_api_key_value
-        # Проверяем все возможные свойства: grok_api_key_value, effective_ai_api_key, groq_api_key_value
+
         def _extract_str(val: Any) -> str | None:
             if not val:
                 return None
@@ -46,6 +45,32 @@ async def ask_grok(
             or _extract_str(getattr(settings, "effective_ai_api_key", None))
             or _extract_str(getattr(settings, "groq_api_key_value", None))
         )
+
+        # Если в объекте настроек ключ не найден, проверяем прямое окружение и файл .env на лету
+        if not api_key:
+            env_groq = os.environ.get("GROQ_API_KEY", "").strip().strip("\"'").strip()
+            env_grok = os.environ.get("GROK_API_KEY", "").strip().strip("\"'").strip()
+
+            # Если переменные не найдены в os.environ, пробуем прочесть из .env
+            if not env_groq and not env_grok and os.path.exists(".env"):
+                try:
+                    from dotenv import dotenv_values
+                    values = dotenv_values(".env")
+                    env_groq = str(values.get("GROQ_API_KEY") or "").strip().strip("\"'").strip()
+                    env_grok = str(values.get("GROK_API_KEY") or "").strip().strip("\"'").strip()
+                except Exception as env_err:
+                    logger.debug("Не удалось прочитать .env файл: %s", env_err)
+
+            dynamic_key = env_groq or env_grok or None
+            if dynamic_key:
+                api_key = dynamic_key
+                # Принудительно инвалидируем кэш настроек, чтобы актуализировать Settings
+                try:
+                    if hasattr(get_settings, "cache_clear"):
+                        get_settings.cache_clear()
+                    settings = get_settings(reload=True)
+                except Exception:
+                    pass
     except Exception as e:
         logger.error("Ошибка при получении настроек AI: %s", e)
         api_key = None
@@ -58,17 +83,26 @@ async def ask_grok(
         )
 
     # Получаем URL и модель со строгой проверкой типов на случай моков
+    # Если ключ был определен динамически как Groq или Grok:
+    is_groq_detected = api_key.startswith("gsk_") or bool(os.environ.get("GROQ_API_KEY"))
+    default_groq_url = "https://api.groq.com/openai/v1/chat/completions"
+    default_xai_url = "https://api.x.ai/v1/chat/completions"
+
     raw_url = getattr(settings, "effective_ai_api_url", None)
     if isinstance(raw_url, str) and raw_url:
         url = raw_url
+    elif is_groq_detected:
+        url = str(getattr(settings, "groq_api_url", default_groq_url))
     else:
-        url = str(getattr(settings, "grok_api_url", "https://api.x.ai/v1/chat/completions"))
+        url = str(getattr(settings, "grok_api_url", default_xai_url))
 
     raw_model = getattr(settings, "effective_ai_model", None)
     if isinstance(raw_model, str) and raw_model:
         model = raw_model
+    elif is_groq_detected:
+        model = str(getattr(settings, "groq_model", "openai/gpt-oss-120b"))
     else:
-        model = str(getattr(settings, "grok_model", "grok-beta"))
+        model = str(getattr(settings, "grok_model", "grok-4.7"))
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": SYSTEM_PROMPT}
