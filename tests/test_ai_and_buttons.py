@@ -169,10 +169,39 @@ async def test_ask_grok_without_key():
     with patch("app.services.ai_service.get_settings") as mock_settings:
         mock_obj = MagicMock()
         mock_obj.grok_api_key_value = None
+        mock_obj.effective_ai_api_key = None
+        mock_obj.groq_api_key_value = None
         mock_settings.return_value = mock_obj
 
         resp = await ask_grok("Привет")
         assert "GROK_API_KEY" in resp
+
+
+@pytest.mark.asyncio
+async def test_settings_ai_keys_cleaning_and_whitespace():
+    """Проверка очистки кавычек, пробелов и пустых значений в Settings."""
+    from app.config import Settings
+    from pydantic import SecretStr
+
+    # 1. Ключ в кавычках и с пробелами
+    s1 = Settings(GROQ_API_KEY=SecretStr('  "gsk_test_quote_123"  '))
+    assert s1.effective_ai_api_key == "gsk_test_quote_123"
+    assert s1.groq_api_key_value == "gsk_test_quote_123"
+
+    # 2. Пустые кавычки и пробелы считаются None
+    s2 = Settings(GROQ_API_KEY=SecretStr('  ""  '), GROK_API_KEY=SecretStr("   "))
+    assert s2.effective_ai_api_key is None
+    assert s2.groq_api_key_value is None
+    assert s2.grok_api_key_value is None
+
+    # 3. GROQ_API_KEY пустой, GROK_API_KEY заполнен
+    s3 = Settings(GROQ_API_KEY=SecretStr(""), GROK_API_KEY=SecretStr("xai-live-key"))
+    assert s3.effective_ai_api_key == "xai-live-key"
+    assert "x.ai" in s3.effective_ai_api_url
+
+    # 4. Передача обычных строк в валидатор
+    s4 = Settings(GROQ_API_KEY="  'gsk_single_quotes'  ")
+    assert s4.effective_ai_api_key == "gsk_single_quotes"
 
 
 @pytest.mark.asyncio

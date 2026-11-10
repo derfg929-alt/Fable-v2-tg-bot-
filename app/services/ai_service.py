@@ -29,17 +29,22 @@ async def ask_grok(
         settings = get_settings()
         # Проверяем grok_api_key_value в первую очередь (он возвращает effective_ai_api_key в реальном Settings)
         # либо явно effective_ai_api_key / groq_api_key_value
-        api_key = getattr(settings, "grok_api_key_value", None)
-        if not api_key or not isinstance(api_key, str):
-            eff_key = getattr(settings, "effective_ai_api_key", None)
-            if isinstance(eff_key, str) and eff_key:
-                api_key = eff_key
-            else:
-                groq_key = getattr(settings, "groq_api_key_value", None)
-                if isinstance(groq_key, str) and groq_key:
-                    api_key = groq_key
-                else:
-                    api_key = None
+        # Проверяем все возможные свойства: grok_api_key_value, effective_ai_api_key, groq_api_key_value
+        def _extract_str(val: Any) -> str | None:
+            if not val:
+                return None
+            if hasattr(val, "get_secret_value"):
+                val = val.get_secret_value()
+            if isinstance(val, str):
+                cleaned = val.strip().strip("\"'").strip()
+                return cleaned or None
+            return None
+
+        api_key = (
+            _extract_str(getattr(settings, "grok_api_key_value", None))
+            or _extract_str(getattr(settings, "effective_ai_api_key", None))
+            or _extract_str(getattr(settings, "groq_api_key_value", None))
+        )
     except Exception as e:
         logger.error("Ошибка при получении настроек AI: %s", e)
         api_key = None

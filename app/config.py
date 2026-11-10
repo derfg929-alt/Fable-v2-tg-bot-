@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     def validate_database_url(cls, value: SecretStr) -> SecretStr:
         url = value.get_secret_value().strip()
         return SecretStr(url)
+
+    @field_validator("grok_api_key", "groq_api_key", mode="before")
+    @classmethod
+    def validate_ai_api_keys(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
+        cleaned = raw.strip().strip("\"'").strip()
+        if not cleaned:
+            return None
+        return SecretStr(cleaned)
 
     @property
     def bot_token_value(self) -> str:

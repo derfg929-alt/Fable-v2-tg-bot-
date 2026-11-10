@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -64,6 +64,17 @@ class Settings(BaseSettings):
             )
         return SecretStr(url)
 
+    @field_validator("grok_api_key", "groq_api_key", mode="before")
+    @classmethod
+    def validate_ai_api_keys(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
+        cleaned = raw.strip().strip("\"'").strip()
+        if not cleaned:
+            return None
+        return SecretStr(cleaned)
+
     @property
     def bot_token_value(self) -> str:
         """Токен в открытом виде только для передачи Telegram-клиенту."""
@@ -82,28 +93,35 @@ class Settings(BaseSettings):
     @property
     def groq_api_key_value(self) -> str | None:
         """Ключ API Groq в открытом виде для передачи в HTTP-клиент."""
-        return self.groq_api_key.get_secret_value() if self.groq_api_key else None
+        if not self.groq_api_key:
+            return None
+        val = self.groq_api_key.get_secret_value().strip().strip("\"'").strip()
+        return val or None
 
     @property
     def effective_ai_api_key(self) -> str | None:
         """Возвращает активный API-ключ (Groq API либо Grok xAI)."""
         if self.groq_api_key:
-            return self.groq_api_key.get_secret_value()
+            val = self.groq_api_key.get_secret_value().strip().strip("\"'").strip()
+            if val:
+                return val
         if self.grok_api_key:
-            return self.grok_api_key.get_secret_value()
+            val = self.grok_api_key.get_secret_value().strip().strip("\"'").strip()
+            if val:
+                return val
         return None
 
     @property
     def effective_ai_api_url(self) -> str:
         """Возвращает подходящий OpenAI-совместимый URL (Groq или xAI Grok)."""
-        if self.groq_api_key:
+        if self.groq_api_key and self.groq_api_key.get_secret_value().strip().strip("\"'").strip():
             return self.groq_api_url
         return self.grok_api_url
 
     @property
     def effective_ai_model(self) -> str:
         """Возвращает рабочую модель (openai/gpt-oss-120b для Groq, grok-beta для xAI)."""
-        if self.groq_api_key:
+        if self.groq_api_key and self.groq_api_key.get_secret_value().strip().strip("\"'").strip():
             return self.groq_model
         return self.grok_model
 
