@@ -203,6 +203,18 @@ async def test_settings_ai_keys_cleaning_and_whitespace():
     s4 = Settings(GROQ_API_KEY="  'gsk_single_quotes'  ")
     assert s4.effective_ai_api_key == "gsk_single_quotes"
 
+    # 5. Ключ с префиксом Bearer
+    s5 = Settings(GROQ_API_KEY='Bearer "gsk_bearer_test_key"')
+    assert s5.effective_ai_api_key == "gsk_bearer_test_key"
+    assert s5.groq_api_key_value == "gsk_bearer_test_key"
+
+    # 6. Устаревшая модель Groq заменяется на openai/gpt-oss-120b
+    s6 = Settings(GROQ_API_KEY="gsk_valid", GROQ_MODEL="llama-3.3-70b-versatile")
+    assert s6.effective_ai_model == "openai/gpt-oss-120b"
+
+    s7 = Settings(GROQ_API_KEY="gsk_valid", GROQ_MODEL="llama-3.1-8b-instant")
+    assert s7.effective_ai_model == "openai/gpt-oss-120b"
+
 
 @pytest.mark.asyncio
 async def test_ask_grok_with_mocked_api():
@@ -273,6 +285,97 @@ async def test_ask_groq_cloud_with_mocked_api():
             assert "api.groq.com" in call_url
             call_payload = mock_session_obj.post.call_args[1]["json"]
             assert call_payload["model"] == "openai/gpt-oss-120b"
+            assert "Bearer gsk_test_key" == mock_session_obj.post.call_args[1]["headers"]["Authorization"]
+
+
+@pytest.mark.asyncio
+async def test_ask_groq_cloud_404_model_fallback():
+    """Проверка автоматического перехода на fallback-модель при ошибке 404."""
+    with patch("app.services.ai_service.get_settings") as mock_settings:
+        mock_obj = MagicMock()
+        mock_obj.grok_api_key_value = None
+        mock_obj.effective_ai_api_key = "gsk_test_key"
+        mock_obj.effective_ai_api_url = "https://api.groq.com/openai/v1/chat/completions"
+        mock_obj.effective_ai_model = "openai/gpt-oss-120b"
+        mock_settings.return_value = mock_obj
+
+        # Первая попытка: 404 (model not found)
+        resp_404 = AsyncMock()
+        resp_404.status = 404
+        resp_404.text = AsyncMock(return_value='{"error":{"message":"model_not_found"}}')
+
+        cm_404 = MagicMock()
+        cm_404.__aenter__ = AsyncMock(return_value=resp_404)
+        cm_404.__aexit__ = AsyncMock(return_value=None)
+
+        # Вторая попытка с fallback-моделью openai/gpt-oss-20b: 200 OK
+        resp_200 = AsyncMock()
+        resp_200.status = 200
+        resp_200.json = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Ответ от резервной модели!"}}]
+        })
+
+        cm_200 = MagicMock()
+        cm_200.__aenter__ = AsyncMock(return_value=resp_200)
+        cm_200.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj = MagicMock()
+        mock_session_obj.post.side_effect = [cm_404, cm_200]
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session_obj)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            resp = await ask_grok("Проверка", user_name="Тестер")
+            assert resp == "Ответ от резервной модели!"
+            assert mock_session_obj.post.call_count == 2
+            second_call_payload = mock_session_obj.post.call_args_list[1][1]["json"]
+            assert second_call_payload["model"] == "openai/gpt-oss-20b"
+
+
+@pytest.mark.asyncio
+async def test_ask_groq_rate_limit_and_error_handling():
+    """Проверка retry при 429 и парсинга ответа с reasoning_content."""
+    with patch("app.services.ai_service.get_settings") as mock_settings:
+        mock_obj = MagicMock()
+        mock_obj.effective_ai_api_key = "gsk_test_key"
+        mock_obj.effective_ai_api_url = "https://api.groq.com/openai/v1/chat/completions"
+        mock_obj.effective_ai_model = "openai/gpt-oss-120b"
+        mock_settings.return_value = mock_obj
+
+        # 1. Тест с reasoning_content вместо content
+        resp_reasoning = AsyncMock()
+        resp_reasoning.status = 200
+        resp_reasoning.json = AsyncMock(return_value={
+            "choices": [{"message": {"content": None, "reasoning_content": "Мысли и ответ"}}]
+        })
+        cm_reasoning = MagicMock()
+        cm_reasoning.__aenter__ = AsyncMock(return_value=resp_reasoning)
+        cm_reasoning.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj = MagicMock()
+        mock_session_obj.post.return_value = cm_reasoning
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session_obj)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            resp = await ask_grok("Думай", user_name="Тестер")
+            assert resp == "Мысли и ответ"
+
+        # 2. Тест с 401 Unauthorized
+        resp_401 = AsyncMock()
+        resp_401.status = 401
+        resp_401.json = AsyncMock(return_value={"error": {"message": "Invalid API key"}})
+        cm_401 = MagicMock()
+        cm_401.__aenter__ = AsyncMock(return_value=resp_401)
+        cm_401.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj.post.return_value = cm_401
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            resp = await ask_grok("Привет", user_name="Тестер")
+            assert "Ошибка авторизации" in resp
 
 
 @pytest.mark.asyncio
