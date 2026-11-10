@@ -70,9 +70,40 @@ class Settings(BaseSettings):
             return None
         raw = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
         cleaned = raw.strip().strip("\"'").strip()
+        # Удаляем случайно добавленный префикс 'Bearer ' если ключ скопирован из заголовков
+        if cleaned.lower().startswith("bearer "):
+            cleaned = cleaned[7:].strip().strip("\"'").strip()
         if not cleaned:
             return None
         return SecretStr(cleaned)
+
+    @field_validator("groq_model", mode="before")
+    @classmethod
+    def validate_groq_model(cls, value: Any) -> str:
+        """Автоматическая замена устаревших/удаленных моделей Groq на актуальные."""
+        default_model = "openai/gpt-oss-120b"
+        if not value:
+            return default_model
+        model_str = str(value).strip().strip("\"'").strip()
+        if not model_str:
+            return default_model
+
+        deprecated_groq_models = {
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it",
+            "llama3-70b-8192",
+            "llama3-8b-8192",
+            "llama-3.2-1b-preview",
+            "llama-3.2-3b-preview",
+            "llama-3.2-11b-vision-preview",
+            "llama-3.2-90b-vision-preview",
+            "llama-guard-3-8b",
+        }
+        if model_str.lower() in deprecated_groq_models:
+            return default_model
+        return model_str
 
     @property
     def bot_token_value(self) -> str:

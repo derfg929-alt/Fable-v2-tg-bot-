@@ -1,6 +1,7 @@
 """Сервис взаимодействия с Grok AI (xAI) для бота Fable."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 import aiohttp
@@ -82,40 +83,160 @@ async def ask_grok(
 
     messages.append({"role": "user", "content": user_msg_content})
 
+    # Очищаем и форматируем сообщения (пункт 5: правильная структура сообщений, ограничение длины)
+    cleaned_messages: list[dict[str, str]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "user")
+        if role not in ("system", "user", "assistant"):
+            role = "user"
+        content = msg.get("content")
+        if content is None:
+            continue
+        content_str = str(content).strip()
+        if not content_str:
+            continue
+        # Обрезаем чрезмерно длинные сообщения во избежание 400/413
+        if len(content_str) > 12000:
+            content_str = content_str[:12000] + "... (обрезано)"
+        cleaned_messages.append({"role": role, "content": content_str})
+
+    if not any(m["role"] == "user" for m in cleaned_messages):
+        cleaned_messages.append({"role": "user", "content": prompt[:4000] if prompt else "Привет"})
+
+    # Корректные заголовки запроса (пункт 4: Headers)
+    # Гарантируем чистый ключ без префикса 'Bearer ' или лишних символов
+    clean_key = api_key.strip()
+    if clean_key.lower().startswith("bearer "):
+        clean_key = clean_key[7:].strip()
+
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {clean_key}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "FableBot/1.0",
     }
 
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 1024,
-    }
+    # Резервная модель на случай 404 model_not_found у Groq
+    groq_fallback_model = "openai/gpt-oss-20b"
+    current_model = model
 
-    timeout = aiohttp.ClientTimeout(total=45)
+    timeout = aiohttp.ClientTimeout(total=45, connect=10)
+
+    # Максимум 3 попытки при rate limits (429) или временных сбоях сервера (500, 502, 503, 498)
+    max_retries = 3
+    retry_delay = 1.0
+
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    choices = data.get("choices", [])
-                    if choices and "message" in choices[0]:
-                        reply_text = choices[0]["message"].get("content", "").strip()
-                        if reply_text:
-                            return reply_text
-                    return "Фабле на связи, но ответ от нейросети оказался пустым 🤔"
-                else:
-                    error_text = await resp.text()
-                    logger.error("Ошибка AI API HTTP %s: %s", resp.status, error_text)
-                    return f"⚠️ Ошибка обращения к ИИ (код {resp.status}). Попробуйте позже."
+            for attempt in range(max_retries):
+                payload: dict[str, Any] = {
+                    "model": current_model,
+                    "messages": cleaned_messages,
+                    "temperature": 0.7,
+                    "max_tokens": 1024,
+                }
+
+                try:
+                    async with session.post(url, json=payload, headers=headers) as resp:
+                        # 1. Успешный ответ (200 OK)
+                        if resp.status == 200:
+                            try:
+                                data = await resp.json()
+                            except Exception as json_err:
+                                logger.warning("Ошибка декодирования JSON ответа AI: %s", json_err)
+                                raw_text = await resp.text()
+                                return raw_text.strip() or "Фабле на связи, но получен неразборчивый ответ 🤔"
+
+                            if not isinstance(data, dict):
+                                return "Фабле на связи, но ответ нейросети имел неверный формат 🤔"
+
+                            choices = data.get("choices")
+                            if isinstance(choices, list) and len(choices) > 0 and isinstance(choices[0], dict):
+                                message_obj = choices[0].get("message")
+                                if isinstance(message_obj, dict):
+                                    # Поддерживаем как content, так и reasoning_content
+                                    reply_content = message_obj.get("content")
+                                    if reply_content is None or str(reply_content).strip() == "":
+                                        reply_content = message_obj.get("reasoning_content")
+                                    if reply_content is not None:
+                                        reply_str = str(reply_content).strip()
+                                        if reply_str:
+                                            return reply_str
+                            return "Фабле на связи, но ответ от нейросети оказался пустым 🤔"
+
+                        # 2. Модель не найдена (404 model_not_found) -> пробуем фоллбек модель (пункт 1)
+                        if resp.status == 404 and "groq.com" in url and current_model != groq_fallback_model:
+                            error_text = await resp.text()
+                            logger.warning(
+                                "Модель %s не найдена на Groq (404), переключаемся на %s. Ответ: %s",
+                                current_model, groq_fallback_model, error_text
+                            )
+                            current_model = groq_fallback_model
+                            continue
+
+                        # 3. Превышение лимитов (429 Rate Limit) или временные сбои (500, 502, 503, 498) -> retry (пункт 3)
+                        if resp.status in (429, 498, 500, 502, 503) and attempt < max_retries - 1:
+                            retry_after_header = resp.headers.get("Retry-After")
+                            wait_time = retry_delay * (2 ** attempt)
+                            if retry_after_header:
+                                try:
+                                    wait_time = max(wait_time, min(float(retry_after_header), 10.0))
+                                except ValueError:
+                                    pass
+                            logger.warning(
+                                "AI API вернул статус %s (попытка %d/%d). Ожидание %.1f сек...",
+                                resp.status, attempt + 1, max_retries, wait_time
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+
+                        # 4. Другие ошибки (401 Unauthorized, 403 Forbidden, 400 Bad Request и др.)
+                        error_body = ""
+                        try:
+                            err_data = await resp.json()
+                            if isinstance(err_data, dict) and "error" in err_data:
+                                err_obj = err_data["error"]
+                                if isinstance(err_obj, dict):
+                                    error_body = err_obj.get("message", "")
+                                elif isinstance(err_obj, str):
+                                    error_body = err_obj
+                        except Exception:
+                            error_body = await resp.text()
+
+                        logger.error("Ошибка AI API HTTP %s: %s", resp.status, error_body)
+
+                        if resp.status in (401, 403):
+                            return "⚠️ Ошибка авторизации в Groq/Grok API. Проверьте правильность и активность API-ключа (GROQ_API_KEY)."
+                        elif resp.status == 429:
+                            return "⏳ Превышен лимит запросов к ИИ (Rate Limit). Пожалуйста, подождите минуту и повторите."
+                        elif resp.status == 400:
+                            return f"⚠️ Ошибка запроса к ИИ (400 Bad Request): {error_body[:100] if error_body else 'неверный формат'}"
+                        elif resp.status == 404:
+                            return f"⚠️ Выбранная модель ИИ ({current_model}) недоступна (404 Not Found)."
+                        else:
+                            return f"⚠️ Ошибка обращения к ИИ (код {resp.status}). Попробуйте позже."
+
+                except aiohttp.ClientError as client_err:
+                    if attempt < max_retries - 1:
+                        logger.warning("Сетевая ошибка при запросе к ИИ (попытка %d): %s", attempt + 1, client_err)
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    raise
+
+    except aiohttp.ClientConnectorError as e:
+        logger.error("Сетевая ошибка подключения к серверам ИИ: %s", e)
+        return "⚠️ Не удалось связаться с сервером ИИ (ошибка сети/DNS). Проверьте интернет-соединение или доступность хоста."
+    except asyncio.TimeoutError:
+        logger.error("Таймаут ожидания ответа от ИИ (превышено 45 сек).")
+        return "⏳ Сервер ИИ не ответил вовремя (таймаут). Попробуйте задать вопрос еще раз."
     except aiohttp.ClientError as e:
-        logger.error("Сетевая ошибка при запросе к ИИ: %s", e)
-        return "⚠️ Не удалось связаться с сервером ИИ. Проверьте интернет-соединение."
+        logger.error("Сетевая ошибка клиента при запросе к ИИ: %s", e)
+        return "⚠️ Ошибка связи с сервером ИИ. Проверьте интернет-соединение."
     except Exception as e:
         logger.exception("Непредвиденная ошибка при запросе к ИИ: %s", e)
-        return "⚠️ Произошла ошибка при обработке запроса к ИИ."
+        return "⚠️ Произошла непредвиденная ошибка при обработке запроса к ИИ."
 
 
 async def analyze_chat_moderation_ai(
