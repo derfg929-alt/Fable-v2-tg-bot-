@@ -41,8 +41,15 @@ def test_settings_grok_attributes():
         grok_api_key="test-grok-key",
     )
     assert settings.grok_api_key_value == "test-grok-key"
-    assert settings.grok_model == "grok-beta"
+    assert settings.grok_model == "grok-4.7"
     assert "x.ai" in settings.grok_api_url
+
+    # Проверка замены устаревшей модели на актуальную
+    legacy_settings = Settings(
+        bot_token="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+        grok_model="grok-beta",
+    )
+    assert legacy_settings.grok_model == "grok-4.7"
 
     # Проверка настроек Groq
     groq_settings = Settings(

@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # Настройки интеграции с AI: Grok (xAI) и Groq Cloud API.
     grok_api_key: SecretStr | None = Field(default=None, alias="GROK_API_KEY")
     grok_api_url: str = Field(default="https://api.x.ai/v1/chat/completions", alias="GROK_API_URL")
-    grok_model: str = Field(default="grok-beta", alias="GROK_MODEL")
+    grok_model: str = Field(default="grok-4.7", alias="GROK_MODEL")
 
     groq_api_key: SecretStr | None = Field(default=None, alias="GROQ_API_KEY")
     groq_api_url: str = Field(default="https://api.groq.com/openai/v1/chat/completions", alias="GROQ_API_URL")
@@ -76,6 +76,35 @@ class Settings(BaseSettings):
         if not cleaned:
             return None
         return SecretStr(cleaned)
+
+    @field_validator("grok_model", mode="before")
+    @classmethod
+    def validate_grok_model(cls, value: Any) -> str:
+        """Автоматическая замена устаревших моделей xAI Grok на актуальные."""
+        default_model = "grok-4.7"
+        if not value:
+            return default_model
+        model_str = str(value).strip().strip("\"'").strip()
+        if not model_str:
+            return default_model
+
+        deprecated_grok_models = {
+            "grok-beta",
+            "grok-vision-beta",
+            "grok-2",
+            "grok-2-1212",
+            "grok-2-vision-1212",
+            "grok-3",
+            "grok-4-0709",
+            "grok-code-fast-1",
+            "grok-4-fast-reasoning",
+            "grok-4-fast-non-reasoning",
+            "grok-4-1-fast-reasoning",
+            "grok-4-1-fast-non-reasoning",
+        }
+        if model_str.lower() in deprecated_grok_models:
+            return default_model
+        return model_str
 
     @field_validator("groq_model", mode="before")
     @classmethod
@@ -143,7 +172,7 @@ class Settings(BaseSettings):
 
     @property
     def effective_ai_model(self) -> str:
-        """Возвращает рабочую модель (openai/gpt-oss-120b для Groq, grok-beta для xAI)."""
+        """Возвращает рабочую модель (openai/gpt-oss-120b для Groq, grok-4.7 для xAI)."""
         if self.groq_api_key:
             return self.groq_model
         return self.grok_model

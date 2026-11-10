@@ -118,8 +118,12 @@ async def ask_grok(
         "User-Agent": "FableBot/1.0",
     }
 
-    # Резервная модель на случай 404 model_not_found у Groq
+    # Резервные модели на случай 404 model_not_found
     groq_fallback_model = "openai/gpt-oss-20b"
+    grok_fallback_model = "grok-4.7"
+    is_xai = "x.ai" in url
+    is_groq = "groq.com" in url
+
     current_model = model
 
     timeout = aiohttp.ClientTimeout(total=45, connect=10)
@@ -167,14 +171,23 @@ async def ask_grok(
                             return "Фабле на связи, но ответ от нейросети оказался пустым 🤔"
 
                         # 2. Модель не найдена (404 model_not_found) -> пробуем фоллбек модель (пункт 1)
-                        if resp.status == 404 and "groq.com" in url and current_model != groq_fallback_model:
-                            error_text = await resp.text()
-                            logger.warning(
-                                "Модель %s не найдена на Groq (404), переключаемся на %s. Ответ: %s",
-                                current_model, groq_fallback_model, error_text
-                            )
-                            current_model = groq_fallback_model
-                            continue
+                        if resp.status == 404:
+                            if is_groq and current_model != groq_fallback_model:
+                                error_text = await resp.text()
+                                logger.warning(
+                                    "Модель %s не найдена на Groq (404), переключаемся на %s. Ответ: %s",
+                                    current_model, groq_fallback_model, error_text
+                                )
+                                current_model = groq_fallback_model
+                                continue
+                            elif is_xai and current_model != grok_fallback_model:
+                                error_text = await resp.text()
+                                logger.warning(
+                                    "Модель %s не найдена на xAI Grok (404), переключаемся на %s. Ответ: %s",
+                                    current_model, grok_fallback_model, error_text
+                                )
+                                current_model = grok_fallback_model
+                                continue
 
                         # 3. Превышение лимитов (429 Rate Limit) или временные сбои (500, 502, 503, 498) -> retry (пункт 3)
                         if resp.status in (429, 498, 500, 502, 503) and attempt < max_retries - 1:
@@ -194,25 +207,43 @@ async def ask_grok(
 
                         # 4. Другие ошибки (401 Unauthorized, 403 Forbidden, 400 Bad Request и др.)
                         error_body = ""
+                        error_code = ""
                         try:
                             err_data = await resp.json()
-                            if isinstance(err_data, dict) and "error" in err_data:
-                                err_obj = err_data["error"]
-                                if isinstance(err_obj, dict):
-                                    error_body = err_obj.get("message", "")
-                                elif isinstance(err_obj, str):
-                                    error_body = err_obj
+                            if isinstance(err_data, dict):
+                                error_code = str(err_data.get("code") or "")
+                                if "error" in err_data:
+                                    err_obj = err_data["error"]
+                                    if isinstance(err_obj, dict):
+                                        error_body = err_obj.get("message", "")
+                                        if not error_code:
+                                            error_code = str(err_obj.get("code") or "")
+                                    elif isinstance(err_obj, str):
+                                        error_body = err_obj
                         except Exception:
                             error_body = await resp.text()
 
-                        logger.error("Ошибка AI API HTTP %s: %s", resp.status, error_body)
+                        logger.error("Ошибка AI API HTTP %s (code=%s): %s", resp.status, error_code, error_body)
 
-                        if resp.status in (401, 403):
-                            return "⚠️ Ошибка авторизации в Groq/Grok API. Проверьте правильность и активность API-ключа (GROQ_API_KEY)."
+                        # xAI Grok возвращает HTTP 400 c error_code="invalid-argument" и сообщением про API key
+                        is_api_key_error = (
+                            resp.status in (401, 403)
+                            or "api key" in error_body.lower()
+                            or "incorrect api key" in error_body.lower()
+                            or "unauthenticated" in error_code.lower()
+                        )
+
+                        if is_api_key_error:
+                            provider_hint = "GROK_API_KEY (xAI)" if is_xai else "GROQ_API_KEY (Groq)"
+                            return (
+                                f"⚠️ Ошибка авторизации в API нейросети. "
+                                f"Проверьте правильность и активность API-ключа ({provider_hint} в .env)."
+                            )
                         elif resp.status == 429:
                             return "Слишком много запросов, подождите минуту"
                         elif resp.status == 400:
-                            return f"⚠️ Ошибка запроса к ИИ (400 Bad Request): {error_body[:100] if error_body else 'неверный формат'}"
+                            reason = error_body[:120] if error_body else "неверный формат параметров"
+                            return f"⚠️ Ошибка запроса к ИИ: {reason}"
                         elif resp.status == 404:
                             return f"⚠️ Выбранная модель ИИ ({current_model}) недоступна (404 Not Found)."
                         else:
