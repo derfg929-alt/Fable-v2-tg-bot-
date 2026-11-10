@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     groq_api_key: SecretStr | None = Field(default=None, alias="GROQ_API_KEY")
     groq_api_url: str = Field(default="https://api.groq.com/openai/v1/chat/completions", alias="GROQ_API_URL")
-    groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
+    groq_model: str = Field(default="openai/gpt-oss-120b", alias="GROQ_MODEL")
 
     @field_validator("bot_token")
     @classmethod
@@ -102,7 +102,7 @@ class Settings(BaseSettings):
 
     @property
     def effective_ai_model(self) -> str:
-        """Возвращает рабочую модель (llama-3.3-70b-versatile для Groq, grok-beta для xAI)."""
+        """Возвращает рабочую модель (openai/gpt-oss-120b для Groq, grok-beta для xAI)."""
         if self.groq_api_key:
             return self.groq_model
         return self.grok_model
