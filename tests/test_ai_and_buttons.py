@@ -216,13 +216,13 @@ async def test_ask_groq_cloud_with_mocked_api():
         mock_obj.grok_api_key_value = None
         mock_obj.effective_ai_api_key = "gsk_test_key"
         mock_obj.effective_ai_api_url = "https://api.groq.com/openai/v1/chat/completions"
-        mock_obj.effective_ai_model = "llama-3.3-70b-versatile"
+        mock_obj.effective_ai_model = "openai/gpt-oss-120b"
         mock_settings.return_value = mock_obj
 
         mock_response = AsyncMock()
         mock_response.status = 200
         mock_response.json = AsyncMock(return_value={
-            "choices": [{"message": {"content": "Привет от Groq Llama!"}}]
+            "choices": [{"message": {"content": "Привет от Groq AI!"}}]
         })
 
         mock_post_cm = MagicMock()
@@ -238,12 +238,12 @@ async def test_ask_groq_cloud_with_mocked_api():
 
         with patch("aiohttp.ClientSession", return_value=mock_session_cm):
             resp = await ask_grok("Кто ты?", user_name="Тестер")
-            assert resp == "Привет от Groq Llama!"
+            assert resp == "Привет от Groq AI!"
             # Verify call args
             call_url = mock_session_obj.post.call_args[0][0]
             assert "api.groq.com" in call_url
             call_payload = mock_session_obj.post.call_args[1]["json"]
-            assert call_payload["model"] == "llama-3.3-70b-versatile"
+            assert call_payload["model"] == "openai/gpt-oss-120b"
 
 
 @pytest.mark.asyncio

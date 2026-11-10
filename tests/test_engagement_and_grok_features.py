@@ -52,7 +52,7 @@ def test_settings_grok_attributes():
     assert groq_settings.groq_api_key_value == "gsk_test_groq_key_12345"
     assert groq_settings.effective_ai_api_key == "gsk_test_groq_key_12345"
     assert "api.groq.com" in groq_settings.effective_ai_api_url
-    assert groq_settings.effective_ai_model == "llama-3.3-70b-versatile"
+    assert groq_settings.effective_ai_model == "openai/gpt-oss-120b"
 
 
 def test_ai_trigger_grok_and_pm():
