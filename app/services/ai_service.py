@@ -210,7 +210,7 @@ async def ask_grok(
                         if resp.status in (401, 403):
                             return "⚠️ Ошибка авторизации в Groq/Grok API. Проверьте правильность и активность API-ключа (GROQ_API_KEY)."
                         elif resp.status == 429:
-                            return "⏳ Превышен лимит запросов к ИИ (Rate Limit). Пожалуйста, подождите минуту и повторите."
+                            return "Слишком много запросов, подождите минуту"
                         elif resp.status == 400:
                             return f"⚠️ Ошибка запроса к ИИ (400 Bad Request): {error_body[:100] if error_body else 'неверный формат'}"
                         elif resp.status == 404:
