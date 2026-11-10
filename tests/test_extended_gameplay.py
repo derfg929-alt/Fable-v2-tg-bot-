@@ -220,6 +220,88 @@ async def test_social_and_math():
 
 
 @pytest.mark.asyncio
+async def test_rebalanced_gambling_and_minigames():
+    """Тест оптимизированного баланса лудиков и мини-игр:
+    - Проверка лимитов ставок (максимум 50 000).
+    - Проверка корректности диапазонов выигрыша и отсутствия бесконечного фарма.
+    - Проверка ненулевых шансов (шансы не убиты в 0).
+    """
+    from app.services.games_service import (
+        play_dice,
+        play_coinflip,
+        play_mystery_box,
+        play_crash_game,
+        play_shooting_range_game,
+        InvalidAmountError,
+        GameError,
+    )
+
+    uid = 777099
+    async with session_scope() as session:
+        p = (await get_or_create_player(session, telegram_id=uid, first_name="Gambler")).player
+        p.wallet = 1_000_000
+        await session.flush()
+
+        # 1. Проверка лимитов ставок > 50 000
+        with pytest.raises(InvalidAmountError):
+            await play_dice(session, user_id=uid, stake=50_001)
+
+        with pytest.raises(InvalidAmountError):
+            await play_coinflip(session, user_id=uid, choice="орел", stake=50_001)
+
+        with pytest.raises(InvalidAmountError):
+            await play_mystery_box(session, user_id=uid, stake=50_001)
+
+        with pytest.raises(GameError):
+            await play_crash_game(session, user_id=uid, stake=50_001)
+
+        with pytest.raises(GameError):
+            await play_shooting_range_game(session, user_id=uid, stake=50_001)
+
+        # 2. Проверка работы мини-игр с валидной ставкой
+        p.wallet = 1_000_000
+        await session.flush()
+
+        # Dice
+        p_roll, b_roll, is_win, payout = await play_dice(session, user_id=uid, stake=100)
+        assert 1 <= p_roll <= 6
+        assert 1 <= b_roll <= 6
+        if is_win:
+            assert payout == 200
+        elif p_roll == b_roll:
+            assert payout == 100
+        else:
+            assert payout == 0
+
+        # Coinflip
+        outcome, cf_win, cf_payout = await play_coinflip(session, user_id=uid, choice="орел", stake=100)
+        assert outcome in ("орел", "решка")
+        if cf_win:
+            assert cf_payout == 200
+        else:
+            assert cf_payout == 0
+
+        # Mystery box
+        mult, box_payout = await play_mystery_box(session, user_id=uid, stake=100)
+        assert mult in [0.0, 0.5, 1.2, 1.5, 2.0, 3.0, 5.0]
+        assert box_payout == int(100 * mult)
+
+        # Crash
+        c_mult, c_win, c_payout = await play_crash_game(session, user_id=uid, stake=100)
+        if c_win:
+            assert 1.40 <= c_mult <= 2.90
+            assert c_payout == int(100 * c_mult)
+        else:
+            assert 1.0 <= c_mult <= 1.35
+            assert c_payout == 0
+
+        # Shooting range
+        target_name, t_mult, t_payout = await play_shooting_range_game(session, user_id=uid, stake=100)
+        assert t_mult in [0.0, 1.1, 1.8, 2.5]
+        assert t_payout == int(100 * t_mult)
+
+
+@pytest.mark.asyncio
 async def test_chat_creator_admin_assignment():
     """Тест автоматического получения уровня 5 создателем при добавлении бота в чат."""
     chat_id = -100999111

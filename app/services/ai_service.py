@@ -24,23 +24,45 @@ async def ask_grok(
     user_name: str | None = None,
     chat_history: list[dict[str, str]] | None = None,
 ) -> str:
-    """Отправляет запрос к Grok API (xAI) и возвращает сгенерированный ответ."""
+    """Отправляет запрос к ИИ (Groq Cloud API или xAI Grok) и возвращает сгенерированный ответ."""
     try:
         settings = get_settings()
+        # Проверяем grok_api_key_value в первую очередь (он возвращает effective_ai_api_key в реальном Settings)
+        # либо явно effective_ai_api_key / groq_api_key_value
         api_key = getattr(settings, "grok_api_key_value", None)
+        if not api_key or not isinstance(api_key, str):
+            eff_key = getattr(settings, "effective_ai_api_key", None)
+            if isinstance(eff_key, str) and eff_key:
+                api_key = eff_key
+            else:
+                groq_key = getattr(settings, "groq_api_key_value", None)
+                if isinstance(groq_key, str) and groq_key:
+                    api_key = groq_key
+                else:
+                    api_key = None
     except Exception as e:
-        logger.error("Ошибка при получении настроек Grok AI: %s", e)
+        logger.error("Ошибка при получении настроек AI: %s", e)
         api_key = None
 
     if not api_key:
-        logger.warning("GROK_API_KEY не настроен в конфигурации.")
+        logger.warning("GROQ_API_KEY или GROK_API_KEY не настроен в конфигурации.")
         return (
-            "Привет! Я Фабле 🌟 Мой модуль искусственного интеллекта на базе Grok готов к работе, "
-            "но администратор еще не указал API-ключ (переменная GROK_API_KEY в .env)."
+            "Привет! Я Фабле 🌟 Мой модуль искусственного интеллекта готов к работе, "
+            "но администратор еще не указал API-ключ (переменная GROQ_API_KEY или GROK_API_KEY в .env)."
         )
 
-    url = settings.grok_api_url
-    model = settings.grok_model
+    # Получаем URL и модель со строгой проверкой типов на случай моков
+    raw_url = getattr(settings, "effective_ai_api_url", None)
+    if isinstance(raw_url, str) and raw_url:
+        url = raw_url
+    else:
+        url = str(getattr(settings, "grok_api_url", "https://api.x.ai/v1/chat/completions"))
+
+    raw_model = getattr(settings, "effective_ai_model", None)
+    if isinstance(raw_model, str) and raw_model:
+        model = raw_model
+    else:
+        model = str(getattr(settings, "grok_model", "grok-beta"))
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": SYSTEM_PROMPT}
@@ -81,14 +103,14 @@ async def ask_grok(
                     return "Фабле на связи, но ответ от нейросети оказался пустым 🤔"
                 else:
                     error_text = await resp.text()
-                    logger.error("Ошибка Grok API HTTP %s: %s", resp.status, error_text)
-                    return f"⚠️ Ошибка обращения к Grok AI (код {resp.status}). Попробуйте позже."
+                    logger.error("Ошибка AI API HTTP %s: %s", resp.status, error_text)
+                    return f"⚠️ Ошибка обращения к ИИ (код {resp.status}). Попробуйте позже."
     except aiohttp.ClientError as e:
-        logger.error("Сетевая ошибка при запросе к Grok AI: %s", e)
-        return "⚠️ Не удалось связаться с сервером Grok AI. Проверьте интернет-соединение."
+        logger.error("Сетевая ошибка при запросе к ИИ: %s", e)
+        return "⚠️ Не удалось связаться с сервером ИИ. Проверьте интернет-соединение."
     except Exception as e:
-        logger.exception("Непредвиденная ошибка при запросе к Grok AI: %s", e)
-        return "⚠️ Произошла ошибка при обработке запроса к Grok AI."
+        logger.exception("Непредвиденная ошибка при запросе к ИИ: %s", e)
+        return "⚠️ Произошла ошибка при обработке запроса к ИИ."
 
 
 async def analyze_chat_moderation_ai(

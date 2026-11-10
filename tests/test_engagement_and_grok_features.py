@@ -35,7 +35,7 @@ from app.handlers.owner_handlers import (
 
 
 def test_settings_grok_attributes():
-    """Проверка наличия полей Grok AI в Settings."""
+    """Проверка наличия полей Grok AI и Groq Cloud в Settings."""
     settings = Settings(
         bot_token="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
         grok_api_key="test-grok-key",
@@ -43,6 +43,16 @@ def test_settings_grok_attributes():
     assert settings.grok_api_key_value == "test-grok-key"
     assert settings.grok_model == "grok-beta"
     assert "x.ai" in settings.grok_api_url
+
+    # Проверка настроек Groq
+    groq_settings = Settings(
+        bot_token="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+        groq_api_key="gsk_test_groq_key_12345",
+    )
+    assert groq_settings.groq_api_key_value == "gsk_test_groq_key_12345"
+    assert groq_settings.effective_ai_api_key == "gsk_test_groq_key_12345"
+    assert "api.groq.com" in groq_settings.effective_ai_api_url
+    assert groq_settings.effective_ai_model == "llama-3.3-70b-versatile"
 
 
 def test_ai_trigger_grok_and_pm():
