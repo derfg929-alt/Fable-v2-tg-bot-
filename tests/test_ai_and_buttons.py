@@ -502,3 +502,79 @@ async def test_dispatcher_callback_routing_not_intercepted_by_fallback():
     unknown_called_methods = [c[0][1].__class__.__name__ for c in bot.session.call_args_list]
     assert "AnswerCallbackQuery" in unknown_called_methods
     assert "EditMessageText" not in unknown_called_methods
+
+
+@pytest.mark.asyncio
+async def test_ask_grok_dynamic_env_detection(tmp_path, monkeypatch):
+    """Проверка подхвата ключа из os.environ и файла .env на лету без возврата заглушки."""
+    from app.config import get_settings
+
+    # Сбрасываем кэш и окружение
+    get_settings.cache_clear()
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GROK_API_KEY", raising=False)
+
+    # 1. При отсутствии ключей возвращается сообщение-заглушка
+    stub_response = await ask_grok("Привет")
+    assert "Мой модуль искусственного интеллекта готов к работе" in stub_response
+
+    # 2. Появление ключа в os.environ подхватывается сразу
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_dynamic_env_test_key")
+
+    mock_response = AsyncMock()
+    mock_response.status = 200
+    mock_response.json = AsyncMock(return_value={
+        "choices": [{"message": {"content": "Ответ от динамического Groq!"}}]
+    })
+
+    mock_post_cm = MagicMock()
+    mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_post_cm.__aexit__ = AsyncMock(return_value=None)
+
+    mock_session_obj = MagicMock()
+    mock_session_obj.post.return_value = mock_post_cm
+
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session_obj)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+        resp_env = await ask_grok("Вопрос с env")
+        assert resp_env == "Ответ от динамического Groq!"
+        # Проверяем, что в Authorization попал новый ключ
+        auth_header = mock_session_obj.post.call_args[1]["headers"]["Authorization"]
+        assert auth_header == "Bearer gsk_dynamic_env_test_key"
+
+    # 3. Появление ключа в .env файле
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    get_settings.cache_clear()
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("GROK_API_KEY=xai_dynamic_file_key\n")
+
+    with monkeypatch.context() as m:
+        m.chdir(tmp_path)
+        get_settings.cache_clear()
+
+        mock_response_xai = AsyncMock()
+        mock_response_xai.status = 200
+        mock_response_xai.json = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Ответ от xAI Grok из .env!"}}]
+        })
+
+        mock_post_cm_xai = MagicMock()
+        mock_post_cm_xai.__aenter__ = AsyncMock(return_value=mock_response_xai)
+        mock_post_cm_xai.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj_xai = MagicMock()
+        mock_session_obj_xai.post.return_value = mock_post_cm_xai
+
+        mock_session_cm_xai = MagicMock()
+        mock_session_cm_xai.__aenter__ = AsyncMock(return_value=mock_session_obj_xai)
+        mock_session_cm_xai.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm_xai):
+            resp_file = await ask_grok("Вопрос с .env")
+            assert resp_file == "Ответ от xAI Grok из .env!"
+            auth_header_xai = mock_session_obj_xai.post.call_args[1]["headers"]["Authorization"]
+            assert auth_header_xai == "Bearer xai_dynamic_file_key"

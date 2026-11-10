@@ -14,11 +14,15 @@ class Settings(BaseSettings):
         validate_default=True,
     )
 
-    bot_token: SecretStr = Field(alias="BOT_TOKEN")
+    bot_token: SecretStr = Field(default=SecretStr("123456:dummy_token_default"), alias="BOT_TOKEN")
     owner_id: int = Field(default=8039111975, alias="OWNER_ID", gt=0)
     database_url: SecretStr = Field(
         default=SecretStr("postgresql+asyncpg://fable:fable@localhost:5432/fable"),
         alias="DATABASE_URL",
+    )
+    json_database_path: str = Field(
+        default="data/bot_database.json",
+        alias="JSON_DATABASE_PATH",
     )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", alias="LOG_LEVEL"
@@ -186,10 +190,47 @@ class Settings(BaseSettings):
         return self.grok_model
 
 
+import os
+
+_LAST_ENV_MTIME: float | None = None
+
+
 @lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    """Единый экземпляр настроек на весь процесс."""
+def _get_cached_settings() -> Settings:
     return Settings()
 
+
+def get_settings(*, reload: bool = False) -> Settings:
+    """Возвращает настройки с авто-инвалидацией кэша при обновлении .env или переменных окружения."""
+    global _LAST_ENV_MTIME
+
+    env_mtime: float | None = None
+    if os.path.exists(".env"):
+        try:
+            env_mtime = os.path.getmtime(".env")
+        except OSError:
+            pass
+
+    if reload or (_LAST_ENV_MTIME is not None and env_mtime != _LAST_ENV_MTIME):
+        _get_cached_settings.cache_clear()
+
+    if _LAST_ENV_MTIME is None:
+        _LAST_ENV_MTIME = env_mtime
+    elif env_mtime != _LAST_ENV_MTIME:
+        _LAST_ENV_MTIME = env_mtime
+
+    inst = _get_cached_settings()
+
+    if not inst.effective_ai_api_key:
+        env_groq = os.environ.get("GROQ_API_KEY", "").strip()
+        env_grok = os.environ.get("GROK_API_KEY", "").strip()
+        if env_groq or env_grok:
+            _get_cached_settings.cache_clear()
+            inst = _get_cached_settings()
+
+    return inst
+
+
+get_settings.cache_clear = _get_cached_settings.cache_clear  # type: ignore[attr-defined]
 
 settings = get_settings()

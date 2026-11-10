@@ -152,36 +152,84 @@ class Settings(BaseSettings):
     @property
     def groq_api_key_value(self) -> str | None:
         """Ключ API Groq в открытом виде для передачи в HTTP-клиент."""
-        return self.groq_api_key.get_secret_value() if self.groq_api_key else None
+        if not self.groq_api_key:
+            return None
+        val = self.groq_api_key.get_secret_value().strip().strip("\"'").strip()
+        return val or None
 
     @property
     def effective_ai_api_key(self) -> str | None:
         """Возвращает активный API-ключ (Groq API либо Grok xAI)."""
         if self.groq_api_key:
-            return self.groq_api_key.get_secret_value()
+            val = self.groq_api_key.get_secret_value().strip().strip("\"'").strip()
+            if val:
+                return val
         if self.grok_api_key:
-            return self.grok_api_key.get_secret_value()
+            val = self.grok_api_key.get_secret_value().strip().strip("\"'").strip()
+            if val:
+                return val
         return None
 
     @property
     def effective_ai_api_url(self) -> str:
         """Возвращает подходящий OpenAI-совместимый URL (Groq или xAI Grok)."""
-        if self.groq_api_key:
+        if self.groq_api_key and self.groq_api_key.get_secret_value().strip().strip("\"'").strip():
             return self.groq_api_url
         return self.grok_api_url
 
     @property
     def effective_ai_model(self) -> str:
         """Возвращает рабочую модель (openai/gpt-oss-120b для Groq, grok-4.7 для xAI)."""
-        if self.groq_api_key:
+        if self.groq_api_key and self.groq_api_key.get_secret_value().strip().strip("\"'").strip():
             return self.groq_model
         return self.grok_model
 
 
+import os
+
+_LAST_ENV_MTIME: float | None = None
+
+
 @lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    """Единый экземпляр настроек на весь процесс."""
+def _get_cached_settings() -> Settings:
     return Settings()
 
+
+def get_settings(*, reload: bool = False) -> Settings:
+    """Возвращает настройки с авто-инвалидацией кэша при обновлении .env или переменных окружения."""
+    global _LAST_ENV_MTIME
+
+    # Проверяем изменение файла .env по времени модификации
+    env_mtime: float | None = None
+    if os.path.exists(".env"):
+        try:
+            env_mtime = os.path.getmtime(".env")
+        except OSError:
+            pass
+
+    if reload or (_LAST_ENV_MTIME is not None and env_mtime != _LAST_ENV_MTIME):
+        _get_cached_settings.cache_clear()
+
+    if _LAST_ENV_MTIME is None:
+        _LAST_ENV_MTIME = env_mtime
+    elif env_mtime != _LAST_ENV_MTIME:
+        _LAST_ENV_MTIME = env_mtime
+
+    inst = _get_cached_settings()
+
+    # Если в текущем объекте settings API-ключ пуст, но он появился в os.environ или .env,
+    # сбрасываем кэш и пересоздаем экземпляр
+    if not inst.effective_ai_api_key:
+        env_groq = os.environ.get("GROQ_API_KEY", "").strip()
+        env_grok = os.environ.get("GROK_API_KEY", "").strip()
+        if env_groq or env_grok:
+            _get_cached_settings.cache_clear()
+            inst = _get_cached_settings()
+
+    return inst
+
+
+# Обеспечиваем вызов get_settings.cache_clear() для тестов и внешних модулей
+get_settings.cache_clear = _get_cached_settings.cache_clear  # type: ignore[attr-defined]
 
 settings = get_settings()
