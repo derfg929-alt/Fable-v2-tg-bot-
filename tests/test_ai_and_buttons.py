@@ -285,6 +285,7 @@ async def test_ask_groq_cloud_with_mocked_api():
             assert "api.groq.com" in call_url
             call_payload = mock_session_obj.post.call_args[1]["json"]
             assert call_payload["model"] == "openai/gpt-oss-120b"
+            assert call_payload["max_tokens"] >= 800
             assert "Bearer gsk_test_key" == mock_session_obj.post.call_args[1]["headers"]["Authorization"]
 
 
@@ -376,6 +377,20 @@ async def test_ask_groq_rate_limit_and_error_handling():
         with patch("aiohttp.ClientSession", return_value=mock_session_cm):
             resp = await ask_grok("Привет", user_name="Тестер")
             assert "Ошибка авторизации" in resp
+
+        # 3. Тест с 429 Rate Limit (исчерпаны попытки)
+        resp_429 = AsyncMock()
+        resp_429.status = 429
+        resp_429.headers = {}
+        resp_429.json = AsyncMock(return_value={"error": {"message": "Rate limit exceeded"}})
+        cm_429 = MagicMock()
+        cm_429.__aenter__ = AsyncMock(return_value=resp_429)
+        cm_429.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj.post.return_value = cm_429
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm), patch("asyncio.sleep", AsyncMock()):
+            resp = await ask_grok("Привет еще раз", user_name="Тестер")
+            assert resp == "Слишком много запросов, подождите минуту"
 
 
 @pytest.mark.asyncio
