@@ -209,6 +209,44 @@ async def test_ask_grok_with_mocked_api():
 
 
 @pytest.mark.asyncio
+async def test_ask_groq_cloud_with_mocked_api():
+    """Проверка вызова Groq Cloud API при передаче GROQ_API_KEY."""
+    with patch("app.services.ai_service.get_settings") as mock_settings:
+        mock_obj = MagicMock()
+        mock_obj.grok_api_key_value = None
+        mock_obj.effective_ai_api_key = "gsk_test_key"
+        mock_obj.effective_ai_api_url = "https://api.groq.com/openai/v1/chat/completions"
+        mock_obj.effective_ai_model = "llama-3.3-70b-versatile"
+        mock_settings.return_value = mock_obj
+
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Привет от Groq Llama!"}}]
+        })
+
+        mock_post_cm = MagicMock()
+        mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj = MagicMock()
+        mock_session_obj.post.return_value = mock_post_cm
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session_obj)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            resp = await ask_grok("Кто ты?", user_name="Тестер")
+            assert resp == "Привет от Groq Llama!"
+            # Verify call args
+            call_url = mock_session_obj.post.call_args[0][0]
+            assert "api.groq.com" in call_url
+            call_payload = mock_session_obj.post.call_args[1]["json"]
+            assert call_payload["model"] == "llama-3.3-70b-versatile"
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_callback_routing_not_intercepted_by_fallback():
     """Проверяем, что create_dispatcher() корректно доставляет CallbackQuery до нужных хэндлеров,
     а не перехватывает их глобальным фоллбэком.

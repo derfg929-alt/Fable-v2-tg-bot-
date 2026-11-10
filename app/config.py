@@ -40,10 +40,14 @@ class Settings(BaseSettings):
     polling_timeout: int = Field(default=30, alias="POLLING_TIMEOUT", ge=5, le=60)
     update_concurrency: int = Field(default=32, alias="UPDATE_CONCURRENCY", ge=1, le=256)
 
-    # Настройки интеграции с Grok AI (xAI).
+    # Настройки интеграции с AI: Grok (xAI) и Groq Cloud API.
     grok_api_key: SecretStr | None = Field(default=None, alias="GROK_API_KEY")
     grok_api_url: str = Field(default="https://api.x.ai/v1/chat/completions", alias="GROK_API_URL")
     grok_model: str = Field(default="grok-beta", alias="GROK_MODEL")
+
+    groq_api_key: SecretStr | None = Field(default=None, alias="GROQ_API_KEY")
+    groq_api_url: str = Field(default="https://api.groq.com/openai/v1/chat/completions", alias="GROQ_API_URL")
+    groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
 
     @field_validator("bot_token")
     @classmethod
@@ -72,7 +76,35 @@ class Settings(BaseSettings):
     @property
     def grok_api_key_value(self) -> str | None:
         """Ключ API Grok в открытом виде для передачи в HTTP-клиент."""
-        return self.grok_api_key.get_secret_value() if self.grok_api_key else None
+        return self.effective_ai_api_key
+
+    @property
+    def groq_api_key_value(self) -> str | None:
+        """Ключ API Groq в открытом виде для передачи в HTTP-клиент."""
+        return self.groq_api_key.get_secret_value() if self.groq_api_key else None
+
+    @property
+    def effective_ai_api_key(self) -> str | None:
+        """Возвращает активный API-ключ (Groq API либо Grok xAI)."""
+        if self.groq_api_key:
+            return self.groq_api_key.get_secret_value()
+        if self.grok_api_key:
+            return self.grok_api_key.get_secret_value()
+        return None
+
+    @property
+    def effective_ai_api_url(self) -> str:
+        """Возвращает подходящий OpenAI-совместимый URL (Groq или xAI Grok)."""
+        if self.groq_api_key:
+            return self.groq_api_url
+        return self.grok_api_url
+
+    @property
+    def effective_ai_model(self) -> str:
+        """Возвращает рабочую модель (llama-3.3-70b-versatile для Groq, grok-beta для xAI)."""
+        if self.groq_api_key:
+            return self.groq_model
+        return self.grok_model
 
 
 @lru_cache(maxsize=1)
