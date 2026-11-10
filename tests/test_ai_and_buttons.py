@@ -215,6 +215,14 @@ async def test_settings_ai_keys_cleaning_and_whitespace():
     s7 = Settings(GROQ_API_KEY="gsk_valid", GROQ_MODEL="llama-3.1-8b-instant")
     assert s7.effective_ai_model == "openai/gpt-oss-120b"
 
+    # 7. Устаревшая модель xAI Grok заменяется на grok-4.7
+    s8 = Settings(GROK_API_KEY="xai-key", GROK_MODEL="grok-beta")
+    assert s8.effective_ai_model == "grok-4.7"
+    assert s8.grok_model == "grok-4.7"
+
+    s9 = Settings(GROK_API_KEY="xai-key", GROK_MODEL="grok-3")
+    assert s9.grok_model == "grok-4.7"
+
 
 @pytest.mark.asyncio
 async def test_ask_grok_with_mocked_api():
@@ -223,7 +231,7 @@ async def test_ask_grok_with_mocked_api():
         mock_obj = MagicMock()
         mock_obj.grok_api_key_value = "fake-key"
         mock_obj.grok_api_url = "https://api.x.ai/v1/chat/completions"
-        mock_obj.grok_model = "grok-beta"
+        mock_obj.grok_model = "grok-4.7"
         mock_settings.return_value = mock_obj
 
         # Create mock response context manager
@@ -391,6 +399,24 @@ async def test_ask_groq_rate_limit_and_error_handling():
         with patch("aiohttp.ClientSession", return_value=mock_session_cm), patch("asyncio.sleep", AsyncMock()):
             resp = await ask_grok("Привет еще раз", user_name="Тестер")
             assert resp == "Слишком много запросов, подождите минуту"
+
+        # 4. Тест xAI Grok 400 invalid-argument с ошибкой ключа
+        mock_obj.effective_ai_api_url = "https://api.x.ai/v1/chat/completions"
+        resp_400_xai = AsyncMock()
+        resp_400_xai.status = 400
+        resp_400_xai.json = AsyncMock(return_value={
+            "code": "invalid-argument",
+            "error": "Incorrect API key provided. You can obtain an API key from https://console.x.ai."
+        })
+        cm_400_xai = MagicMock()
+        cm_400_xai.__aenter__ = AsyncMock(return_value=resp_400_xai)
+        cm_400_xai.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_obj.post.return_value = cm_400_xai
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            resp = await ask_grok("Тест ключа", user_name="Тестер")
+            assert "Ошибка авторизации" in resp
+            assert "GROK_API_KEY (xAI)" in resp
 
 
 @pytest.mark.asyncio
