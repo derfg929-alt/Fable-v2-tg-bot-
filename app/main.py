@@ -106,6 +106,11 @@ async def main() -> None:
     
     logger.info("База данных успешно инициализирована.")
 
+    # Показываем активное подключение к ИИ (Grok/Groq или офлайн-движок).
+    from app.services.ai_service import log_ai_status
+
+    log_ai_status()
+
     bot = Bot(
         token=settings.bot_token_value,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
