@@ -165,7 +165,7 @@ async def test_ai_trigger_detection():
 
 @pytest.mark.asyncio
 async def test_ask_grok_without_key():
-    """Проверка сервиса ask_grok при отсутствии ключа."""
+    """Проверка сервиса ask_grok при отсутствии ключа: бот отвечает без заглушек."""
     with patch("app.services.ai_service.get_settings") as mock_settings:
         mock_obj = MagicMock()
         mock_obj.grok_api_key_value = None
@@ -173,8 +173,23 @@ async def test_ask_grok_without_key():
         mock_obj.groq_api_key_value = None
         mock_settings.return_value = mock_obj
 
-        resp = await ask_grok("Привет")
-        assert "GROK_API_KEY" in resp
+        # 1. Приветствие
+        resp1 = await ask_grok("Привет", user_name="Игрок")
+        assert "Игрок" in resp1 or "Привет" in resp1
+        assert "GROK_API_KEY" not in resp1
+        assert "не указал API-ключ" not in resp1
+
+        # 2. Вопрос не по боту: география и факты
+        resp2 = await ask_grok("Какая столица Франции?")
+        assert "Париж" in resp2
+
+        # 3. Вопрос по литературе
+        resp3 = await ask_grok("Кто написал Войну и Мир?")
+        assert "Толстой" in resp3
+
+        # 4. Вычисления / математика
+        resp4 = await ask_grok("Сколько будет 25 * 4?")
+        assert "100" in resp4
 
 
 @pytest.mark.asyncio
@@ -514,9 +529,10 @@ async def test_ask_grok_dynamic_env_detection(tmp_path, monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GROK_API_KEY", raising=False)
 
-    # 1. При отсутствии ключей возвращается сообщение-заглушка
+    # 1. При отсутствии ключей возвращается содержательный ответ без заглушек
     stub_response = await ask_grok("Привет")
-    assert "Мой модуль искусственного интеллекта готов к работе" in stub_response
+    assert "не указал API-ключ" not in stub_response
+    assert "GROK_API_KEY" not in stub_response
 
     # 2. Появление ключа в os.environ подхватывается сразу
     monkeypatch.setenv("GROQ_API_KEY", "gsk_dynamic_env_test_key")
