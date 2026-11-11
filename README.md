@@ -80,7 +80,27 @@ DATABASE_URL=postgresql+asyncpg://fable:fable@localhost:5432/fable
 OWNER_ID=8039111975
 LOG_LEVEL=INFO
 TIMEZONE=Europe/Moscow
+
+# ИИ-ответы (необязательно, но рекомендуется). Работает и без ключей —
+# тогда бот отвечает встроенным офлайн-движком Fable.
+# xAI Grok (приоритет):
+GROK_API_KEY=xai-...
+GROK_API_URL=https://api.x.ai/v1/chat/completions
+GROK_MODEL=grok-4.7
+# Groq Cloud (бесплатная альтернатива, используется если нет GROK_API_KEY):
+GROQ_API_KEY=gsk_...
+GROQ_API_URL=https://api.groq.com/openai/v1/chat/completions
+GROQ_MODEL=openai/gpt-oss-120b
 ```
+
+**Как подключить ИИ-ответы (Grok):**
+1. Получите ключ на https://console.x.ai и вставьте его в `GROK_API_KEY`.
+2. Запустите бота — в логах появится строка вида
+   `AI подключён: провайдер=grok, модель=grok-4.7, ключ=xai-…5678`.
+3. Если ключа нет, в логах будет предупреждение о работе офлайн-движка.
+
+Приоритет провайдеров: xAI Grok → Groq Cloud → офлайн-движок. Если основная
+модель недоступна (404), бот автоматически пробует резервные (`grok-4`, `grok-3`).
 
 ### 4. Применение миграций базы данных
 ```bash

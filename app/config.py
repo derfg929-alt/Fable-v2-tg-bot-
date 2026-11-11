@@ -146,8 +146,11 @@ class Settings(BaseSettings):
 
     @property
     def grok_api_key_value(self) -> str | None:
-        """Ключ API Grok в открытом виде для передачи в HTTP-клиент."""
-        return self.effective_ai_api_key
+        """Ключ API Grok (xAI) в открытом виде для передачи в HTTP-клиент."""
+        if not self.grok_api_key:
+            return None
+        val = self.grok_api_key.get_secret_value().strip().strip("\"'").strip()
+        return val or None
 
     @property
     def groq_api_key_value(self) -> str | None:
@@ -159,30 +162,30 @@ class Settings(BaseSettings):
 
     @property
     def effective_ai_api_key(self) -> str | None:
-        """Возвращает активный API-ключ (Groq API либо Grok xAI)."""
-        if self.groq_api_key:
-            val = self.groq_api_key.get_secret_value().strip().strip("\"'").strip()
-            if val:
-                return val
+        """Возвращает активный API-ключ (приоритет — xAI Grok, затем Groq)."""
         if self.grok_api_key:
             val = self.grok_api_key.get_secret_value().strip().strip("\"'").strip()
+            if val:
+                return val
+        if self.groq_api_key:
+            val = self.groq_api_key.get_secret_value().strip().strip("\"'").strip()
             if val:
                 return val
         return None
 
     @property
     def effective_ai_api_url(self) -> str:
-        """Возвращает подходящий OpenAI-совместимый URL (Groq или xAI Grok)."""
-        if self.groq_api_key and self.groq_api_key.get_secret_value().strip().strip("\"'").strip():
-            return self.groq_api_url
-        return self.grok_api_url
+        """Возвращает подходящий OpenAI-совместимый URL (xAI Grok или Groq)."""
+        if self.grok_api_key and self.grok_api_key.get_secret_value().strip().strip("\"'").strip():
+            return self.grok_api_url
+        return self.groq_api_url
 
     @property
     def effective_ai_model(self) -> str:
-        """Возвращает рабочую модель (openai/gpt-oss-120b для Groq, grok-4.7 для xAI)."""
-        if self.groq_api_key and self.groq_api_key.get_secret_value().strip().strip("\"'").strip():
-            return self.groq_model
-        return self.grok_model
+        """Возвращает рабочую модель (grok-4.7 для xAI, openai/gpt-oss-120b для Groq)."""
+        if self.grok_api_key and self.grok_api_key.get_secret_value().strip().strip("\"'").strip():
+            return self.grok_model
+        return self.groq_model
 
 
 import os
