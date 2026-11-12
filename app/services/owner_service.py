@@ -39,6 +39,10 @@ from app.db.models import (
 
 logger = logging.getLogger(__name__)
 
+# Рассылка владельца разрешена не чаще одного раза в 24 часа.
+BROADCAST_COOLDOWN_SECONDS = 24 * 60 * 60
+_BROADCAST_STATE_KEY = "owner_broadcast_state"
+
 
 class OwnerAccessDeniedError(PermissionError):
     """Доступ разрешен только владельцу бота."""
@@ -193,3 +197,83 @@ async def record_owner_broadcast(
     session.add(broadcast)
     await session.flush()
     return broadcast
+
+
+async def _get_broadcast_state(session: AsyncSession) -> dict:
+    row = await session.get(GlobalSetting, _BROADCAST_STATE_KEY)
+    if row is None or not isinstance(row.value, dict):
+        return {}
+    return dict(row.value)
+
+
+async def get_broadcast_cooldown(
+    session: AsyncSession,
+    *,
+    owner_id: int,
+) -> tuple[bool, int]:
+    """Проверяет, можно ли сейчас делать рассылку.
+
+    Возвращает (можно_ли, секунд_до_следующей_рассылки). Рассылка разрешена не
+    чаще одного раза в 24 часа.
+    """
+    verify_owner(owner_id)
+    state = await _get_broadcast_state(session)
+    last_raw = state.get("last_broadcast_at")
+    if not last_raw:
+        return True, 0
+    try:
+        last_dt = datetime.fromisoformat(last_raw)
+    except (TypeError, ValueError):
+        return True, 0
+    if last_dt.tzinfo is None:
+        last_dt = last_dt.replace(tzinfo=timezone.utc)
+
+    elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+    remaining = int(BROADCAST_COOLDOWN_SECONDS - elapsed)
+    if remaining > 0:
+        return False, remaining
+    return True, 0
+
+
+async def mark_broadcast_sent(
+    session: AsyncSession,
+    *,
+    owner_id: int,
+    now: datetime | None = None,
+) -> None:
+    """Отмечает факт рассылки, запуская 24-часовой кулдаун."""
+    verify_owner(owner_id)
+    moment = (now or datetime.now(timezone.utc)).isoformat()
+    state = await _get_broadcast_state(session)
+    state["last_broadcast_at"] = moment
+    stmt = insert(GlobalSetting).values(key=_BROADCAST_STATE_KEY, value=state)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[GlobalSetting.key], set_={"value": state}
+    )
+    await session.execute(stmt)
+
+
+async def list_broadcast_chats(
+    session: AsyncSession,
+    *,
+    owner_id: int,
+) -> list[Chat]:
+    """Возвращает активные групповые чаты для рассылки владельца."""
+    verify_owner(owner_id)
+    res = await session.scalars(
+        select(Chat).where(
+            Chat.is_active.is_(True),
+            Chat.chat_type.in_(["group", "supergroup"]),
+        )
+    )
+    return list(res.all())
+
+
+def format_cooldown_remaining(seconds: int) -> str:
+    """Форматирует оставшееся время кулдауна в часы и минуты."""
+    seconds = max(0, int(seconds))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    if hours:
+        return f"{hours} ч. {minutes} мин."
+    return f"{minutes} мин."

@@ -51,10 +51,10 @@ async def background_market_maker_worker(interval_seconds: int = 30) -> None:
 async def background_engagement_worker(
     bot: Bot,
     interval_seconds: int | None = None,
-    min_interval_seconds: int = 10800,
-    max_interval_seconds: int = 21600,
+    min_interval_seconds: int = 86400,
+    max_interval_seconds: int = 86400,
 ) -> None:
-    """Периодически (раз в 3-6 часов) отправляет интерактивные байты в случайные чаты и напоминания в ЛС."""
+    """Периодически (не чаще одного раза в 24 часа) отправляет интерактивные байты в случайные чаты и напоминания в ЛС."""
     while True:
         sleep_duration = (
             interval_seconds

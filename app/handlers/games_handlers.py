@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from aiogram import Router, types, F
+from aiogram.enums import ChatType
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.db.session import session_scope
@@ -53,6 +54,14 @@ async def handle_bait_claim(callback: types.CallbackQuery):
     if not callback.from_user:
         return
     user_id = callback.from_user.id
+    # Ключ идемпотентности по сообщению байта: один дроп можно забрать только один раз,
+    # даже при повторных/быстрых нажатиях кнопки.
+    message_id = getattr(callback.message, "message_id", 0) if callback.message else 0
+    chat = getattr(callback.message, "chat", None) if callback.message else None
+    chat_id = getattr(chat, "id", 0) if chat else 0
+    idem_key = f"bait:{chat_id}:{message_id}"
+    bonus_coins = 25
+    duplicate = False
     async with session_scope() as session:
         await get_or_create_player(
             session,
@@ -61,14 +70,23 @@ async def handle_bait_claim(callback: types.CallbackQuery):
             last_name=callback.from_user.last_name,
             username=callback.from_user.username,
         )
-        bonus_coins = 25
-        await credit_coins(
+        res = await credit_coins(
             session,
             user_id=user_id,
             amount=bonus_coins,
             reason="Захват чат-дропа (байт)",
             operation_type="reward",
+            idempotency_key=idem_key,
         )
+        duplicate = res.duplicate
+
+    if duplicate:
+        try:
+            await callback.answer("Этот дроп уже забрали — ждите следующий!", show_alert=True)
+        except Exception:
+            pass
+        return
+
     try:
         await callback.answer(f"🎉 Вы перехватили дроп и получили +{bonus_coins} монет!", show_alert=True)
     except Exception:
@@ -503,7 +521,7 @@ async def handle_divorce(message: types.Message):
 async def handle_duel_invite(message: types.Message):
     if not message.from_user or not message.chat:
         return
-    if message.chat.type in (types.ChatType.PRIVATE,):
+    if message.chat.type in (ChatType.PRIVATE,):
         await message.reply("Дуэли проводятся только в группах!")
         return
 

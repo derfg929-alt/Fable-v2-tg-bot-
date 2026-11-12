@@ -95,7 +95,8 @@ async def run_market_maker_cycle(session: AsyncSession) -> bool:
     ref_price = max(Decimal("0.01"), ref_price.quantize(Decimal("0.0001")))
     state.reference_price = ref_price
 
-    # 3. Снимаем старые неисполненные заявки маркетмейкера
+    # 3. Снимаем старые неисполненные заявки маркетмейкера и возвращаем ему
+    # неизрасходованные резервы (иначе ликвидность MM истощается за несколько циклов).
     mm_orders = (
         await session.scalars(
             select(MarketOrder).where(
@@ -105,6 +106,14 @@ async def run_market_maker_cycle(session: AsyncSession) -> bool:
         )
     ).all()
     for mo in mm_orders:
+        if mo.side == "buy":
+            refund = int(
+                (Decimal(mo.remaining_quantity) * Decimal(str(mo.limit_price)) * Decimal("1.01"))
+                .to_integral_value(rounding=ROUND_UP)
+            )
+            state.coin_reserve += refund
+        else:
+            state.asset_reserve += mo.remaining_quantity
         mo.status = "cancelled"
 
     # 4. Выставляем новые заявки вокруг reference_price с учетом спреда

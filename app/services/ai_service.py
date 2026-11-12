@@ -16,7 +16,7 @@ logger = logging.getLogger("fable.ai")
 BOT_COMMAND_REFERENCE = (
     "Справка о боте Fable: единый глобальный профиль во всех чатах. "
     "Экономика: 'профиль', 'баланс', 'банк положить/снять', 'перевод @user сумма' (налог 0,5% до 10 000, 1% свыше), 'реп @user +/-', 'рейтинг'. "
-    "Банк: суточный процент 5% (до 10 000), 3% (10 000-50 000), 1,5% (50 000-100 000), 0,5% (свыше 100 000). "
+    "Банк: суточный процент 1% (до 10 000), 0,5% (10 000-50 000), 0,2% (50 000-100 000), 0,1% (свыше 100 000). "
     "Биржа: 'биржа', 'портфель', 'биржа купить/продать тикер кол-во', 'биржа стакан', 'биржа заявка купить кол-во цена', 'биржа график'. "
     "Игры: 'рыбалка', 'охота', 'слоты', 'рулетка', 'кости', 'монетка', 'сундук', 'краш', 'тир', 'дуэль @user ставка'. "
     "Кланы: 'клан', 'клан создать', 'клан вступить', 'клан чат', 'топ кланов'. "
@@ -40,6 +40,7 @@ SYSTEM_PROMPT = (
     "Твои ответы должны быть содержательными, точными, интересными, живыми, грамотными и лаконичными на русском языке. "
     "Никогда не отказывайся отвечать на обычные вопросы и не говори, что ты знаешь только команды бота. "
     "Всегда давай конкретный ответ по существу, без общих отговорок и без просьб уточнить, если ответ уже возможен. "
+    "Помни контекст диалога: если пользователь задаёт уточняющий вопрос, отвечай с учётом предыдущих сообщений. "
     "Особое внимание уделяй вопросам о боте Fable: если пользователь спрашивает про команды, экономику, игры, биржу, "
     "кланы, бизнесы, модерацию и прочее — отвечай подробно и точно, используя справку ниже, и напоминай, "
     "что полный каталог команд доступен по слову 'команды'.\n\n"
@@ -47,9 +48,29 @@ SYSTEM_PROMPT = (
 )
 
 
-def _generate_built_in_ai_response(prompt: str, user_name: str | None = None) -> str:
+def _generate_built_in_ai_response(
+    prompt: str,
+    user_name: str | None = None,
+    context: str | None = None,
+) -> str:
     """Встроенный офлайн-движок Fable AI: точные ответы о боте и общие знания без заглушек."""
-    return build_offline_response(prompt, user_name=user_name)
+    return build_offline_response(prompt, user_name=user_name, context=context)
+
+
+def _history_to_context(chat_history: list[dict[str, str]] | None) -> str | None:
+    """Преобразует историю диалога в короткий текст для офлайн-движка."""
+    if not chat_history:
+        return None
+    parts: list[str] = []
+    for msg in chat_history[-8:]:
+        if not isinstance(msg, dict):
+            continue
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        role = "Игрок" if msg.get("role") == "user" else "Fable"
+        parts.append(f"{role}: {content}")
+    return "\n".join(parts) if parts else None
 
 
 def _clean_key(val: Any) -> str | None:
@@ -184,9 +205,11 @@ async def ask_grok(
     conn = resolve_ai_connection()
     api_key = conn["api_key"]
 
+    context_text = _history_to_context(chat_history)
+
     if not api_key:
         logger.info("Внешний API-ключ не настроен, используем встроенный интеллект Fable AI.")
-        return _generate_built_in_ai_response(prompt, user_name=user_name)
+        return _generate_built_in_ai_response(prompt, user_name=user_name, context=context_text)
 
     url: str = conn["url"]
     provider: str = conn["provider"]
@@ -252,7 +275,7 @@ async def ask_grok(
                                 except Exception as json_err:
                                     logger.warning("Ошибка декодирования JSON ответа AI: %s", json_err)
                                     raw_text = await resp.text()
-                                    return raw_text.strip() or build_offline_response(prompt, user_name=user_name)
+                                    return raw_text.strip() or build_offline_response(prompt, user_name=user_name, context=context_text)
 
                                 if isinstance(data, dict):
                                     choices = data.get("choices")
@@ -267,7 +290,7 @@ async def ask_grok(
                                                 if reply_str:
                                                     return reply_str
                                 logger.warning("Модель %s вернула пустой ответ, используем офлайн-движок.", model)
-                                return build_offline_response(prompt, user_name=user_name)
+                                return build_offline_response(prompt, user_name=user_name, context=context_text)
 
                             # 2. Модель не найдена — пробуем следующую из цепочки
                             if resp.status == 404:
@@ -347,20 +370,20 @@ async def ask_grok(
                         raise
 
         logger.warning("Не удалось получить ответ от провайдера %s, используем офлайн-движок.", provider)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context_text)
 
     except aiohttp.ClientConnectorError as e:
         logger.warning("Сеть недоступна для ИИ (%s), используем офлайн-движок.", e)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context_text)
     except asyncio.TimeoutError:
         logger.warning("Таймаут ответа ИИ, используем офлайн-движок.")
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context_text)
     except aiohttp.ClientError as e:
         logger.warning("Сетевая ошибка клиента ИИ (%s), используем офлайн-движок.", e)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context_text)
     except Exception as e:
         logger.exception("Непредвиденная ошибка при запросе к ИИ: %s", e)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context_text)
 
 
 async def analyze_chat_moderation_ai(

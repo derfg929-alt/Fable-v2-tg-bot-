@@ -16,15 +16,20 @@ from aiogram.enums import ChatType
 
 from app.db.session import session_scope
 from sqlalchemy import select
-from app.db.models import ModerationCase
+from app.db.models import ModerationCase, Player
 from app.services.activity_service import reward_chat_message
-from app.services.moderation_service import is_link_allowed, get_user_admin_level
+from app.services.moderation_service import (
+    is_link_allowed,
+    get_user_admin_level,
+    has_active_chat_ban,
+)
 from app.services.chat_settings_service import get_or_create_chat, has_accepted_rules
 
 
 class CallbackAnswerMiddleware(BaseMiddleware):
     """Гарантирует вызов callback.answer() для любых inline-кнопок,
     предотвращая вечную загрузку ("часики") даже при необработанных или упавших событиях.
+    Также блокирует нажатия локально забаненного в чате игрока (бан действует только в этом чате).
     """
     async def __call__(
         self,
@@ -35,6 +40,17 @@ class CallbackAnswerMiddleware(BaseMiddleware):
         if not isinstance(event, types.CallbackQuery):
             return await handler(event, data)
 
+        if await self._blocked_by_local_ban(event):
+            try:
+                await event.message.delete()
+            except Exception:
+                pass
+            try:
+                await event.answer("Вы заблокированы в этом чате.", show_alert=True)
+            except Exception:
+                pass
+            return
+
         try:
             return await handler(event, data)
         finally:
@@ -42,6 +58,24 @@ class CallbackAnswerMiddleware(BaseMiddleware):
                 await event.answer()
             except Exception:
                 pass
+
+    @staticmethod
+    async def _blocked_by_local_ban(event: types.CallbackQuery) -> bool:
+        try:
+            chat = event.message.chat if event.message else None
+            if chat is None or chat.type == ChatType.PRIVATE or not event.from_user:
+                return False
+            async with session_scope() as session:
+                lvl = await get_user_admin_level(
+                    session, chat_id=chat.id, user_id=event.from_user.id
+                )
+                if lvl >= 2:
+                    return False
+                return await has_active_chat_ban(
+                    session, chat_id=chat.id, target_id=event.from_user.id
+                )
+        except Exception:
+            return False
 
 
 class MessageActivityAndSecurityMiddleware(BaseMiddleware):
@@ -57,6 +91,29 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
         message: types.Message = event
         if not message.from_user or message.from_user.is_bot:
             return await handler(event, data)
+
+        # Глобальный бан (ТЗ 13.5): запрещает пользоваться экономикой, биржей
+        # и играми во всех чатах. Не является Telegram-баном, не трогает
+        # админку чата и НЕ удаляет данные игрока (монеты, бизнесы, фермы).
+        # Локальные баны конкретных чатов проверяются отдельно ниже и на
+        # другие чаты не распространяются.
+        if message.text or message.caption:
+            async with session_scope() as session:
+                banned = await session.scalar(
+                    select(Player.is_globally_banned).where(
+                        Player.telegram_id == message.from_user.id
+                    )
+                )
+            if banned:
+                if message.chat and message.chat.type == ChatType.PRIVATE:
+                    try:
+                        await message.reply(
+                            "🚫 Ваш аккаунт Fable заблокирован владельцем. "
+                            "Экономика, биржа и игры недоступны.",
+                        )
+                    except Exception:
+                        pass
+                return
 
         # Обработка только групповых чатов
         if message.chat and message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
@@ -86,6 +143,17 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                 admin_lvl = await get_user_admin_level(
                     session, chat_id=message.chat.id, user_id=message.from_user.id
                 )
+
+                # 0.1. Локальный бан: действует только в этом чате. В других
+                # группах игрок сохраняет полный доступ и все свои данные.
+                if admin_lvl < 2 and await has_active_chat_ban(
+                    session, chat_id=message.chat.id, target_id=message.from_user.id
+                ):
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    return
 
                 # 1. Проверка заморозки чата
                 frozen_until_str = settings.get("frozen_until")

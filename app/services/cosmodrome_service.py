@@ -18,10 +18,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import random
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Player, PlayerCosmodrome
+from app.db.models import GameSession, Player, PlayerCosmodrome
 from app.services.economy_service import debit_coins, credit_coins, InsufficientFundsError, PlayerNotFoundError
 
 
@@ -99,6 +99,9 @@ ROCKETS: dict[str, RocketConfig] = {
 
 MAX_COSMODROME_LEVEL = 10
 MAX_ACCUMULATION_HOURS = 4.0
+# Кулдаун между космическими экспедициями: без него запуск приносил бы
+# бесконечные монеты без затрат и без ограничений.
+LAUNCH_COOLDOWN_SECONDS = 1800  # 30 минут
 
 
 def get_cosmodrome_upgrade_cost(current_level: int) -> int:
@@ -253,11 +256,35 @@ class LaunchMissionResult:
 
 
 async def launch_rocket_mission(session: AsyncSession, *, user_id: int, rocket_code: str | None = None) -> LaunchMissionResult:
-    """Запуск отдельной космической экспедиции."""
+    """Запуск отдельной космической экспедиции (не чаще одного раза в 30 минут)."""
     cosmo = await get_or_create_cosmodrome(session, user_id=user_id)
     rockets = get_rockets_dict(cosmo)
     if not rockets:
         raise CosmodromeError("На вашем космодроме нет ни одной ракеты! Купите ракету: <code>космодром купить vostok</code>")
+
+    now = datetime.now(timezone.utc)
+    last_launch = await session.scalar(
+        select(GameSession)
+        .where(
+            GameSession.user_id == user_id,
+            GameSession.game_type == "cosmodrome_launch",
+        )
+        .order_by(desc(GameSession.created_at))
+        .limit(1)
+    )
+    if last_launch and last_launch.created_at:
+        last_at = last_launch.created_at
+        if last_at.tzinfo is None:
+            # SQLite отдаёт время без часового пояса — считаем его UTC.
+            last_at = last_at.replace(tzinfo=timezone.utc)
+        elapsed = (now - last_at).total_seconds()
+        if elapsed < LAUNCH_COOLDOWN_SECONDS:
+            rem = int(LAUNCH_COOLDOWN_SECONDS - elapsed)
+            mins = rem // 60
+            secs = rem % 60
+            raise CosmodromeError(
+                f"Ракета заправляется после последнего полёта! Следующий запуск через {mins} мин. {secs} сек."
+            )
 
     if rocket_code:
         code_norm = rocket_code.strip().lower()
@@ -292,6 +319,19 @@ async def launch_rocket_mission(session: AsyncSession, *, user_id: int, rocket_c
         player.experience += exp
 
     cosmo.total_launches += 1
+    # Фиксируем запуск в журнале игровых сессий, чтобы работал кулдаун.
+    session.add(
+        GameSession(
+            game_type="cosmodrome_launch",
+            status="finished",
+            user_id=user_id,
+            stake=0,
+            payout=base_launch_reward,
+            result=f"launch:{code_norm}",
+            state={"rocket": code_norm},
+            finished_at=now,
+        )
+    )
     await session.flush()
 
     return LaunchMissionResult(
