@@ -82,13 +82,17 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                 chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
                 settings = chat.settings or {}
 
+                # Уровень прав запрашиваем один раз и переиспользуем во всех проверках ниже.
+                admin_lvl = await get_user_admin_level(
+                    session, chat_id=message.chat.id, user_id=message.from_user.id
+                )
+
                 # 1. Проверка заморозки чата
                 frozen_until_str = settings.get("frozen_until")
                 if frozen_until_str:
                     try:
                         frozen_until = datetime.fromisoformat(frozen_until_str)
                         if datetime.now(timezone.utc) < frozen_until:
-                            admin_lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
                             if admin_lvl < 2:
                                 try:
                                     await message.delete()
@@ -101,7 +105,6 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                 # 2. Проверка обязательного принятия правил
                 if settings.get("rules_acceptance_required", False):
                     accepted = await has_accepted_rules(session, chat_id=message.chat.id, user_id=message.from_user.id)
-                    admin_lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
                     if not accepted and admin_lvl < 2:
                         try:
                             await message.delete()
@@ -115,7 +118,6 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
 
                 # 3. Проверка антиссылок
                 if settings.get("links_restricted", True) and message.text:
-                    admin_lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id)
                     if admin_lvl < 2:
                         allowed, matched_url = await is_link_allowed(session, chat_id=message.chat.id, text=message.text)
                         if not allowed:

@@ -93,7 +93,7 @@ async def claim_daily_bonus(session: AsyncSession, *, user_id: int) -> DailyBonu
 # ===================== МИНИ-ИГРЫ =====================
 
 async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple[int, int, bool, int]:
-    """Кости: бросок игрока против бота со сбалансированным RTP ~95% (выплата 2.0x, возврат при ничьей)."""
+    """Кости: бросок игрока против бота со сбалансированным RTP ~90% (выплата 2.0x, возврат при ничьей)."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
     if stake > 50_000:
@@ -108,8 +108,8 @@ async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple
     p_roll = random.randint(1, 6)
     b_roll = random.randint(1, 6)
 
-    # Легкое казино-преимущество (~4.3% house edge, RTP ~95.7%): в 8% победных бросков бот перебрасывает
-    if p_roll > b_roll and random.random() < 0.08:
+    # Казино-преимущество (~10% house edge, RTP ~90%): в 16% победных бросков бот перебрасывает
+    if p_roll > b_roll and random.random() < 0.16:
         b_roll = random.randint(p_roll, 6)
 
     is_win = p_roll > b_roll
@@ -127,7 +127,7 @@ async def play_dice(session: AsyncSession, *, user_id: int, stake: int) -> tuple
 
 
 async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, stake: int) -> tuple[str, bool, int]:
-    """Монетка: орел или решка с честной удвоенной выплатой 2.0x и сбалансированным шансом победы (48%, RTP 96%)."""
+    """Монетка: орел или решка с удвоенной выплатой 2.0x и шансом победы 45% (RTP ~90%)."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
     if stake > 50_000:
@@ -142,8 +142,8 @@ async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, sta
     norm_choice = choice.lower()
     is_user_heads = norm_choice in ("орел", "орёл", "heads")
 
-    # Сбалансированный шанс на лудку: 48% на победу игрока (RTP = 96%)
-    if random.random() < 0.48:
+    # Сбалансированный шанс на лудку: 45% на победу игрока (RTP = 90%)
+    if random.random() < 0.45:
         outcome = "орел" if is_user_heads else "решка"
     else:
         outcome = "решка" if is_user_heads else "орел"
@@ -159,7 +159,7 @@ async def play_coinflip(session: AsyncSession, *, user_id: int, choice: str, sta
 
 
 async def play_mystery_box(session: AsyncSession, *, user_id: int, stake: int) -> tuple[float, int]:
-    """Таинственный сундук: частые награды (73% шанс выпадения монет) со сбалансированным RTP ~95%."""
+    """Таинственный сундук: частые награды (~72% шанс выпадения монет) со сбалансированным RTP ~90%."""
     if stake <= 0:
         raise InvalidAmountError("Ставка должна быть больше нуля")
     if stake > 50_000:
@@ -171,8 +171,8 @@ async def play_mystery_box(session: AsyncSession, *, user_id: int, stake: int) -
 
     await burn_coins(session, user_id=user_id, amount=stake, reason="Открытие сундука", operation_type="game_box_stake")
 
-    # Сбалансированные веса: 73% шанс непустого сундука, RTP ~95.0%
-    mult = random.choices([0.0, 0.5, 1.2, 1.5, 2.0, 3.0, 5.0], weights=[0.27, 0.19, 0.25, 0.17, 0.08, 0.03, 0.01])[0]
+    # Сбалансированные веса: 72% шанс непустого сундука, RTP ~90%
+    mult = random.choices([0.0, 0.5, 1.2, 1.5, 2.0, 3.0, 5.0], weights=[0.28, 0.22, 0.24, 0.15, 0.07, 0.03, 0.01])[0]
     payout = int(stake * mult)
     if payout > 0:
         await credit_coins(session, user_id=user_id, amount=payout, reason=f"Выигрыш в сундуке (x{mult})", operation_type="game_box_win")
@@ -218,7 +218,7 @@ class RouletteResult:
     winning_number: int
     winning_color: str
     is_win: bool
-    multiplier: int
+    multiplier: float
     payout: int
     net_profit: int
 
@@ -495,12 +495,12 @@ async def play_slots(session: AsyncSession, *, user_id: int, stake: int, dice_va
         reels = decode_telegram_slot_dice(dice_value)
     else:
         # Реалистичные шансы:
-        # 1.5% джекпот 777 (как в реальных барабанах 1/64)
-        # 8.5% три одинаковых символа (x5)
-        # 35.0% пара одинаковых символов (частичный возврат/небольшой выигрыш x0.8 - x1.2)
-        # 55.0% разные символы (проигрыш)
-        # Итоговая частота побед/возвратов: ~45%, RTP ~94.7%
-        spin_type = random.choices(["jackpot", "three", "pair", "diff"], weights=[0.015, 0.085, 0.35, 0.55])[0]
+        # 1.2% джекпот 777 (как в реальных барабанах)
+        # 7.0% три одинаковых символа (x5)
+        # 42.7% пара одинаковых символов (частичный возврат/небольшой выигрыш x0.8 - x1.2)
+        # 49.1% разные символы (проигрыш)
+        # Итоговая частота побед/возвратов: ~51%, RTP ~90%
+        spin_type = random.choices(["jackpot", "three", "pair", "diff"], weights=[0.012, 0.070, 0.427, 0.491])[0]
         symbols_pool = ["🍇", "🍋", "BAR", "🍒", "🔔"]
         if spin_type == "jackpot":
             reels = ("7️⃣", "7️⃣", "7️⃣")
@@ -580,7 +580,7 @@ async def play_crash_game(
     user_id: int,
     stake: int,
 ) -> tuple[float, bool, int]:
-    """Игра 'Краш': динамичный множитель со сбалансированным RTP ~94.6%."""
+    """Игра 'Краш': динамичный множитель со сбалансированным RTP ~90%."""
     if stake <= 0:
         raise GameError("Ставка должна быть больше нуля")
     if stake > 50_000:
@@ -594,9 +594,9 @@ async def play_crash_game(
 
     await debit_coins(session, user_id=user_id, amount=stake, reason="Ставка в игре Краш", operation_type="game_bet")
 
-    # Сбалансированный шанс: 44% шанс забрать от x1.40 до x2.90 (среднее 2.15, RTP ~94.6%)
+    # Сбалансированный шанс: 42% шанс забрать от x1.40 до x2.90 (среднее 2.15, RTP ~90%)
     r = random.random()
-    if r < 0.44:
+    if r < 0.42:
         mult = round(random.uniform(1.4, 2.9), 2)
         is_win = True
         payout = int(stake * mult)
@@ -615,7 +615,7 @@ async def play_shooting_range_game(
     user_id: int,
     stake: int,
 ) -> tuple[str, float, int]:
-    """Мини-игра 'Тир': стрельба по мишеням с 54% шансом попадания и RTP ~95.8%."""
+    """Мини-игра 'Тир': стрельба по мишеням с RTP ~90%."""
     if stake <= 0:
         raise GameError("Ставка должна быть больше нуля")
     if stake > 50_000:
@@ -629,12 +629,12 @@ async def play_shooting_range_game(
 
     await debit_coins(session, user_id=user_id, amount=stake, reason="Выстрел в Тире", operation_type="game_bet")
 
-    # Сбалансированные цели и коэффициенты (RTP ~95.8%):
+    # Сбалансированные цели и коэффициенты (RTP ~90%):
     targets = [
-        ("🎯 В «яблочко» (Центр)", 2.5, 0.16),
-        ("🦆 Движущаяся утка", 1.8, 0.20),
-        ("🥫 Жестяная банка", 1.1, 0.18),
-        ("💨 Промах по мишени", 0.0, 0.46),
+        ("🎯 В «яблочко» (Центр)", 2.5, 0.153),
+        ("🦆 Движущаяся утка", 1.8, 0.188),
+        ("🥫 Жестяная банка", 1.1, 0.164),
+        ("💨 Промах по мишени", 0.0, 0.495),
     ]
 
     r = random.random()
@@ -711,16 +711,18 @@ async def play_roulette(
         winning_color = "black"
 
     is_win = False
-    multiplier = 0
+    multiplier = 0.0
 
     if bet_type == "color" and bet_val == winning_color:
         is_win = True
-        multiplier = 2
+        multiplier = 1.85
     elif bet_type == "number" and bet_val == winning_number:
         is_win = True
-        multiplier = 36
+        multiplier = 33.0
 
-    payout = stake * multiplier
+    # Казино-преимущество (~10% house edge, RTP ~90%): выплата чуть ниже
+    # математической (цвет 1.85x, число 33x вместо 2x/36x).
+    payout = int(stake * multiplier) if is_win else 0
     if payout > 0:
         await credit_coins(
             session,

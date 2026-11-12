@@ -115,8 +115,8 @@ async def _send_ai_response(message: types.Message, answer: str) -> None:
 
 @router.message(F.text | F.caption)
 async def handle_ai_query(message: types.Message, bot: Bot):
-    bot_info = await bot.get_me()
-    if not _should_trigger_ai(message, bot_info.id):
+    # bot.id доступен без сетевого запроса getMe (в aiogram 3 токен парсится локально).
+    if not _should_trigger_ai(message, bot.id):
         return
 
     text = message.text or message.caption or ""
