@@ -11,12 +11,20 @@ import re
 from aiogram import Router, types, Bot, F
 from aiogram.enums import ChatAction, ChatType
 
+from app.db.session import session_scope
 from app.services.ai_service import ask_grok
+from app.services.ai_memory_service import (
+    get_conversation_history,
+    remember_exchange,
+    clear_conversation,
+)
 
 logger = logging.getLogger("fable.ai")
 router = Router(name="ai_router")
 
 AI_TRIGGER_PATTERN = re.compile(r"\b(фабле|fable|фабля|фаблик|грок|grok)\b", re.IGNORECASE)
+
+MEMORY_CLEAR_COMMANDS = {"забудь", "!забудь", "очисти память", "!очисти память", "сбрось память", "новый диалог"}
 
 KNOWN_COMMANDS = {
     "профиль", "банк", "биржа", "рынок", "игры", "клан", "кланы", "топ", "топы",
@@ -120,13 +128,36 @@ async def handle_ai_query(message: types.Message, bot: Bot):
         return
 
     text = message.text or message.caption or ""
+    user = message.from_user
+    user_name = user.first_name if user else "Пользователь"
+    chat_id = message.chat.id if message.chat else 0
+
+    # Команда сброса памяти диалога.
+    if text.strip().casefold() in MEMORY_CLEAR_COMMANDS:
+        try:
+            async with session_scope() as session:
+                await clear_conversation(session, user_id=user.id, chat_id=chat_id)
+            await message.reply(f"🧠 {user_name}, память нашего диалога очищена. Начнём с чистого листа!")
+        except Exception as e:
+            logger.exception("Ошибка очистки памяти ИИ: %s", e)
+            await message.reply("⚠️ Не удалось очистить память диалога, попробуйте позже.")
+        return
 
     # Убираем имя бота / грока из самого промпта для более чистого контекста нейросети
     cleaned_prompt = AI_TRIGGER_PATTERN.sub("", text).strip(" ,:;!?\n")
     if not cleaned_prompt:
         cleaned_prompt = text.strip()
 
-    user_name = message.from_user.first_name if message.from_user else "Пользователь"
+    # Загружаем предыдущие реплики диалога, чтобы отвечать связно.
+    history: list[dict[str, str]] = []
+    if user:
+        try:
+            async with session_scope() as session:
+                history = await get_conversation_history(
+                    session, user_id=user.id, chat_id=chat_id
+                )
+        except Exception as e:
+            logger.debug("Не удалось загрузить историю диалога: %s", e)
 
     try:
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -134,9 +165,23 @@ async def handle_ai_query(message: types.Message, bot: Bot):
         pass
 
     try:
-        answer = await ask_grok(cleaned_prompt, user_name=user_name)
+        answer = await ask_grok(cleaned_prompt, user_name=user_name, chat_history=history)
     except Exception as e:
         logger.exception("Ошибка при вызове Grok AI: %s", e)
         answer = "⚠️ Произошла ошибка при обработке запроса к Grok AI. Попробуйте еще раз позже."
+
+    # Сохраняем состоявшийся обмен репликами в память (кроме сообщений об ошибке).
+    if user and answer and not answer.startswith("⚠️"):
+        try:
+            async with session_scope() as session:
+                await remember_exchange(
+                    session,
+                    user_id=user.id,
+                    chat_id=chat_id,
+                    user_message=cleaned_prompt,
+                    assistant_message=answer,
+                )
+        except Exception as e:
+            logger.debug("Не удалось сохранить историю диалога: %s", e)
 
     await _send_ai_response(message, answer)

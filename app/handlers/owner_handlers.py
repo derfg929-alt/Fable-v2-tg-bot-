@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from aiogram import Router, types, F
+from aiogram.enums import ChatType
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.config import get_settings
@@ -20,6 +21,11 @@ from app.services.owner_service import (
     set_chat_bot_state,
     set_player_global_ban,
     reset_global_economy,
+    get_broadcast_cooldown,
+    mark_broadcast_sent,
+    list_broadcast_chats,
+    record_owner_broadcast,
+    format_cooldown_remaining,
     OwnerAccessDeniedError,
 )
 
@@ -39,8 +45,9 @@ async def _build_admin_panel_payload(owner_id: int):
     builder.button(text="🏢 Список чатов", callback_data="owner_menu_chats")
     builder.button(text="💰 Балансы игроков", callback_data="owner_menu_balances")
     builder.button(text="📊 Статистика", callback_data="owner_menu_stats")
+    builder.button(text="📢 Рассылка (1 раз в 24ч)", callback_data="owner_menu_broadcast")
     builder.button(text="⚠️ Сброс экономики", callback_data="owner_eco_reset_prompt")
-    builder.adjust(2, 2)
+    builder.adjust(2, 2, 1)
 
     active_cnt = sum(1 for c in chats if c.is_active)
     total_cnt = len(chats)
@@ -72,6 +79,7 @@ async def _build_admin_panel_payload(owner_id: int):
         f"• <code>забрать [ID] [монеты]</code> — списать монеты у игрока\n"
         f"• <code>глобальный бан [ID] [причина]</code>\n"
         f"• <code>глобальный разбан [ID]</code>\n"
+        f"• <code>рассылка [текст]</code> — рассылка по всем активным группам (не чаще 1 раза в 24ч)\n"
         f"• <code>сброс экономики</code>"
     )
     return text, builder.as_markup()
@@ -82,7 +90,7 @@ async def handle_admin_panel(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
         return
     # Если в группе, панель владельца не должна перехватывать групповую админку
-    if message.chat and message.chat.type != types.ChatType.PRIVATE:
+    if message.chat and message.chat.type != ChatType.PRIVATE:
         return
     text, markup = await _build_admin_panel_payload(message.from_user.id)
     await message.reply(text, reply_markup=markup, parse_mode="HTML")
@@ -305,7 +313,7 @@ async def handle_give_coins(message: types.Message):
     async with session_scope() as session:
         from app.services.economy_service import credit_coins
         from app.services.player_service import get_or_create_player
-        await get_or_create_player(session, telegram_id=target_id)
+        await get_or_create_player(session, telegram_id=target_id, first_name="Игрок")
         try:
             res = await credit_coins(
                 session,
@@ -317,7 +325,7 @@ async def handle_give_coins(message: types.Message):
             )
             await message.reply(
                 f"✅ Выдано <b>{amount:,}</b> монет игроку <code>{target_id}</code>!\n"
-                f"Его новый баланс: <b>{res.current_balance:,}</b> монет.".replace(",", " "),
+                f"Его новый баланс: <b>{res.recipient_balance:,}</b> монет.".replace(",", " "),
                 parse_mode="HTML",
             )
         except Exception as e:
@@ -347,7 +355,7 @@ async def handle_take_coins(message: types.Message):
             )
             await message.reply(
                 f"✅ Списано <b>{amount:,}</b> монет у игрока <code>{target_id}</code>!\n"
-                f"Его остаток: <b>{res.current_balance:,}</b> монет.".replace(",", " "),
+                f"Его остаток: <b>{res.actor_balance:,}</b> монет.".replace(",", " "),
                 parse_mode="HTML",
             )
         except Exception as e:
@@ -522,5 +530,124 @@ async def on_reset_economy_cancel(callback: types.CallbackQuery):
     builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
     try:
         await callback.message.edit_text("Сброс экономики отменен.", reply_markup=builder.as_markup())
+    except Exception:
+        pass
+
+
+# ===================== РАССЫЛКА ВЛАДЕЛЬЦА (1 РАЗ В 24 ЧАСА) =====================
+
+
+def _broadcast_help_text(chats_count: int | None = None) -> str:
+    base = (
+        "📢 <b>РАССЫЛКА ПО ГРУППАМ FABLE</b>\n\n"
+        "Отправьте команду <code>рассылка [текст]</code> — сообщение уйдёт во все активные группы, где есть бот.\n"
+        "Реклама/анонсы уходят не чаще <b>одного раза в 24 часа</b>.\n\n"
+        "Пример: <code>рассылка Всем привет! Сегодня двойной бонус!</code>"
+    )
+    if chats_count is not None:
+        base += f"\n\n🏢 Активных групп для рассылки: <b>{chats_count}</b>."
+    return base
+
+
+async def _run_owner_broadcast(message: types.Message, text: str) -> None:
+    """Выполняет рассылку по активным группам с учётом 24-часового кулдауна."""
+    owner_id = message.from_user.id
+    async with session_scope() as session:
+        can_send, remaining = await get_broadcast_cooldown(session, owner_id=owner_id)
+        if not can_send:
+            await message.reply(
+                f"⏳ Рассылка уже была выполнена. Следующая будет доступна через "
+                f"<b>{format_cooldown_remaining(remaining)}</b>.",
+                parse_mode="HTML",
+            )
+            return
+        chats = await list_broadcast_chats(session, owner_id=owner_id)
+
+    if not chats:
+        await message.reply("🏢 Нет активных групп, куда можно отправить рассылку.")
+        return
+
+    sent = 0
+    failed = 0
+    results: dict[str, str] = {}
+    for chat in chats:
+        try:
+            await message.bot.send_message(chat_id=chat.telegram_id, text=text, parse_mode="HTML")
+            sent += 1
+        except Exception as e:
+            failed += 1
+            results[str(chat.telegram_id)] = str(e)[:200]
+
+    async with session_scope() as session:
+        await mark_broadcast_sent(session, owner_id=owner_id)
+        await record_owner_broadcast(
+            session,
+            owner_id=owner_id,
+            text=text,
+            total_chats=len(chats),
+            sent_count=sent,
+            failed_count=failed,
+            results=results,
+        )
+
+    await message.reply(
+        f"📢 <b>Рассылка завершена!</b>\n\n"
+        f"✅ Доставлено: <b>{sent}</b> из <b>{len(chats)}</b> групп\n"
+        f"❌ Ошибок: <b>{failed}</b>\n\n"
+        f"<i>Следующая рассылка доступна через 24 часа.</i>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(F.text.casefold().in_(["рассылка", "!рассылка", "рассылка помощь"]))
+async def handle_broadcast_help(message: types.Message):
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    if message.chat and message.chat.type != ChatType.PRIVATE:
+        return
+    async with session_scope() as session:
+        chats = await list_broadcast_chats(session, owner_id=message.from_user.id)
+        can_send, remaining = await get_broadcast_cooldown(session, owner_id=message.from_user.id)
+    text = _broadcast_help_text(len(chats))
+    if not can_send:
+        text += f"\n\n⏳ Следующая рассылка доступна через <b>{format_cooldown_remaining(remaining)}</b>."
+    await message.reply(text, parse_mode="HTML")
+
+
+@router.message(F.text.casefold().startswith("рассылка"))
+async def handle_owner_broadcast(message: types.Message):
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    if message.chat and message.chat.type != ChatType.PRIVATE:
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await handle_broadcast_help(message)
+        return
+    await _run_owner_broadcast(message, parts[1].strip())
+
+
+@router.callback_query(F.data == "owner_menu_broadcast")
+async def on_owner_menu_broadcast(callback: types.CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    async with session_scope() as session:
+        chats = await list_broadcast_chats(session, owner_id=callback.from_user.id)
+        can_send, remaining = await get_broadcast_cooldown(session, owner_id=callback.from_user.id)
+
+    text = _broadcast_help_text(len(chats))
+    if not can_send:
+        text += f"\n\n⏳ Следующая рассылка доступна через <b>{format_cooldown_remaining(remaining)}</b>."
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
+    try:
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except Exception:
         pass

@@ -581,6 +581,32 @@ class PlayerCosmodrome(Base, TimestampMixin):
     last_collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class AIConversation(Base):
+    """История диалога пользователя с ИИ Fable для поддержания контекста.
+
+    Хранится отдельно для личных сообщений и для каждого чата, чтобы бот
+    помнил, о чём шла речь, и отвечал связно на последующие вопросы.
+    """
+    __tablename__ = "ai_conversations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "chat_id", name="uq_ai_conversation_user_chat"),
+        Index("ix_ai_conversation_updated", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    history: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class PlayerGear(Base, TimestampMixin):
     """Снаряжение и транспорт игрока для подработок, охоты и рыбалки."""
     __tablename__ = "player_gears"

@@ -249,6 +249,14 @@ async def handle_unban(message: types.Message, bot: Bot):
             if lvl < 3:
                 await message.reply("Для разбана требуется уровень 3 (Админ)")
                 return
+            from app.services.moderation_service import revoke_ban
+            await revoke_ban(
+                session,
+                chat_id=message.chat.id,
+                moderator_id=message.from_user.id,
+                target_id=target_id,
+                bot=bot,
+            )
             tg_status = ""
             try:
                 await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_id, only_if_banned=True)
@@ -257,7 +265,8 @@ async def handle_unban(message: types.Message, bot: Bot):
                 tg_status = f"\n⚠️ <i>Примечание: Telegram unban ({tg_err}).</i>"
             await message.reply(
                 f"✅ <b>ПОЛЬЗОВАТЕЛЬ РАЗБЛОКИРОВАН!</b>\n\n"
-                f"👤 ID <code>{target_id}</code> снова может вступать в группу.{tg_status}",
+                f"👤 ID <code>{target_id}</code> снова может писать в этом чате. "
+                f"Бан действовал только здесь — в других чатах его доступ никогда не пропадал.{tg_status}",
                 parse_mode="HTML",
             )
         except Exception as e:

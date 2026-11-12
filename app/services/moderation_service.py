@@ -573,6 +573,72 @@ async def record_ban_or_kick(
     return case
 
 
+async def has_active_chat_ban(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    target_id: int,
+) -> bool:
+    """Проверяет, действует ли активный бан игрока именно в этом чате.
+
+    Бан всегда локальный: он не влияет на другие группы и не снимает
+    Telegram-ограничения где-либо ещё.
+    """
+    case = await session.scalar(
+        select(ModerationCase)
+        .where(
+            ModerationCase.chat_id == chat_id,
+            ModerationCase.target_id == target_id,
+            ModerationCase.action == "ban",
+            ModerationCase.is_active.is_(True),
+        )
+        .limit(1)
+    )
+    return case is not None
+
+
+async def revoke_ban(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    moderator_id: int,
+    target_id: int,
+    bot=None,
+) -> int:
+    """Снимает локальный бан игрока в конкретном чате. Возвращает число снятых кейсов."""
+    await check_can_moderate(
+        session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=3, bot=bot
+    )
+
+    cases = (
+        await session.scalars(
+            select(ModerationCase).where(
+                ModerationCase.chat_id == chat_id,
+                ModerationCase.target_id == target_id,
+                ModerationCase.action == "ban",
+                ModerationCase.is_active.is_(True),
+            )
+        )
+    ).all()
+    now = datetime.now(timezone.utc)
+    for c in cases:
+        c.is_active = False
+        c.revoked_by = moderator_id
+        c.revoked_at = now
+
+    log_entry = AdminActionLog(
+        chat_id=chat_id,
+        actor_id=moderator_id,
+        target_id=target_id,
+        action="unban",
+        reason="Снятие локального бана в чате",
+        details={"revoked_cases": len(cases)},
+    )
+    session.add(log_entry)
+    await session.flush()
+    return len(cases)
+
+
 async def is_link_allowed(
     session: AsyncSession,
     *,

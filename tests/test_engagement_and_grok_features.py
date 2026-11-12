@@ -141,7 +141,7 @@ async def test_send_chunk_html_fallback():
 
 @pytest.mark.asyncio
 async def test_engagement_worker_interval_bounds():
-    """Проверка диапазона интервалов фонового воркера (от 3 до 6 часов)."""
+    """Проверка, что фоновый воркер вовлечения запускается не чаще одного раза в 24 часа."""
     bot_mock = AsyncMock()
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep, \
          patch("app.tasks.background.process_dm_baits", new_callable=AsyncMock, return_value=0), \
@@ -151,15 +151,11 @@ async def test_engagement_worker_interval_bounds():
         mock_sleep.side_effect = asyncio.CancelledError()
 
         with pytest.raises(asyncio.CancelledError):
-            await background_engagement_worker(
-                bot_mock,
-                min_interval_seconds=10800,
-                max_interval_seconds=21600,
-            )
+            await background_engagement_worker(bot_mock)
 
         mock_sleep.assert_called_once()
         sleep_arg = mock_sleep.call_args[0][0]
-        assert 10800 <= sleep_arg <= 21600
+        assert sleep_arg == 86400
 
 
 @pytest.mark.asyncio
