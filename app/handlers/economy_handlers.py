@@ -11,6 +11,7 @@ import re
 from aiogram import Router, types, F
 from aiogram.enums import ChatType
 from aiogram.filters import Command
+from sqlalchemy import func, select
 
 from app.db.session import session_scope
 from app.services.player_service import get_or_create_player, format_time_in_fable
@@ -114,8 +115,6 @@ async def _extract_target_user_id(message: types.Message, session) -> int | None
         match = re.search(r"@([a-zA-Z0-9_]+)", raw_text)
         if match:
             uname = match.group(1).lower()
-            from app.db.models import Player
-            from sqlalchemy import select, func
             p = await session.scalar(select(Player).where(func.lower(Player.username) == uname))
             if p:
                 return p.telegram_id

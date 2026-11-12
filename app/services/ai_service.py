@@ -331,10 +331,10 @@ async def ask_grok(
                                 )
                             if resp.status == 429:
                                 return "Слишком много запросов, подождите минуту"
-                            if resp.status == 400:
-                                reason = error_body[:120] if error_body else "неверный формат параметров"
-                                return f"⚠️ Ошибка запроса к ИИ: {reason}"
-                            return f"⚠️ Ошибка обращения к ИИ (код {resp.status}). Попробуйте позже."
+                            # Прочие ошибки провайдера — пробуем следующую модель,
+                            # а при неудаче отвечаем офлайн-движком (без сухих ошибок).
+                            logger.debug("Модель %s пропущена из-за статуса %s", model, resp.status)
+                            break
 
                     except aiohttp.ClientError as client_err:
                         if attempt < max_retries - 1:
@@ -350,17 +350,17 @@ async def ask_grok(
         return build_offline_response(prompt, user_name=user_name)
 
     except aiohttp.ClientConnectorError as e:
-        logger.error("Сетевая ошибка подключения к серверам ИИ: %s", e)
-        return "⚠️ Не удалось связаться с сервером ИИ (ошибка сети/DNS). Проверьте интернет-соединение или доступность хоста."
+        logger.warning("Сеть недоступна для ИИ (%s), используем офлайн-движок.", e)
+        return build_offline_response(prompt, user_name=user_name)
     except asyncio.TimeoutError:
-        logger.error("Таймаут ожидания ответа от ИИ (превышено 60 сек).")
-        return "⏳ Сервер ИИ не ответил вовремя (таймаут). Попробуйте задать вопрос еще раз."
+        logger.warning("Таймаут ответа ИИ, используем офлайн-движок.")
+        return build_offline_response(prompt, user_name=user_name)
     except aiohttp.ClientError as e:
-        logger.error("Сетевая ошибка клиента при запросе к ИИ: %s", e)
-        return "⚠️ Ошибка связи с сервером ИИ. Проверьте интернет-соединение."
+        logger.warning("Сетевая ошибка клиента ИИ (%s), используем офлайн-движок.", e)
+        return build_offline_response(prompt, user_name=user_name)
     except Exception as e:
         logger.exception("Непредвиденная ошибка при запросе к ИИ: %s", e)
-        return "⚠️ Произошла непредвиденная ошибка при обработке запроса к ИИ."
+        return build_offline_response(prompt, user_name=user_name)
 
 
 async def analyze_chat_moderation_ai(
