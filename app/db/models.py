@@ -594,3 +594,60 @@ class PlayerGear(Base, TimestampMixin):
     barista_machine_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     loader_exosuit_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     cleaner_gear_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class PromoCode(Base, TimestampMixin):
+    """Промокод, создаваемый владельцем бота. Может выдавать монеты и рейтинг."""
+    __tablename__ = "promo_codes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    coins: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_activations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # 0 = без ограничения
+    per_user_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    activations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    description: Mapped[str | None] = mapped_column(Text)
+
+
+class PromoCodeActivation(Base):
+    """Факт активации промокода конкретным игроком (для лимита на пользователя)."""
+    __tablename__ = "promo_code_activations"
+    __table_args__ = (Index("ix_promo_activation_code_user", "promo_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    promo_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("promo_codes.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AIConversation(Base, TimestampMixin):
+    """Память диалога ИИ Fable: история общения пользователя с ИИ в разрезе чата."""
+    __tablename__ = "ai_conversations"
+    __table_args__ = (UniqueConstraint("user_id", "chat_id", name="uq_ai_conversation_user_chat"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    history_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    topic: Mapped[str | None] = mapped_column(String(255))
+    summary: Mapped[str | None] = mapped_column(Text)
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class FloodTracker(Base, TimestampMixin):
+    """Скользящее окно сообщений пользователя для антиспам-детекции флуда."""
+    __tablename__ = "flood_trackers"
+    __table_args__ = (UniqueConstraint("chat_id", "user_id", name="uq_flood_chat_user"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.telegram_id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
+    message_times: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    last_content: Mapped[str | None] = mapped_column(Text)
+    duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_mute_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -19,7 +19,12 @@ from sqlalchemy import select
 from app.db.models import ModerationCase
 from app.services.activity_service import reward_chat_message
 from app.services.moderation_service import is_link_allowed, get_user_admin_level
-from app.services.chat_settings_service import get_or_create_chat, has_accepted_rules
+from app.services.chat_settings_service import (
+    get_or_create_chat,
+    has_accepted_rules,
+    has_pending_captcha,
+)
+from app.services.antispam_service import check_and_apply_antispam
 
 
 class CallbackAnswerMiddleware(BaseMiddleware):
@@ -116,8 +121,19 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                             pass
                         return
 
-                # 3. Проверка антиссылок
-                if settings.get("links_restricted", True) and message.text:
+                # 3. Проверка обязательной капчи при входе (по умолчанию выключена)
+                if settings.get("captcha_enabled", False) and admin_lvl < 2:
+                    if await has_pending_captcha(
+                        session, chat_id=message.chat.id, user_id=message.from_user.id
+                    ):
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
+                        return
+
+                # 4. Проверка антиссылок (по умолчанию выключена; упоминания @user всегда разрешены)
+                if settings.get("links_restricted", False) and message.text:
                     if admin_lvl < 2:
                         allowed, matched_url = await is_link_allowed(session, chat_id=message.chat.id, text=message.text)
                         if not allowed:
@@ -130,7 +146,27 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                                 pass
                             return
 
-                # 4. Начисление активности за общение
+                # 5. Автоматический антиспам (по умолчанию выключен)
+                if settings.get("antispam_enabled", False) and admin_lvl < 2:
+                    try:
+                        antispam = await check_and_apply_antispam(
+                            session,
+                            bot=message.bot,
+                            chat_id=message.chat.id,
+                            user_id=message.from_user.id,
+                            text=message.text or message.caption,
+                            settings=settings,
+                        )
+                    except Exception:
+                        antispam = None
+                    if antispam is not None:
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
+                        return
+
+                # 6. Начисление активности за общение
                 if message.text:
                     try:
                         await reward_chat_message(

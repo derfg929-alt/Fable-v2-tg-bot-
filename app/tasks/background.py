@@ -15,8 +15,22 @@ from app.db.session import session_scope
 from app.services.bank_service import accrue_daily_interest
 from app.services.market_maker import run_market_maker_cycle
 from app.services.engagement_service import process_dm_baits, process_chat_baits
+from app.services.moderation_service import expire_moderation_cases
 
 logger = logging.getLogger(__name__)
+
+
+async def background_moderation_expiry_worker(bot: Bot, interval_seconds: int = 60) -> None:
+    """Автоматически снимает истёкшие муты и временные баны (по сроку наказания)."""
+    while True:
+        try:
+            async with session_scope() as session:
+                expired = await expire_moderation_cases(session, bot=bot)
+                if expired:
+                    logger.info(f"Автоматически снято истёкших наказаний: {expired}")
+        except Exception as e:
+            logger.error(f"Ошибка в фоновой задаче авто-снятия наказаний: {e}")
+        await asyncio.sleep(interval_seconds)
 
 
 async def background_bank_interest_worker(interval_seconds: int = 3600) -> None:

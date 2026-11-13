@@ -47,9 +47,11 @@ SYSTEM_PROMPT = (
 )
 
 
-def _generate_built_in_ai_response(prompt: str, user_name: str | None = None) -> str:
+def _generate_built_in_ai_response(
+    prompt: str, user_name: str | None = None, context: str | None = None
+) -> str:
     """Встроенный офлайн-движок Fable AI: точные ответы о боте и общие знания без заглушек."""
-    return build_offline_response(prompt, user_name=user_name)
+    return build_offline_response(prompt, user_name=user_name, context=context)
 
 
 def _clean_key(val: Any) -> str | None:
@@ -175,18 +177,19 @@ async def ask_grok(
     *,
     user_name: str | None = None,
     chat_history: list[dict[str, str]] | None = None,
+    context: str | None = None,
 ) -> str:
     """Отправляет запрос к ИИ (xAI Grok или Groq Cloud) с фоллбеком на встроенный движок.
 
-    При отсутствии ключа или недоступности провайдера возвращает содержательный
-    ответ офлайн-движка (без заглушек).
+    chat_history — история диалога для модели; context — компактная выдержка диалога
+    для офлайн-движка, чтобы ИИ держал нить беседы даже без внешнего ключа.
     """
     conn = resolve_ai_connection()
     api_key = conn["api_key"]
 
     if not api_key:
         logger.info("Внешний API-ключ не настроен, используем встроенный интеллект Fable AI.")
-        return _generate_built_in_ai_response(prompt, user_name=user_name)
+        return _generate_built_in_ai_response(prompt, user_name=user_name, context=context)
 
     url: str = conn["url"]
     provider: str = conn["provider"]
@@ -252,7 +255,7 @@ async def ask_grok(
                                 except Exception as json_err:
                                     logger.warning("Ошибка декодирования JSON ответа AI: %s", json_err)
                                     raw_text = await resp.text()
-                                    return raw_text.strip() or build_offline_response(prompt, user_name=user_name)
+                                    return raw_text.strip() or build_offline_response(prompt, user_name=user_name, context=context)
 
                                 if isinstance(data, dict):
                                     choices = data.get("choices")
@@ -267,7 +270,7 @@ async def ask_grok(
                                                 if reply_str:
                                                     return reply_str
                                 logger.warning("Модель %s вернула пустой ответ, используем офлайн-движок.", model)
-                                return build_offline_response(prompt, user_name=user_name)
+                                return build_offline_response(prompt, user_name=user_name, context=context)
 
                             # 2. Модель не найдена — пробуем следующую из цепочки
                             if resp.status == 404:
@@ -347,20 +350,20 @@ async def ask_grok(
                         raise
 
         logger.warning("Не удалось получить ответ от провайдера %s, используем офлайн-движок.", provider)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context)
 
     except aiohttp.ClientConnectorError as e:
         logger.warning("Сеть недоступна для ИИ (%s), используем офлайн-движок.", e)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context)
     except asyncio.TimeoutError:
         logger.warning("Таймаут ответа ИИ, используем офлайн-движок.")
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context)
     except aiohttp.ClientError as e:
         logger.warning("Сетевая ошибка клиента ИИ (%s), используем офлайн-движок.", e)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context)
     except Exception as e:
         logger.exception("Непредвиденная ошибка при запросе к ИИ: %s", e)
-        return build_offline_response(prompt, user_name=user_name)
+        return build_offline_response(prompt, user_name=user_name, context=context)
 
 
 async def analyze_chat_moderation_ai(

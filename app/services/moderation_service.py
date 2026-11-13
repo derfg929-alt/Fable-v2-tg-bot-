@@ -546,9 +546,17 @@ async def issue_mute(
     duration: timedelta,
     reason: str | None = None,
     bot=None,
+    system: bool = False,
 ) -> ModerationCase:
-    """Выдача мута с проверкой прав."""
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
+    """Выдача мута с проверкой прав.
+
+    system=True — автоматическая модерация (антиспам): проверки прав пропускаются,
+    moderator_id фиксируется как инициатор-система.
+    """
+    if system:
+        await ensure_player_and_chat_exist(session, chat_id=chat_id, user_ids=[target_id], bot=bot)
+    else:
+        await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
 
     now = datetime.now(timezone.utc)
     expires_at = now + duration
@@ -746,11 +754,16 @@ async def record_ban_or_kick(
     reason: str | None = None,
     duration: timedelta | None = None,
     bot=None,
+    system: bool = False,
 ) -> ModerationCase:
     """Фиксация бана или кика (требуется ур. 3+ для бана/кика).
     Если указан duration, рассчитывается expires_at для временного бана.
+    system=True — автоматическая модерация (антиспам), проверки прав пропускаются.
     """
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=3, bot=bot)
+    if system:
+        await ensure_player_and_chat_exist(session, chat_id=chat_id, user_ids=[target_id], bot=bot)
+    else:
+        await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=3, bot=bot)
 
     now = datetime.now(timezone.utc)
     expires_at = now + duration if (duration and action == "ban") else None
@@ -782,6 +795,112 @@ async def record_ban_or_kick(
     return case
 
 
+async def revoke_ban(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    moderator_id: int,
+    target_id: int,
+    bot=None,
+) -> int:
+    """Снимает активные локальные баны пользователя в чате (деактивирует кейсы).
+
+    Возвращает число снятых кейсов. Требуется уровень 3+ (как и для бана).
+    """
+    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=3, bot=bot)
+
+    cases = (
+        await session.scalars(
+            select(ModerationCase).where(
+                ModerationCase.chat_id == chat_id,
+                ModerationCase.target_id == target_id,
+                ModerationCase.action == "ban",
+                ModerationCase.is_active.is_(True),
+            )
+        )
+    ).all()
+    now = datetime.now(timezone.utc)
+    for c in cases:
+        c.is_active = False
+        c.revoked_by = moderator_id
+        c.revoked_at = now
+    await session.flush()
+    return len(cases)
+
+
+async def expire_moderation_cases(
+    session: AsyncSession,
+    *,
+    bot=None,
+    now: datetime | None = None,
+) -> int:
+    """Автоматически снимает истёкшие муты и временные баны.
+
+    Деактивирует ModerationCase с истёкшим expires_at и, если передан bot,
+    снимает ограничения/бан в самом Telegram. Возвращает число снятых случаев.
+    """
+    now = now or datetime.now(timezone.utc)
+    cases = (
+        await session.scalars(
+            select(ModerationCase).where(
+                ModerationCase.is_active.is_(True),
+                ModerationCase.expires_at.is_not(None),
+                ModerationCase.expires_at <= now,
+                ModerationCase.action.in_(("mute", "ban")),
+            )
+        )
+    ).all()
+
+    if not cases:
+        return 0
+
+    from aiogram.types import ChatPermissions
+
+    full_permissions = ChatPermissions(
+        can_send_messages=True,
+        can_send_media_messages=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+    )
+
+    expired_count = 0
+    for case in cases:
+        case.is_active = False
+        case.revoked_at = now
+        case.revoked_by = None
+        expired_count += 1
+
+        log_entry = AdminActionLog(
+            chat_id=case.chat_id,
+            actor_id=None,
+            target_id=case.target_id,
+            action="auto_expire",
+            reason="Автоматическое снятие по истечении срока",
+            details={"original_action": case.action, "case_id": case.id},
+        )
+        session.add(log_entry)
+
+        if bot:
+            try:
+                if case.action == "mute":
+                    await bot.restrict_chat_member(
+                        chat_id=case.chat_id,
+                        user_id=case.target_id,
+                        permissions=full_permissions,
+                    )
+                elif case.action == "ban":
+                    await bot.unban_chat_member(
+                        chat_id=case.chat_id,
+                        user_id=case.target_id,
+                        only_if_banned=True,
+                    )
+            except Exception:
+                pass
+
+    await session.flush()
+    return expired_count
+
+
 async def is_link_allowed(
     session: AsyncSession,
     *,
@@ -791,9 +910,13 @@ async def is_link_allowed(
     """Проверяет сообщение на запрещенные ссылки.
 
     Возвращает (разрешено, найденная_ссылка).
+    Упоминания пользователей (@username) разрешены всегда и не считаются ссылками.
     Если ссылка есть, но её домен в whitelist этого чата — разрешено.
     """
-    matches = URL_REGEX.findall(text)
+    # Упоминания людей всегда разрешены — исключаем их из проверки.
+    sanitized = re.sub(r"(?<![\w/])@[A-Za-z0-9_]{3,}", " ", text)
+
+    matches = URL_REGEX.findall(sanitized)
     if not matches:
         return True, None
 

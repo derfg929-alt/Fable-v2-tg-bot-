@@ -19,6 +19,39 @@ from app.db.models import AdminActionLog, Chat
 logger = logging.getLogger(__name__)
 
 
+async def get_log_channel_id(session: AsyncSession, *, chat_id: int) -> int | None:
+    """Возвращает ID лог-канала чата (если настроен)."""
+    chat = await session.get(Chat, chat_id)
+    if not chat:
+        return None
+    if chat.log_chat_id:
+        return chat.log_chat_id
+    if chat.settings:
+        return chat.settings.get("log_channel_id")
+    return None
+
+
+async def notify_moderation_log(
+    session: AsyncSession,
+    *,
+    bot: Bot | None,
+    chat_id: int | None,
+    text: str,
+) -> bool:
+    """Отправляет готовое сообщение в лог-канал чата (если он настроен)."""
+    if not bot or chat_id is None:
+        return False
+    try:
+        log_channel_id = await get_log_channel_id(session, chat_id=chat_id)
+        if not log_channel_id:
+            return False
+        await bot.send_message(chat_id=log_channel_id, text=text, parse_mode="HTML")
+        return True
+    except Exception as e:
+        logger.error(f"Не удалось отправить лог в канал: {e}")
+        return False
+
+
 async def log_admin_action(
     session: AsyncSession,
     *,
@@ -42,23 +75,12 @@ async def log_admin_action(
     session.add(entry)
     await session.flush()
 
-    if bot and chat_id is not None:
-        try:
-            chat = await session.get(Chat, chat_id)
-            log_channel_id = chat.log_chat_id if chat else None
-            if not log_channel_id and chat and chat.settings:
-                log_channel_id = chat.settings.get("log_channel_id")
-
-            if log_channel_id:
-                msg = (
-                    f"🛡 [АДМИН-ЛОГ] Действие: <b>{action}</b>\n"
-                    f"Чат: <code>{chat_id}</code>\n"
-                    f"Инициатор: <code>{actor_id}</code>\n"
-                    + (f"Цель: <code>{target_id}</code>\n" if target_id else "")
-                    + (f"Причина: {reason}\n" if reason else "")
-                )
-                await bot.send_message(chat_id=log_channel_id, text=msg, parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"Не удалось отправить лог в канал: {e}")
-
+    msg = (
+        f"🛡 <b>[МОДЕРАЦИЯ]</b> Действие: <b>{action}</b>\n"
+        f"Чат: <code>{chat_id}</code>\n"
+        f"Инициатор: <code>{actor_id}</code>\n"
+        + (f"Цель: <code>{target_id}</code>\n" if target_id else "")
+        + (f"Причина: {reason}\n" if reason else "")
+    )
+    await notify_moderation_log(session, bot=bot, chat_id=chat_id, text=msg)
     return entry

@@ -11,7 +11,15 @@ import re
 from aiogram import Router, types, Bot, F
 from aiogram.enums import ChatAction, ChatType
 
+from app.db.session import session_scope
 from app.services.ai_service import ask_grok
+from app.services.ai_memory_service import (
+    build_context_string,
+    clear_history,
+    is_forget_request,
+    load_history,
+    remember_exchange,
+)
 
 logger = logging.getLogger("fable.ai")
 router = Router(name="ai_router")
@@ -31,6 +39,8 @@ KNOWN_COMMANDS = {
     "ник", "шар", "реши", "брак", "развод", "дуэль", "космодром", "майнинг",
     "мут", "размут", "варн", "варны", "преды", "кик", "бан", "разбан",
     "чистка", "закрепить", "открепить", "заморозка", "слоумод", "репорт", "реф",
+    "промо", "промокоды", "+промо", "антиспам", "антифлуд", "капча", "+капча",
+    "-капча", "логи", "журнал", "админы", "заблокирован",
 }
 
 
@@ -127,6 +137,26 @@ async def handle_ai_query(message: types.Message, bot: Bot):
         cleaned_prompt = text.strip()
 
     user_name = message.from_user.first_name if message.from_user else "Пользователь"
+    user_id = message.from_user.id if message.from_user else 0
+    chat_id = message.chat.id if message.chat else user_id
+
+    # Команда «забудь» стирает память диалога, не обращаясь к модели.
+    if user_id and is_forget_request(text):
+        async with session_scope() as session:
+            await clear_history(session, user_id=user_id, chat_id=chat_id)
+        await message.reply("🧠 Хорошо, я забыл нашу прошлую беседу. О чём поговорим?")
+        return
+
+    # Поднимаем контекст диалога из памяти (история для модели + выдержка для офлайн-движка).
+    chat_history: list[dict[str, str]] = []
+    context_str = ""
+    if user_id:
+        try:
+            async with session_scope() as session:
+                chat_history = await load_history(session, user_id=user_id, chat_id=chat_id, for_model=True)
+                context_str = await build_context_string(session, user_id=user_id, chat_id=chat_id)
+        except Exception as e:
+            logger.debug("Не удалось загрузить память ИИ: %s", e)
 
     try:
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -134,9 +164,28 @@ async def handle_ai_query(message: types.Message, bot: Bot):
         pass
 
     try:
-        answer = await ask_grok(cleaned_prompt, user_name=user_name)
+        answer = await ask_grok(
+            cleaned_prompt,
+            user_name=user_name,
+            chat_history=chat_history or None,
+            context=context_str or None,
+        )
     except Exception as e:
         logger.exception("Ошибка при вызове Grok AI: %s", e)
         answer = "⚠️ Произошла ошибка при обработке запроса к Grok AI. Попробуйте еще раз позже."
+
+    # Запоминаем обмен репликами, чтобы ИИ держал нить беседы.
+    if user_id and answer and not answer.startswith("⚠️"):
+        try:
+            async with session_scope() as session:
+                await remember_exchange(
+                    session,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    user_text=cleaned_prompt,
+                    assistant_text=answer,
+                )
+        except Exception as e:
+            logger.debug("Не удалось сохранить память ИИ: %s", e)
 
     await _send_ai_response(message, answer)
