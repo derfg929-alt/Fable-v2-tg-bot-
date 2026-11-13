@@ -609,6 +609,17 @@ async def handle_mute(message: types.Message):
                 reason=reason,
                 bot=message.bot,
             )
+            from app.services.logging_service import notify_moderation_log
+            await notify_moderation_log(
+                session,
+                bot=message.bot,
+                chat_id=message.chat.id,
+                text=(
+                    f"🔇 <b>МУТ</b>\nЦель: <code>{target_id}</code>\n"
+                    f"Срок: <b>{dur_str}</b>\nПричина: {reason}\n"
+                    f"Модератор: <code>{message.from_user.id}</code>"
+                ),
+            )
             tg_status = ""
             if message.bot:
                 try:
@@ -752,6 +763,16 @@ async def handle_warn(message: types.Message):
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Нарушение"
         try:
             case, cnt = await issue_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, reason=reason, bot=message.bot)
+            from app.services.logging_service import notify_moderation_log
+            await notify_moderation_log(
+                session,
+                bot=message.bot,
+                chat_id=message.chat.id,
+                text=(
+                    f"⚠️ <b>ВАРН</b> ({cnt}/5)\nЦель: <code>{target_id}</code>\n"
+                    f"Причина: {reason}\nМодератор: <code>{message.from_user.id}</code>"
+                ),
+            )
             await message.reply(f"⚠️ Пользователю ID <code>{target_id}</code> выдано предупреждение ({cnt}/5). Причина: {reason}", parse_mode="HTML")
         except Exception as e:
             await message.reply(f"❌ {e}")

@@ -45,7 +45,8 @@ class ChatSettingsError(Exception):
 DEFAULT_CHAT_SETTINGS = {
     "welcome_enabled": True,
     "welcome_text": "Добро пожаловать, {name}! Ознакомься с правилами чата.\nЯ Хранитель, настроить — настройки, правила — правила, команды — команды.",
-    "links_restricted": True,
+    # Антиссылки и капча по умолчанию ВЫКЛЮЧЕНЫ: включает администратор вручную.
+    "links_restricted": False,
     "captcha_enabled": False,
     "captcha_timeout_seconds": 120,
     "rules_acceptance_required": False,
@@ -54,6 +55,14 @@ DEFAULT_CHAT_SETTINGS = {
     "slowmode_seconds": 0,
     "log_channel_id": None,
     "preset": "normal",
+    # Автоматический антиспам (выключен по умолчанию).
+    "antispam_enabled": False,
+    "antispam_window_seconds": 10,
+    "antispam_max_messages": 6,
+    "antispam_duplicate_threshold": 4,
+    "antispam_duration_seconds": 1800,
+    "antispam_action": "mute",
+    "antispam_escalate_after": 3,
 }
 
 
@@ -164,16 +173,19 @@ async def apply_chat_preset(
         settings["links_restricted"] = True
         settings["captcha_enabled"] = True
         settings["rules_acceptance_required"] = True
+        settings["antispam_enabled"] = True
     elif p in ("обычный", "normal"):
         settings["preset"] = "normal"
         settings["links_restricted"] = True
         settings["captcha_enabled"] = False
         settings["rules_acceptance_required"] = False
+        settings["antispam_enabled"] = True
     elif p in ("казуальный", "casual"):
         settings["preset"] = "casual"
         settings["links_restricted"] = False
         settings["captcha_enabled"] = False
         settings["rules_acceptance_required"] = False
+        settings["antispam_enabled"] = False
     else:
         raise ChatSettingsError("Доступные пресеты: строгий, обычный, казуальный")
 
@@ -301,6 +313,32 @@ async def create_captcha(
     session.add(challenge)
     await session.flush()
     return challenge
+
+
+async def get_pending_captcha(
+    session: AsyncSession, *, chat_id: int, user_id: int
+) -> CaptchaChallenge | None:
+    """Возвращает незавершённую капчу пользователя в чате (если есть и не истекла)."""
+    now = datetime.now(timezone.utc)
+    challenge = await session.scalar(
+        select(CaptchaChallenge)
+        .where(
+            CaptchaChallenge.chat_id == chat_id,
+            CaptchaChallenge.user_id == user_id,
+            CaptchaChallenge.status == "pending",
+            CaptchaChallenge.expires_at > now,
+        )
+        .order_by(desc(CaptchaChallenge.id))
+        .limit(1)
+    )
+    return challenge
+
+
+async def has_pending_captcha(
+    session: AsyncSession, *, chat_id: int, user_id: int
+) -> bool:
+    """Есть ли у пользователя нерешённая активная капча в чате."""
+    return (await get_pending_captcha(session, chat_id=chat_id, user_id=user_id)) is not None
 
 
 async def solve_captcha(

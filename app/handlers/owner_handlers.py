@@ -39,8 +39,10 @@ async def _build_admin_panel_payload(owner_id: int):
     builder.button(text="🏢 Список чатов", callback_data="owner_menu_chats")
     builder.button(text="💰 Балансы игроков", callback_data="owner_menu_balances")
     builder.button(text="📊 Статистика", callback_data="owner_menu_stats")
+    builder.button(text="🎟 Промокоды", callback_data="owner_menu_promos")
+    builder.button(text="🛡 Модерация", callback_data="owner_menu_moderation")
     builder.button(text="⚠️ Сброс экономики", callback_data="owner_eco_reset_prompt")
-    builder.adjust(2, 2)
+    builder.adjust(2, 2, 2)
 
     active_cnt = sum(1 for c in chats if c.is_active)
     total_cnt = len(chats)
@@ -72,9 +74,112 @@ async def _build_admin_panel_payload(owner_id: int):
         f"• <code>забрать [ID] [монеты]</code> — списать монеты у игрока\n"
         f"• <code>глобальный бан [ID] [причина]</code>\n"
         f"• <code>глобальный разбан [ID]</code>\n"
+        f"• <code>+промо КОД МОНЕТЫ [РЕЙТИНГ] [ЛИМИТ]</code> — создать промокод\n"
+        f"• <code>промокоды</code> — список промокодов\n"
         f"• <code>сброс экономики</code>"
     )
     return text, builder.as_markup()
+
+
+@router.callback_query(F.data == "owner_menu_promos")
+async def on_owner_menu_promos(callback: types.CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    from app.services.promo_service import list_promos
+
+    async with session_scope() as session:
+        promos = await list_promos(session, limit=30)
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
+
+        if not promos:
+            text = (
+                "🎟 <b>Промокоды</b>\n\nПромокодов пока нет.\n\n"
+                "Создать: <code>+промо КОД МОНЕТЫ [РЕЙТИНГ] [ЛИМИТ] [НА_ЮЗЕРА]</code>\n"
+                "Пример: <code>+промо SUMMER 1000</code>"
+            )
+        else:
+            lines = ["🎟 <b>Промокоды Fable:</b>\n"]
+            for p in promos:
+                status = "🟢" if p.is_active else "🔴"
+                limit_str = f"{p.activations}/{p.max_activations}" if p.max_activations else f"{p.activations}/∞"
+                exp = p.expires_at.strftime("%d.%m.%Y") if p.expires_at else "—"
+                lines.append(
+                    f"{status} <code>{p.code}</code> — 💰{p.coins:,} ⭐{p.rating} | "
+                    f"активаций: {limit_str} | до: {exp}".replace(",", " ")
+                )
+            lines.append("\n<i>Управление: промо вкл/выкл/удалить КОД</i>")
+            text = "\n".join(lines)
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "owner_menu_moderation")
+async def on_owner_menu_moderation(callback: types.CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    async with session_scope() as session:
+        from app.db.models import AdminActionLog, ModerationCase, ModerationReport
+        from sqlalchemy import func, select
+
+        active_mutes = await session.scalar(
+            select(func.count(ModerationCase.id)).where(
+                ModerationCase.action == "mute", ModerationCase.is_active.is_(True)
+            )
+        ) or 0
+        active_bans = await session.scalar(
+            select(func.count(ModerationCase.id)).where(
+                ModerationCase.action == "ban", ModerationCase.is_active.is_(True)
+            )
+        ) or 0
+        warns = await session.scalar(
+            select(func.count(ModerationCase.id)).where(
+                ModerationCase.action == "warn", ModerationCase.is_active.is_(True)
+            )
+        ) or 0
+        open_reports = await session.scalar(
+            select(func.count(ModerationReport.id)).where(ModerationReport.status == "open")
+        ) or 0
+        recent_logs = (
+            await session.scalars(
+                select(AdminActionLog).order_by(AdminActionLog.created_at.desc()).limit(10)
+            )
+        ).all()
+
+        lines = [
+            "🛡 <b>МОДЕРАЦИЯ FABLE — СВОДКА</b>\n",
+            f"🔇 Активных мутов: <b>{active_mutes}</b>",
+            f"⛔️ Активных банов: <b>{active_bans}</b>",
+            f"⚠️ Активных варнов: <b>{warns}</b>",
+            f"🚩 Открытых жалоб: <b>{open_reports}</b>\n",
+            "<b>Последние действия:</b>",
+        ]
+        if recent_logs:
+            for entry in recent_logs:
+                ts = entry.created_at.strftime("%d.%m %H:%M") if entry.created_at else ""
+                target = f"→<code>{entry.target_id}</code>" if entry.target_id else ""
+                lines.append(f"• <i>{ts}</i> <b>{entry.action}</b> {target}")
+        else:
+            lines.append("<i>Журнал пуст.</i>")
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⬅️ Назад в админ-панель", callback_data="owner_menu_back")
+        try:
+            await callback.message.edit_text("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @router.message(F.text.casefold().in_(["понель", "!понель", "панель", "!панель", "панель управления", "овнер панель"]))

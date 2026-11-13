@@ -30,7 +30,10 @@ from app.services.chat_settings_service import (
     create_captcha,
     create_report,
     handle_report,
+    DEFAULT_CHAT_SETTINGS,
 )
+from app.services.antispam_service import DEFAULT_ANTISPAM, antispam_status_line
+from app.services.logging_service import notify_moderation_log
 from app.services.help_service import get_greeting_text
 
 router = Router(name="extended_moderation_router")
@@ -168,6 +171,15 @@ async def handle_kick(message: types.Message, bot: Bot):
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Исключение модератором"
         try:
             await record_ban_or_kick(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, action="kick", reason=reason, bot=bot)
+            await notify_moderation_log(
+                session,
+                bot=bot,
+                chat_id=message.chat.id,
+                text=(
+                    f"👢 <b>КИК</b>\nЦель: <code>{target_id}</code>\n"
+                    f"Причина: {reason}\nМодератор: <code>{message.from_user.id}</code>"
+                ),
+            )
             tg_status = ""
             try:
                 await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id)
@@ -223,6 +235,16 @@ async def handle_ban(message: types.Message, bot: Bot):
                 duration=dur,
                 bot=bot,
             )
+            await notify_moderation_log(
+                session,
+                bot=bot,
+                chat_id=message.chat.id,
+                text=(
+                    f"⛔️ <b>БАН</b>\nЦель: <code>{target_id}</code>\n"
+                    f"Срок: <b>{dur_str or 'навсегда'}</b>\nПричина: {reason}\n"
+                    f"Администратор: <code>{message.from_user.id}</code>"
+                ),
+            )
             tg_status = ""
             try:
                 until_date = case.expires_at if case.expires_at else None
@@ -273,6 +295,20 @@ async def handle_unban(message: types.Message, bot: Bot):
                 tg_status = " <i>(в Telegram бан снят)</i>"
             except Exception as tg_err:
                 tg_status = f"\n⚠️ <i>Примечание: Telegram unban ({tg_err}).</i>"
+            from app.services.moderation_service import revoke_ban
+            try:
+                await revoke_ban(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, bot=bot)
+            except Exception:
+                pass
+            await notify_moderation_log(
+                session,
+                bot=bot,
+                chat_id=message.chat.id,
+                text=(
+                    f"✅ <b>РАЗБАН</b>\nЦель: <code>{target_id}</code>\n"
+                    f"Администратор: <code>{message.from_user.id}</code>"
+                ),
+            )
             await message.reply(
                 f"✅ <b>ПОЛЬЗОВАТЕЛЬ РАЗБЛОКИРОВАН!</b>\n\n"
                 f"👤 ID <code>{target_id}</code> снова может вступать в группу.{tg_status}",
@@ -540,14 +576,22 @@ async def handle_chat_settings_panel(message: types.Message, bot: Bot):
         builder.button(text="🏖 Казуальный", callback_data=f"preset_casual_{message.chat.id}")
         builder.adjust(3)
 
+        log_channel = chat.log_chat_id or s.get("log_channel_id")
         text = (
             f"⚙️ <b>Панель настроек чата «{message.chat.title}»</b>\n\n"
             f"👑 Ваш статус: <b>{ROLE_NAMES.get(lvl, 'Админ')} (ур. {lvl})</b>\n\n"
             f"Текущий пресет: <b>{s.get('preset', 'normal')}</b>\n"
-            f"Антиссылки: <b>{'Вкл' if s.get('links_restricted', True) else 'Выкл'}</b>\n"
+            f"Антиссылки: <b>{'Вкл' if s.get('links_restricted', False) else 'Выкл'}</b>\n"
             f"Капча при входе: <b>{'Вкл' if s.get('captcha_enabled', False) else 'Выкл'}</b>\n"
+            f"Антиспам: <b>{'Вкл' if s.get('antispam_enabled', False) else 'Выкл'}</b>\n"
             f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required', False) else 'Выкл'}</b>\n"
-            f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n\n"
+            f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n"
+            f"Лог-канал: <b>{log_channel if log_channel else 'не настроен'}</b>\n\n"
+            f"<b>Управление:</b>\n"
+            f"• <code>+капча</code> / <code>-капча</code> — капча при входе\n"
+            f"• <code>антиспам вкл</code> / <code>антиспам выкл</code> — авто-антиспам\n"
+            f"• <code>логи настроить ID</code> — логи модерации\n"
+            f"• <code>ссылки добавить домен</code> — белый список ссылок\n\n"
             f"<i>Выберите пресет для быстрой настройки:</i>"
         )
         await message.reply(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -574,3 +618,217 @@ async def on_preset_select(callback: types.CallbackQuery):
                 await callback.answer(f"❌ {e}", show_alert=True)
             except Exception:
                 pass
+
+
+# ===================== ЛОГИ МОДЕРАЦИИ (ЛОГ-КАНАЛ) =====================
+
+async def _send_log_channel_help(message: types.Message, bot: Bot, chat_id: int, admin_id: int) -> None:
+    await message.reply(
+        "🛡 <b>Логи модерации</b>\n\n"
+        "Настройте канал, куда будут приходить все действия модерации "
+        "(муты, баны, варны, кики, авто-антиспам, авто-снятие наказаний).\n\n"
+        "<b>Как настроить:</b>\n"
+        "1. Добавьте бота администратором в канал/группу для логов.\n"
+        "2. Отправьте в этом чате команду <code>логи настроить ID_канала</code> "
+        "(например: <code>логи настроить -1001234567890</code>).\n"
+        "3. Отключить: <code>логи выкл</code>.\n\n"
+        "<i>Требуется уровень 3+ (Админ).</i>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
+    "логи", "!логи", "/logs", "логи модерации", "лог", "!лог", "журнал", "!журнал"
+])))
+async def handle_moderation_logs(message: types.Message, bot: Bot):
+    """Управление лог-каналом модерации: просмотр, настройка, отключение."""
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    parts = (message.text or "").split()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
+        if lvl < 3:
+            # Молча игнорируем: обычные слова не должны вызывать ответ бота.
+            return
+
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        current = chat.log_chat_id or (chat.settings or {}).get("log_channel_id")
+
+        if len(parts) == 1 or parts[1].casefold() in ("статус", "status", "список"):
+            if current:
+                await message.reply(f"🛡 Лог-канал модерации: <code>{current}</code>", parse_mode="HTML")
+            else:
+                await _send_log_channel_help(message, bot, message.chat.id, message.from_user.id)
+            return
+
+        cmd = parts[1].casefold()
+        if cmd in ("настроить", "установить", "set", "вкл", "включить") and len(parts) >= 3:
+            raw = parts[2].strip()
+            try:
+                target = int(raw)
+            except ValueError:
+                await message.reply("❌ Укажите ID канала числом, например: <code>логи настроить -1001234567890</code>", parse_mode="HTML")
+                return
+            chat.log_chat_id = target
+            settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+            settings["log_channel_id"] = target
+            chat.settings = settings
+            await session.flush()
+            await message.reply(
+                f"✅ Логи модерации будут отправляться в канал <code>{target}</code>.\n"
+                f"<i>Убедитесь, что бот добавлен туда администратором.</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        if cmd in ("выкл", "отключить", "off", "убрать"):
+            chat.log_chat_id = None
+            settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+            settings["log_channel_id"] = None
+            chat.settings = settings
+            await session.flush()
+            await message.reply("🛑 Логи модерации отключены.")
+            return
+
+        await _send_log_channel_help(message, bot, message.chat.id, message.from_user.id)
+
+
+# ===================== АВТОМАТИЧЕСКИЙ АНТИСПАМ =====================
+
+@router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
+    "антиспам", "!антиспам", "/antispam", "антифлуд", "!антифлуд"
+])))
+async def handle_antispam_settings(message: types.Message, bot: Bot):
+    """Включение/выключение и настройка автоматического антиспама."""
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    parts = (message.text or "").split()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
+        if lvl < 3:
+            return
+
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+
+        def _persist() -> None:
+            chat.settings = settings
+
+        if len(parts) == 1:
+            dur = int(settings.get("antispam_duration_seconds", DEFAULT_ANTISPAM["antispam_duration_seconds"])) // 60
+            await message.reply(
+                f"🛡 <b>Автоматический антиспам</b>\n\n"
+                f"Статус: <b>{'Вкл' if settings.get('antispam_enabled') else 'Выкл'}</b>\n"
+                f"Лимит: <b>{settings.get('antispam_max_messages', DEFAULT_ANTISPAM['antispam_max_messages'])}</b> "
+                f"сообщений за <b>{settings.get('antispam_window_seconds', DEFAULT_ANTISPAM['antispam_window_seconds'])}</b> сек.\n"
+                f"Действие: <b>{settings.get('antispam_action', DEFAULT_ANTISPAM['antispam_action'])}</b>, "
+                f"срок <b>{dur} мин.</b>\n"
+                f"Порог повторов: <b>{settings.get('antispam_duplicate_threshold', DEFAULT_ANTISPAM['antispam_duplicate_threshold'])}</b>\n\n"
+                f"<b>Управление:</b>\n"
+                f"• <code>антиспам вкл</code> / <code>антиспам выкл</code>\n"
+                f"• <code>антиспам срок 30м</code> — длительность наказания\n"
+                f"• <code>антиспам лимит 6 10</code> — N сообщений за W секунд\n"
+                f"• <code>антиспам действие бан</code> / <code>антиспам действие мут</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        cmd = parts[1].casefold()
+        if cmd in ("вкл", "включить", "on"):
+            settings["antispam_enabled"] = True
+            _persist()
+            await session.flush()
+            await message.reply("🛡 Автоматический антиспам <b>включён</b>. Флудеры получат авто-мут.", parse_mode="HTML")
+            return
+        if cmd in ("выкл", "отключить", "off"):
+            settings["antispam_enabled"] = False
+            _persist()
+            await session.flush()
+            await message.reply("🛑 Автоматический антиспам <b>выключен</b>.")
+            return
+        if cmd in ("срок", "время") and len(parts) >= 3:
+            try:
+                dur = parse_duration_string(parts[2])
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+                return
+            settings["antispam_duration_seconds"] = int(dur.total_seconds())
+            _persist()
+            await session.flush()
+            await message.reply(f"⏱ Срок авто-наказания: <b>{int(dur.total_seconds()) // 60} мин.</b>", parse_mode="HTML")
+            return
+        if cmd in ("лимит", "limit") and len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
+            settings["antispam_max_messages"] = max(2, int(parts[2]))
+            settings["antispam_window_seconds"] = max(1, int(parts[3]))
+            _persist()
+            await session.flush()
+            await message.reply(
+                f"📊 Лимит: <b>{settings['antispam_max_messages']}</b> сообщений за "
+                f"<b>{settings['antispam_window_seconds']}</b> сек.",
+                parse_mode="HTML",
+            )
+            return
+        if cmd in ("действие", "action") and len(parts) >= 3:
+            act = parts[2].casefold()
+            if act in ("бан", "ban"):
+                settings["antispam_action"] = "ban"
+            elif act in ("мут", "mute"):
+                settings["antispam_action"] = "mute"
+            else:
+                await message.reply("Укажите: <code>антиспам действие бан</code> или <code>антиспам действие мут</code>", parse_mode="HTML")
+                return
+            _persist()
+            await session.flush()
+            await message.reply(f"⚙️ Авто-наказание: <b>{settings['antispam_action']}</b>")
+            return
+
+        await message.reply("Неизвестная настройка антиспама. Напишите <code>антиспам</code> для справки.", parse_mode="HTML")
+
+
+# ===================== КАПЧА (ВКЛЮЧЕНИЕ АДМИНОМ) =====================
+
+@router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
+    "+капча", "капча", "!капча", "/captcha", "включить капчу", "-капча", "выключить капчу"
+])))
+async def handle_captcha_settings(message: types.Message, bot: Bot):
+    """Включение/выключение капчи при входе. Команда «+капча» включает, «-капча» выключает."""
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    text = (message.text or "").strip().casefold()
+    parts = text.split()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
+        if lvl < 3:
+            return
+
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+
+        # Явное включение/выключение
+        turn_on = text.startswith("+") or parts[0] in ("капча", "включить капчу")
+        if len(parts) >= 2:
+            if parts[1].casefold() in ("вкл", "включить", "on", "+"):
+                turn_on = True
+            elif parts[1].casefold() in ("выкл", "отключить", "off", "-"):
+                turn_on = False
+        if text.startswith("-") or parts[0] == "выключить капчу":
+            turn_on = False
+
+        if len(parts) == 1 and not text.startswith(("+", "-")):
+            # Показываем статус и справку
+            status = "Вкл" if settings.get("captcha_enabled") else "Выкл"
+            await message.reply(
+                f"🤖 <b>Капча при входе: {status}</b>\n\n"
+                f"Капча по умолчанию <b>выключена</b>. Включить: <code>+капча</code>, выключить: <code>-капча</code>.\n"
+                f"Новые участники при входе получат кнопку «Я человек»; писать до прохождения капчи нельзя.",
+                parse_mode="HTML",
+            )
+            return
+
+        settings["captcha_enabled"] = turn_on
+        chat.settings = settings
+        await session.flush()
+        if turn_on:
+            await message.reply("✅ Капча при входе <b>включена</b>. Новые участники должны нажать кнопку «Я человек».", parse_mode="HTML")
+        else:
+            await message.reply("🛑 Капча при входе <b>выключена</b>.")

@@ -33,12 +33,14 @@ from app.handlers.games_handlers import router as games_router
 from app.handlers.social_moderation_handlers import router as social_moderation_router
 from app.handlers.extended_moderation_handlers import router as extended_moderation_router
 from app.handlers.ai_handlers import router as ai_router
+from app.handlers.promo_handlers import router as promo_router
 from app.middlewares import MessageActivityAndSecurityMiddleware, CallbackAnswerMiddleware
 from app.handlers.owner_handlers import router as owner_router
 from app.tasks.background import (
     background_bank_interest_worker,
     background_market_maker_worker,
     background_engagement_worker,
+    background_moderation_expiry_worker,
 )
 
 logger = logging.getLogger("fable")
@@ -59,6 +61,7 @@ def create_dispatcher() -> Dispatcher:
 
     all_subrouters = [
         owner_router,
+        promo_router,
         economy_router,
         exchange_router,
         games_router,
@@ -123,6 +126,9 @@ async def main() -> None:
     engagement_task = asyncio.create_task(
         background_engagement_worker(bot, min_interval_seconds=10800, max_interval_seconds=21600)
     )
+    moderation_expiry_task = asyncio.create_task(
+        background_moderation_expiry_worker(bot, interval_seconds=60)
+    )
 
     logger.info("Запуск Telegram-бота Fable в режиме Long Polling...")
     try:
@@ -131,6 +137,7 @@ async def main() -> None:
         bank_task.cancel()
         mm_task.cancel()
         engagement_task.cancel()
+        moderation_expiry_task.cancel()
         await bot.session.close()
         await dispose_engine()
         logger.info("Бот Fable успешно остановлен.")
