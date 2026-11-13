@@ -75,6 +75,24 @@ URL_REGEX = re.compile(
 )
 
 
+def _format_duration_ru(td: timedelta) -> str:
+    """Форматирует timedelta в компактную русскую строку: '1 д. 2 ч. 30 мин.'."""
+    total = int(td.total_seconds())
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days} д.")
+    if hours:
+        parts.append(f"{hours} ч.")
+    if minutes:
+        parts.append(f"{minutes} мин.")
+    if seconds and not (days or hours):
+        parts.append(f"{seconds} сек.")
+    return " ".join(parts) or "0 мин."
+
+
 def parse_duration_string(duration_str: str) -> timedelta:
     """Парсит строки с длительностью в timedelta.
     Поддерживает:
@@ -131,6 +149,11 @@ def parse_duration_string(duration_str: str) -> timedelta:
         ),
         (
             r"^(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)$",
+            lambda m: timedelta(minutes=int(m.group(1))),
+        ),
+        # Голое число = минуты ('мут 67' -> 67 минут = 1 ч. 7 мин.)
+        (
+            r"^(\d+)$",
             lambda m: timedelta(minutes=int(m.group(1))),
         ),
         # Слова без чисел
@@ -239,6 +262,11 @@ def extract_moderation_args(
         (
             r"^(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)\b",
             lambda m: (timedelta(minutes=int(m.group(1))), f"{m.group(1)} мин."),
+        ),
+        # Голое число = минуты ('мут 67' -> 1 ч. 7 мин.)
+        (
+            r"^(\d+)\b",
+            lambda m: (timedelta(minutes=int(m.group(1))), _format_duration_ru(timedelta(minutes=int(m.group(1))))),
         ),
         # Слова без чисел
         (r"^(?:полчаса|пол-часа)\b", lambda m: (timedelta(minutes=30), "30 мин.")),
@@ -632,9 +660,17 @@ async def issue_warn(
     target_id: int,
     reason: str | None = None,
     bot=None,
+    system: bool = False,
 ) -> tuple[ModerationCase, int]:
-    """Выдача варна (срок 30 дней, без авто-санкций). Возвращает (case, активных_варнов)."""
-    await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
+    """Выдача варна (срок 30 дней, без авто-санкций). Возвращает (case, активных_варнов).
+
+    system=True — автоматическая модерация (антимат/антиспам): проверки прав
+    пропускаются, moderator_id фиксируется как инициатор-система.
+    """
+    if not system:
+        await check_can_moderate(session, chat_id=chat_id, moderator_id=moderator_id, target_id=target_id, min_required_level=2, bot=bot)
+    else:
+        await ensure_player_and_chat_exist(session, chat_id=chat_id, user_ids=[target_id], bot=bot)
 
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(days=30)
@@ -675,6 +711,95 @@ async def issue_warn(
     session.add(log_entry)
     await session.flush()
     return case, count
+
+
+@dataclass(frozen=True, slots=True)
+class WarnEscalation:
+    """Результат автоматической эскалации наказания по количеству варнов."""
+    triggered: bool
+    action: str  # mute | ban | kick | none
+    duration: timedelta | None
+    warn_count: int
+    message: str
+
+
+async def apply_warn_escalation(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    target_id: int,
+    warn_count: int,
+    settings: dict | None = None,
+    bot=None,
+) -> WarnEscalation:
+    """Применяет авто-наказание, когда число варнов достигло настроенного лимита.
+
+    Настройки чата:
+      warn_limit        — сколько варнов до авто-наказания (0 — отключено);
+      warn_action       — mute | ban | kick | none;
+      warn_duration_seconds — срок авто-мута/бана (0 — бессрочный бан);
+      warn_escalate_ban — при двойном лимите выдать бессрочный бан.
+
+    Действие выполняется системно (moderator_id=bot.id), проверки прав пропускаются.
+    """
+    settings = settings or {}
+    limit = int(settings.get("warn_limit", 5) or 0)
+    if limit <= 0 or warn_count < limit:
+        return WarnEscalation(False, "none", None, warn_count, "")
+
+    action = str(settings.get("warn_action", "mute")).lower()
+    duration_seconds = int(settings.get("warn_duration_seconds", 3600) or 0)
+    escalate_ban = bool(settings.get("warn_escalate_ban", True))
+
+    # При достижении двойного лимита — бессрочный бан (если включено).
+    if escalate_ban and warn_count >= limit * 2:
+        action = "ban"
+        duration_seconds = 0
+
+    system_moderator = getattr(bot, "id", 0) or 0
+    duration = timedelta(seconds=duration_seconds) if duration_seconds > 0 else None
+
+    if action == "ban":
+        await record_ban_or_kick(
+            session,
+            chat_id=chat_id,
+            moderator_id=system_moderator,
+            target_id=target_id,
+            action="ban",
+            reason=f"Авто-наказание: достигнут лимит предупреждений ({warn_count}/{limit})",
+            duration=duration,
+            bot=bot,
+            system=True,
+        )
+        msg = f"⛔️ Достигнут лимит предупреждений ({warn_count}/{limit}) — выдана блокировка."
+    elif action == "kick":
+        await record_ban_or_kick(
+            session,
+            chat_id=chat_id,
+            moderator_id=system_moderator,
+            target_id=target_id,
+            action="kick",
+            reason=f"Авто-наказание: достигнут лимит предупреждений ({warn_count}/{limit})",
+            bot=bot,
+            system=True,
+        )
+        msg = f"👢 Достигнут лимит предупреждений ({warn_count}/{limit}) — участник исключён."
+    elif action == "mute":
+        await issue_mute(
+            session,
+            chat_id=chat_id,
+            moderator_id=system_moderator,
+            target_id=target_id,
+            duration=duration or timedelta(hours=1),
+            reason=f"Авто-наказание: достигнут лимит предупреждений ({warn_count}/{limit})",
+            bot=bot,
+            system=True,
+        )
+        msg = f"🔇 Достигнут лимит предупреждений ({warn_count}/{limit}) — выдан мут."
+    else:
+        return WarnEscalation(False, "none", None, warn_count, "")
+
+    return WarnEscalation(True, action, duration, warn_count, msg)
 
 
 async def revoke_warn(
@@ -739,6 +864,30 @@ async def get_active_warns(
                 ModerationCase.expires_at > now,
             )
             .order_by(desc(ModerationCase.created_at))
+        )
+    ).all()
+    return list(cases)
+
+
+async def get_user_moderation_history(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    target_id: int,
+    limit: int = 20,
+) -> list[ModerationCase]:
+    """Возвращает историю наказаний пользователя в чате (все действия, свежие сверху)."""
+    limit = max(1, min(int(limit), 50))
+    cases = (
+        await session.scalars(
+            select(ModerationCase)
+            .where(
+                ModerationCase.chat_id == chat_id,
+                ModerationCase.target_id == target_id,
+                ModerationCase.action.in_(("warn", "mute", "ban", "kick")),
+            )
+            .order_by(desc(ModerationCase.created_at))
+            .limit(limit)
         )
     ).all()
     return list(cases)

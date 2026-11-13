@@ -63,6 +63,20 @@ DEFAULT_CHAT_SETTINGS = {
     "antispam_duration_seconds": 1800,
     "antispam_action": "mute",
     "antispam_escalate_after": 3,
+    "antispam_caps_ratio": 0.7,   # доля заглавных букв, при которой сообщение считается капсом
+    "antispam_caps_min_length": 12,
+    "antispam_emoji_limit": 15,   # максимальное число эмодзи в одном сообщении
+    # Автоматическая эскалация предупреждений (варнов). Полностью настраивается.
+    "warn_limit": 5,             # сколько варнов до авто-наказания (0 — отключено)
+    "warn_action": "mute",       # mute | ban | kick | none
+    "warn_duration_seconds": 3600,  # срок авто-мута/бана в секундах (0 — навсегда для бана)
+    "warn_escalate_ban": True,   # при достижении двойного лимита — бессрочный бан
+    # Антимат (фильтр нецензурной лексики). Список слов — в badwords_service.
+    "badwords_enabled": False,
+    "badwords_action": "delete",  # delete | warn | mute
+    "badwords_duration_seconds": 600,
+    # Общий анти-флуд «пауза» (минимальный интервал между сообщениями одного игрока).
+    "antiflood_pause_seconds": 0,  # 0 — выключено
 }
 
 

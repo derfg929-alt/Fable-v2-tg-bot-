@@ -43,6 +43,7 @@ from app.services.moderation_service import (
     issue_warn,
     revoke_warn,
     get_active_warns,
+    apply_warn_escalation,
     record_ban_or_kick,
     is_link_allowed,
     add_link_whitelist,
@@ -117,7 +118,8 @@ def _build_help_sections_keyboard():
     builder.button(text="8⃣ Персонаж", callback_data="help_sec_8")
     builder.button(text="9⃣ Космодром", callback_data="help_sec_9")
     builder.button(text="🔟 Биржа", callback_data="help_sec_10")
-    builder.adjust(2, 2, 2, 2, 2)
+    builder.button(text="🛡 Модерация", callback_data="help_sec_11")
+    builder.adjust(2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -130,7 +132,7 @@ async def handle_commands_list(message: types.Message):
     parts = msg_text.strip().split()
     if len(parts) > 1:
         arg = parts[1].strip()
-        from app.services.help_service import get_section_help_text
+        from app.services.help_service import get_section_help_text, MODERATION_HELP_TEXT
         if arg.isdigit():
             sec_num = int(arg)
             text = get_section_help_text(sec_num)
@@ -139,6 +141,9 @@ async def handle_commands_list(message: types.Message):
                 builder.button(text="◀️ Все разделы", callback_data="help_sec_all")
                 await message.reply(text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 return
+        if arg.casefold() in ("модерация", "модерации", "moderation"):
+            await message.reply(MODERATION_HELP_TEXT, parse_mode="HTML")
+            return
 
     await message.reply(
         get_commands_help_text(),
@@ -698,6 +703,93 @@ async def handle_unmute(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
+@router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
+    "варн настройки", "варн лимит", "варн действие", "варн срок", "варн эскалация",
+    "!варн настройки", "настройки варнов",
+])))
+async def handle_warn_settings(message: types.Message):
+    """Настройка лимита варнов и авто-наказания при достижении лимита."""
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        return
+    from datetime import timedelta
+    from app.services.moderation_service import _format_duration_ru
+    from app.services.chat_settings_service import DEFAULT_CHAT_SETTINGS
+
+    parts = (message.text or "").split()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot)
+        if lvl < 3:
+            return
+
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+
+        def _persist() -> None:
+            chat.settings = settings
+
+        def _duration_str(seconds: int) -> str:
+            if seconds <= 0:
+                return "навсегда (для бана)"
+            return _format_duration_ru(timedelta(seconds=seconds))
+
+        cmd = parts[1].casefold() if len(parts) > 1 else ""
+        if len(parts) == 1 or cmd in ("настройки", "статус", "status"):
+            limit = int(settings.get("warn_limit", 5) or 0)
+            action = settings.get("warn_action", "mute")
+            dur = int(settings.get("warn_duration_seconds", 3600) or 0)
+            await message.reply(
+                f"⚠️ <b>Настройки предупреждений (варнов)</b>\n\n"
+                f"Лимит до наказания: <b>{limit or 'отключено'}</b>\n"
+                f"Действие при лимите: <b>{action}</b>\n"
+                f"Срок наказания: <b>{_duration_str(dur)}</b>\n"
+                f"Эскалация в бессрочный бан на двойном лимите: <b>{'Да' if settings.get('warn_escalate_ban', True) else 'Нет'}</b>\n\n"
+                f"<b>Управление:</b>\n"
+                f"• <code>варн лимит 5</code> — сколько варнов до авто-наказания (0 — выключить)\n"
+                f"• <code>варн действие мут|бан|кик|нет</code>\n"
+                f"• <code>варн срок 1ч 30м</code> — срок авто-наказания\n"
+                f"• <code>варн эскалация вкл|выкл</code> — бессрочный бан на двойном лимите",
+                parse_mode="HTML",
+            )
+            return
+        if cmd in ("лимит", "limit") and len(parts) >= 3 and parts[2].isdigit():
+            settings["warn_limit"] = max(0, int(parts[2]))
+            _persist()
+            await session.flush()
+            await message.reply(f"⚠️ Лимит варнов установлен: <b>{settings['warn_limit'] or 'отключено'}</b>", parse_mode="HTML")
+            return
+        if cmd in ("действие", "action") and len(parts) >= 3:
+            act = parts[2].casefold()
+            mapping = {"мут": "mute", "mute": "mute", "бан": "ban", "ban": "ban", "кик": "kick", "kick": "kick", "нет": "none", "none": "none"}
+            if act not in mapping:
+                await message.reply("Укажите: <code>варн действие мут</code>, <code>варн действие бан</code>, <code>варн действие кик</code> или <code>варн действие нет</code>", parse_mode="HTML")
+                return
+            settings["warn_action"] = mapping[act]
+            _persist()
+            await session.flush()
+            await message.reply(f"⚙️ Действие при лимите варнов: <b>{settings['warn_action']}</b>")
+            return
+        if cmd in ("срок", "время", "duration") and len(parts) >= 3:
+            try:
+                dur = parse_duration_string(" ".join(parts[2:]))
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+                return
+            settings["warn_duration_seconds"] = int(dur.total_seconds())
+            _persist()
+            await session.flush()
+            await message.reply(f"⏱ Срок авто-наказания по варнам: <b>{_duration_str(settings['warn_duration_seconds'])}</b>", parse_mode="HTML")
+            return
+        if cmd in ("эскалация", "escalate") and len(parts) >= 3:
+            val = parts[2].casefold() in ("вкл", "включить", "on", "да", "yes", "true")
+            settings["warn_escalate_ban"] = val
+            _persist()
+            await session.flush()
+            await message.reply(f"⚙️ Эскалация в бессрочный бан на двойном лимите: <b>{'Вкл' if val else 'Выкл'}</b>")
+            return
+
+        await message.reply("Неизвестная настройка. Напишите <code>варн настройки</code> для справки.", parse_mode="HTML")
+
+
 @router.message(F.text.casefold().func(lambda t: any(t == prefix or t.startswith(f"{prefix} ") for prefix in ["варны", "!варны", "/warns", "преды", "!преды"])))
 async def handle_view_warns(message: types.Message):
     """Просмотр счётчика и активных предупреждений пользователя в чате."""
@@ -711,17 +803,20 @@ async def handle_view_warns(message: types.Message):
             return
 
         warns = await get_active_warns(session, chat_id=message.chat.id, target_id=target_id)
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        warn_limit = int((chat.settings or {}).get("warn_limit", 5) or 0)
+        limit_str = warn_limit or "∞"
         chat_title = message.chat.title or "этом чате"
         if not warns:
             await message.reply(
-                f"✅ <b>Счётчик варнов: 0/5</b>\n\n"
+                f"✅ <b>Счётчик варнов: 0/{limit_str}</b>\n\n"
                 f"У пользователя ID <code>{target_id}</code> нет активных предупреждений в «{chat_title}».",
                 parse_mode="HTML",
             )
             return
 
         lines = [
-            f"⚠️ <b>Счётчик варнов: {len(warns)}/5</b>\n"
+            f"⚠️ <b>Счётчик варнов: {len(warns)}/{limit_str}</b>\n"
             f"Предупреждения пользователя ID <code>{target_id}</code> в «{chat_title}»:\n"
         ]
         for idx, w in enumerate(warns, start=1):
@@ -763,17 +858,67 @@ async def handle_warn(message: types.Message):
         reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != str(target_id)]) or "Нарушение"
         try:
             case, cnt = await issue_warn(session, chat_id=message.chat.id, moderator_id=message.from_user.id, target_id=target_id, reason=reason, bot=message.bot)
+            chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+            settings = chat.settings or {}
+            warn_limit = int(settings.get("warn_limit", 5) or 0)
             from app.services.logging_service import notify_moderation_log
             await notify_moderation_log(
                 session,
                 bot=message.bot,
                 chat_id=message.chat.id,
                 text=(
-                    f"⚠️ <b>ВАРН</b> ({cnt}/5)\nЦель: <code>{target_id}</code>\n"
+                    f"⚠️ <b>ВАРН</b> ({cnt}/{warn_limit or '∞'})\nЦель: <code>{target_id}</code>\n"
                     f"Причина: {reason}\nМодератор: <code>{message.from_user.id}</code>"
                 ),
             )
-            await message.reply(f"⚠️ Пользователю ID <code>{target_id}</code> выдано предупреждение ({cnt}/5). Причина: {reason}", parse_mode="HTML")
+
+            # Авто-эскалация: при достижении лимита варнов выдаём настроенное наказание.
+            escalation_text = ""
+            try:
+                esc = await apply_warn_escalation(
+                    session,
+                    chat_id=message.chat.id,
+                    target_id=target_id,
+                    warn_count=cnt,
+                    settings=settings,
+                    bot=message.bot,
+                )
+                if esc.triggered:
+                    escalation_text = "\n\n" + esc.message
+                    # Применяем ограничение/бан в самом Telegram.
+                    if message.bot:
+                        from aiogram.types import ChatPermissions
+                        try:
+                            if esc.action == "ban":
+                                await message.bot.ban_chat_member(
+                                    chat_id=message.chat.id,
+                                    user_id=target_id,
+                                    until_date=esc.duration,
+                                )
+                            elif esc.action == "kick":
+                                await message.bot.ban_chat_member(chat_id=message.chat.id, user_id=target_id)
+                                await message.bot.unban_chat_member(chat_id=message.chat.id, user_id=target_id, only_if_banned=True)
+                            elif esc.action == "mute":
+                                no_perms = ChatPermissions(
+                                    can_send_messages=False,
+                                    can_send_media_messages=False,
+                                    can_send_other_messages=False,
+                                    can_add_web_page_previews=False,
+                                )
+                                await message.bot.restrict_chat_member(
+                                    chat_id=message.chat.id,
+                                    user_id=target_id,
+                                    permissions=no_perms,
+                                )
+                        except Exception:
+                            pass
+            except Exception as esc_err:
+                escalation_text = f"\n\n⚠️ Авто-наказание не применено: {esc_err}"
+
+            await message.reply(
+                f"⚠️ Пользователю ID <code>{target_id}</code> выдано предупреждение ({cnt}/{warn_limit or '∞'}). Причина: {reason}{escalation_text}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await message.reply(f"❌ {e}")
 
@@ -797,25 +942,103 @@ async def handle_admin_list(message: types.Message):
         await message.reply("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(F.text.casefold().func(lambda t: any(t == prefix or t.startswith(f"{prefix} ") for prefix in [
+    "наказания", "!наказания", "/punishments", "история наказаний", "проступки", "казы", "!казы"
+])))
+async def handle_punishment_history(message: types.Message):
+    """История наказаний пользователя в чате (для модераторов, ур. 2+)."""
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        return
+    from app.services.moderation_service import get_user_moderation_history
+
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot)
+        if lvl < 2:
+            return
+        target_id = await _get_target_user_id(message, session)
+        if not target_id and message.from_user:
+            target_id = message.from_user.id
+        if not target_id:
+            await message.reply("Ответьте на сообщение или укажите ID/@username игрока.", parse_mode="HTML")
+            return
+
+        cases = await get_user_moderation_history(session, chat_id=message.chat.id, target_id=target_id)
+
+    action_titles = {
+        "warn": "⚠️ предупреждение",
+        "mute": "🔇 мут",
+        "ban": "⛔️ бан",
+        "kick": "👢 кик",
+    }
+    if not cases:
+        await message.reply(
+            f"📜 У пользователя ID <code>{target_id}</code> нет истории наказаний в этом чате.",
+            parse_mode="HTML",
+        )
+        return
+
+    lines = [f"📜 <b>История наказаний</b> игрока ID <code>{target_id}</code>:\n"]
+    for idx, c in enumerate(cases, start=1):
+        title = action_titles.get(c.action, c.action)
+        date_str = c.created_at.strftime("%d.%m.%Y %H:%M") if c.created_at else ""
+        status = "активно" if c.is_active else "снято"
+        lines.append(
+            f"{idx}. {title} — <b>{c.reason or 'без причины'}</b>\n"
+            f"   <i>{date_str}</i> • {status} • модератор ID {c.moderator_id}"
+        )
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["чистка", "!чистка", "очистка", "!очистка"])))
 async def handle_chat_purge(message: types.Message):
-    """Очистка/удаление сообщений в чате для модераторов (ур. 2+)."""
+    """Очистка/удаление сообщений в чате для модераторов (ур. 2+).
+
+    Форматы:
+      • <code>чистка [N]</code> — удалить последние N сообщений (по умолчанию 10, до 200);
+      • <code>чистка все [N]</code> — массовая очистка (по умолчанию 100, до 200);
+      • ответом на сообщение пользователя + <code>чистка [N]</code> — удалить до N
+        сообщений конкретного пользователя в пределах последних 300 сообщений.
+    """
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
         return
     parts = (message.text or "").split()
-    count = 10
-    if len(parts) > 1 and parts[1].isdigit():
-        count = min(100, max(1, int(parts[1])))
+    args = parts[1:]
 
     async with session_scope() as session:
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot)
         if lvl < 2:
             await message.reply("Для чистки сообщений требуются права модератора (ур. 2+)")
             return
+        target_id = await _get_target_user_id(message, session)
 
-    # Удаляем сообщение с вызовом команды и предыдущие сообщения
+    # Разбираем «все» и число.
+    purge_all = any(a.casefold() == "все" for a in args)
+    count = 100 if purge_all else 10
+    for a in args:
+        if a.isdigit():
+            count = int(a)
+            break
+    count = min(200, max(1, count))
+
+    if not message.bot:
+        return
+
     deleted = 0
-    if message.bot:
+    # Режим «по пользователю»: ответ на сообщение -> чистим только его сообщения.
+    if target_id and message.reply_to_message:
+        scan = min(300, max(count * 3, 60))
+        cur_id = message.message_id
+        removed_target = 0
+        for mid in range(cur_id, max(1, cur_id - scan - 1), -1):
+            if removed_target >= count:
+                break
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=mid)
+                removed_target += 1
+            except Exception:
+                continue
+        deleted = removed_target
+    else:
         try:
             await message.delete()
         except Exception:

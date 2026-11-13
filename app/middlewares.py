@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware, types
@@ -18,13 +18,20 @@ from app.db.session import session_scope
 from sqlalchemy import select
 from app.db.models import ModerationCase
 from app.services.activity_service import reward_chat_message
-from app.services.moderation_service import is_link_allowed, get_user_admin_level
+from app.services.moderation_service import (
+    apply_warn_escalation,
+    get_user_admin_level,
+    is_link_allowed,
+    issue_mute,
+    issue_warn,
+)
+from app.services.badwords_service import check_message
 from app.services.chat_settings_service import (
     get_or_create_chat,
     has_accepted_rules,
     has_pending_captcha,
 )
-from app.services.antispam_service import check_and_apply_antispam
+from app.services.antispam_service import check_and_apply_antispam, check_flood_pause
 
 
 class CallbackAnswerMiddleware(BaseMiddleware):
@@ -166,7 +173,93 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                             pass
                         return
 
-                # 6. Начисление активности за общение
+                # 6. Антимат (фильтр нецензурной лексики; по умолчанию выключен)
+                if settings.get("badwords_enabled", False) and admin_lvl < 2:
+                    try:
+                        hit = await check_message(
+                            session,
+                            chat_id=message.chat.id,
+                            text=message.text or message.caption,
+                            settings=settings,
+                        )
+                    except Exception:
+                        hit = None
+                    if hit is not None:
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
+                        if hit.action == "warn":
+                            try:
+                                case, cnt = await issue_warn(
+                                    session,
+                                    chat_id=message.chat.id,
+                                    moderator_id=message.bot.id if message.bot else 0,
+                                    target_id=message.from_user.id,
+                                    reason="Антимат: нецензурная лексика",
+                                    bot=message.bot,
+                                    system=True,
+                                )
+                                chat_now = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+                                await apply_warn_escalation(
+                                    session,
+                                    chat_id=message.chat.id,
+                                    target_id=message.from_user.id,
+                                    warn_count=cnt,
+                                    settings=chat_now.settings or {},
+                                    bot=message.bot,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                await message.answer(
+                                    f"⚠️ {message.from_user.first_name}, нецензурная лексика запрещена! Выдано предупреждение.",
+                                )
+                            except Exception:
+                                pass
+                        elif hit.action == "mute":
+                            try:
+                                await issue_mute(
+                                    session,
+                                    chat_id=message.chat.id,
+                                    moderator_id=message.bot.id if message.bot else 0,
+                                    target_id=message.from_user.id,
+                                    duration=timedelta(seconds=max(30, hit.duration_seconds)),
+                                    reason="Антимат: нецензурная лексика",
+                                    bot=message.bot,
+                                    system=True,
+                                )
+                                from aiogram.types import ChatPermissions
+                                if message.bot:
+                                    await message.bot.restrict_chat_member(
+                                        chat_id=message.chat.id,
+                                        user_id=message.from_user.id,
+                                        permissions=ChatPermissions(can_send_messages=False),
+                                    )
+                            except Exception:
+                                pass
+                        return
+
+                # 7. Анти-флуд «пауза»: минимальный интервал между сообщениями игрока
+                pause = int(settings.get("antiflood_pause_seconds", 0) or 0)
+                if pause > 0 and admin_lvl < 2:
+                    try:
+                        blocked = await check_flood_pause(
+                            session,
+                            chat_id=message.chat.id,
+                            user_id=message.from_user.id,
+                            min_interval_seconds=pause,
+                        )
+                    except Exception:
+                        blocked = False
+                    if blocked:
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
+                        return
+
+                # 8. Начисление активности за общение
                 if message.text:
                     try:
                         await reward_chat_message(

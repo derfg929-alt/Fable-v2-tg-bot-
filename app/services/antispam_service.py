@@ -35,7 +35,49 @@ DEFAULT_ANTISPAM = {
     "antispam_duration_seconds": 1800,  # 30 минут
     "antispam_action": "mute",  # mute | ban
     "antispam_escalate_after": 3,  # после N срабатываний — временный бан
+    "antispam_caps_ratio": 0.7,
+    "antispam_caps_min_length": 12,
+    "antispam_emoji_limit": 15,
 }
+
+
+async def check_flood_pause(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    user_id: int,
+    min_interval_seconds: int,
+) -> bool:
+    """Анти-флуд «пауза»: True, если игрок пишет чаще, чем раз в N секунд.
+
+    Использует то же хранилище FloodTracker, но работает независимо от антиспама:
+    хранит время последнего сообщения и сравнивает интервал. Возвращает True, если
+    сообщение нужно заблокировать (слишком часто), иначе запоминает время и False.
+    """
+    if min_interval_seconds <= 0:
+        return False
+    tracker = await _get_tracker(session, chat_id=chat_id, user_id=user_id)
+    now = _now()
+    times: list[str] = []
+    for t in (tracker.message_times or []):
+        try:
+            parsed = datetime.fromisoformat(t)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        # храним только последние 20 отметок времени
+        if (now - parsed).total_seconds() <= 600:
+            times.append(parsed.isoformat())
+    times = times[-20:]
+
+    last_ts = datetime.fromisoformat(times[-1]) if times else None
+    too_fast = last_ts is not None and (now - last_ts).total_seconds() < min_interval_seconds
+    if not too_fast:
+        times.append(now.isoformat())
+    tracker.message_times = times
+    await session.flush()
+    return too_fast
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +168,27 @@ async def check_and_apply_antispam(
 
     flood_by_count = len(times) > max_messages
     flood_by_duplicates = tracker.duplicate_count >= dup_threshold
-    if not (flood_by_count or flood_by_duplicates):
+    flood_by_caps = False
+    flood_by_emoji = False
+
+    # Капс: длинное сообщение, где доля заглавных букв превышает порог.
+    caps_ratio = float(settings.get("antispam_caps_ratio", DEFAULT_ANTISPAM.get("antispam_caps_ratio", 0.7)) or 0.7)
+    caps_min_len = int(settings.get("antispam_caps_min_length", DEFAULT_ANTISPAM.get("antispam_caps_min_length", 12)) or 12)
+    raw_text = (text or "").strip()
+    letters = [c for c in raw_text if c.isalpha()]
+    if caps_min_len > 0 and len(letters) >= caps_min_len:
+        upper = sum(1 for c in letters if c.isupper())
+        if upper / len(letters) >= caps_ratio:
+            flood_by_caps = True
+
+    # Спам эмодзи: слишком много эмодзи в одном сообщении.
+    emoji_limit = int(settings.get("antispam_emoji_limit", DEFAULT_ANTISPAM.get("antispam_emoji_limit", 15)) or 0)
+    if emoji_limit > 0:
+        emoji_count = sum(1 for c in raw_text if ord(c) >= 0x1F000 or (0x2600 <= ord(c) <= 0x27BF))
+        if emoji_count > emoji_limit:
+            flood_by_emoji = True
+
+    if not (flood_by_count or flood_by_duplicates or flood_by_caps or flood_by_emoji):
         await session.flush()
         return None
 
@@ -138,7 +200,12 @@ async def check_and_apply_antispam(
         action = "ban"
 
     duration = timedelta(seconds=max(30, duration_sec))
-    reason = "Авто-антиспам: флуд/повтор сообщений"
+    if flood_by_caps:
+        reason = "Авто-антиспам: капс"
+    elif flood_by_emoji:
+        reason = "Авто-антиспам: спам эмодзи"
+    else:
+        reason = "Авто-антиспам: флуд/повтор сообщений"
 
     if action == "ban":
         await record_ban_or_kick(
