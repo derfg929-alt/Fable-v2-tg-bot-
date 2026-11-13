@@ -123,6 +123,21 @@ class ChatLinkWhitelist(Base):
     )
 
 
+class ChatBadWord(Base):
+    """Персональный список запрещённых слов чата (антимат)."""
+    __tablename__ = "chat_bad_words"
+    __table_args__ = (UniqueConstraint("chat_id", "word", name="uq_chat_bad_word"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("chats.telegram_id", ondelete="CASCADE"), index=True
+    )
+    word: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class RuleAcceptance(Base):
     __tablename__ = "rule_acceptances"
     __table_args__ = (UniqueConstraint("chat_id", "user_id", name="uq_rule_acceptance"),)

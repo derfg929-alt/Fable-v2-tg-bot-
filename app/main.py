@@ -30,6 +30,7 @@ except ImportError:
 from app.handlers.economy_handlers import router as economy_router
 from app.handlers.exchange_handlers import router as exchange_router
 from app.handlers.games_handlers import router as games_router
+from app.handlers.rp_handlers import router as rp_router
 from app.handlers.social_moderation_handlers import router as social_moderation_router
 from app.handlers.extended_moderation_handlers import router as extended_moderation_router
 from app.handlers.ai_handlers import router as ai_router
@@ -65,6 +66,7 @@ def create_dispatcher() -> Dispatcher:
         economy_router,
         exchange_router,
         games_router,
+        rp_router,
         social_moderation_router,
         extended_moderation_router,
         ai_router,

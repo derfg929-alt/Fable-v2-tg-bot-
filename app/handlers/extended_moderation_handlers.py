@@ -21,6 +21,7 @@ from app.services.moderation_service import (
     parse_duration_string,
     extract_moderation_args,
     sync_chat_creator_and_admins,
+    _format_duration_ru,
     ROLE_NAMES,
 )
 from app.services.chat_settings_service import (
@@ -575,8 +576,35 @@ async def handle_chat_settings_panel(message: types.Message, bot: Bot):
         builder.button(text="⚖️ Обычный пресет", callback_data=f"preset_normal_{message.chat.id}")
         builder.button(text="🏖 Казуальный", callback_data=f"preset_casual_{message.chat.id}")
         builder.adjust(3)
+        builder.button(
+            text=f"🔗 Антиссылки: {'Вкл' if s.get('links_restricted') else 'Выкл'}",
+            callback_data=f"cfg_toggle_links_{message.chat.id}",
+        )
+        builder.button(
+            text=f"🤖 Капча: {'Вкл' if s.get('captcha_enabled') else 'Выкл'}",
+            callback_data=f"cfg_toggle_captcha_{message.chat.id}",
+        )
+        builder.button(
+            text=f"🛡 Антиспам: {'Вкл' if s.get('antispam_enabled') else 'Выкл'}",
+            callback_data=f"cfg_toggle_antispam_{message.chat.id}",
+        )
+        builder.button(
+            text=f"🤬 Антимат: {'Вкл' if s.get('badwords_enabled') else 'Выкл'}",
+            callback_data=f"cfg_toggle_badwords_{message.chat.id}",
+        )
+        builder.button(
+            text=f"📜 Правила: {'Вкл' if s.get('rules_acceptance_required') else 'Выкл'}",
+            callback_data=f"cfg_toggle_rules_{message.chat.id}",
+        )
+        builder.button(
+            text=f"👋 Приветствие: {'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}",
+            callback_data=f"cfg_toggle_welcome_{message.chat.id}",
+        )
+        builder.adjust(3, 2, 2, 1)
 
         log_channel = chat.log_chat_id or s.get("log_channel_id")
+        warn_limit = int(s.get("warn_limit", 5) or 0)
+        warn_action = s.get("warn_action", "mute")
         text = (
             f"⚙️ <b>Панель настроек чата «{message.chat.title}»</b>\n\n"
             f"👑 Ваш статус: <b>{ROLE_NAMES.get(lvl, 'Админ')} (ур. {lvl})</b>\n\n"
@@ -584,17 +612,117 @@ async def handle_chat_settings_panel(message: types.Message, bot: Bot):
             f"Антиссылки: <b>{'Вкл' if s.get('links_restricted', False) else 'Выкл'}</b>\n"
             f"Капча при входе: <b>{'Вкл' if s.get('captcha_enabled', False) else 'Выкл'}</b>\n"
             f"Антиспам: <b>{'Вкл' if s.get('antispam_enabled', False) else 'Выкл'}</b>\n"
+            f"Антимат: <b>{'Вкл' if s.get('badwords_enabled', False) else 'Выкл'}</b>\n"
             f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required', False) else 'Выкл'}</b>\n"
             f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n"
+            f"Варны: лимит <b>{warn_limit or '∞'}</b>, действие <b>{warn_action}</b>\n"
             f"Лог-канал: <b>{log_channel if log_channel else 'не настроен'}</b>\n\n"
-            f"<b>Управление:</b>\n"
+            f"<b>Команды настройки:</b>\n"
+            f"• <code>антиспам вкл|выкл</code>, <code>антиспам лимит 6 10</code>, <code>антиспам действие бан</code>\n"
+            f"• <code>антимат вкл|выкл</code>, <code>антимат действие удалить|варн|мут</code>\n"
+            f"• <code>варн настройки</code> — лимит, действие и срок авто-наказания\n"
             f"• <code>+капча</code> / <code>-капча</code> — капча при входе\n"
-            f"• <code>антиспам вкл</code> / <code>антиспам выкл</code> — авто-антиспам\n"
             f"• <code>логи настроить ID</code> — логи модерации\n"
             f"• <code>ссылки добавить домен</code> — белый список ссылок\n\n"
-            f"<i>Выберите пресет для быстрой настройки:</i>"
+            f"<i>Нажмите кнопку ниже, чтобы быстро переключить настройку, или выберите пресет:</i>"
         )
         await message.reply(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("cfg_toggle_"))
+async def on_setting_toggle(callback: types.CallbackQuery):
+    """Быстрое переключение настройки чата из панели (ур. 3+)."""
+    try:
+        _, _, key, chat_id_str = callback.data.split("_", 3)
+        chat_id = int(chat_id_str)
+    except Exception:
+        try:
+            await callback.answer("❌ Некорректная кнопка", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    mapping = {
+        "links": "links_restricted",
+        "captcha": "captcha_enabled",
+        "antispam": "antispam_enabled",
+        "badwords": "badwords_enabled",
+        "rules": "rules_acceptance_required",
+        "welcome": "welcome_enabled",
+    }
+    setting_key = mapping.get(key)
+    if not setting_key:
+        try:
+            await callback.answer("❌ Неизвестная настройка", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=callback.from_user.id, bot=callback.bot)
+        if lvl < 3:
+            try:
+                await callback.answer("❌ Требуется уровень 3+", show_alert=True)
+            except Exception:
+                pass
+            return
+        chat = await get_or_create_chat(session, chat_id=chat_id, title=callback.message.chat.title if callback.message else "")
+        settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+        current = settings.get(setting_key, True if setting_key == "welcome_enabled" else False)
+        settings[setting_key] = not bool(current)
+        chat.settings = settings
+        await session.flush()
+        new_state = "Вкл" if settings[setting_key] else "Выкл"
+
+    try:
+        await callback.answer(f"✅ {setting_key}: {new_state}")
+    except Exception:
+        pass
+    # Обновляем текст панели, перерисовывая её заново.
+    try:
+        await _refresh_settings_panel(callback, chat_id)
+    except Exception:
+        pass
+
+
+async def _refresh_settings_panel(callback: types.CallbackQuery, chat_id: int) -> None:
+    async with session_scope() as session:
+        chat = await get_or_create_chat(session, chat_id=chat_id)
+        s = chat.settings or {}
+        lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=callback.from_user.id, bot=callback.bot)
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🛡 Строгий пресет", callback_data=f"preset_strict_{chat_id}")
+        builder.button(text="⚖️ Обычный пресет", callback_data=f"preset_normal_{chat_id}")
+        builder.button(text="🏖 Казуальный", callback_data=f"preset_casual_{chat_id}")
+        builder.adjust(3)
+        builder.button(text=f"🔗 Антиссылки: {'Вкл' if s.get('links_restricted') else 'Выкл'}", callback_data=f"cfg_toggle_links_{chat_id}")
+        builder.button(text=f"🤖 Капча: {'Вкл' if s.get('captcha_enabled') else 'Выкл'}", callback_data=f"cfg_toggle_captcha_{chat_id}")
+        builder.button(text=f"🛡 Антиспам: {'Вкл' if s.get('antispam_enabled') else 'Выкл'}", callback_data=f"cfg_toggle_antispam_{chat_id}")
+        builder.button(text=f"🤬 Антимат: {'Вкл' if s.get('badwords_enabled') else 'Выкл'}", callback_data=f"cfg_toggle_badwords_{chat_id}")
+        builder.button(text=f"📜 Правила: {'Вкл' if s.get('rules_acceptance_required') else 'Выкл'}", callback_data=f"cfg_toggle_rules_{chat_id}")
+        builder.button(text=f"👋 Приветствие: {'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}", callback_data=f"cfg_toggle_welcome_{chat_id}")
+        builder.adjust(3, 2, 2, 1)
+
+        warn_limit = int(s.get("warn_limit", 5) or 0)
+        warn_action = s.get("warn_action", "mute")
+        text = (
+            f"⚙️ <b>Панель настроек чата</b>\n\n"
+            f"👑 Ваш статус: <b>{ROLE_NAMES.get(lvl, 'Админ')} (ур. {lvl})</b>\n\n"
+            f"Текущий пресет: <b>{s.get('preset', 'normal')}</b>\n"
+            f"Антиссылки: <b>{'Вкл' if s.get('links_restricted') else 'Выкл'}</b>\n"
+            f"Капча: <b>{'Вкл' if s.get('captcha_enabled') else 'Выкл'}</b>\n"
+            f"Антиспам: <b>{'Вкл' if s.get('antispam_enabled') else 'Выкл'}</b>\n"
+            f"Антимат: <b>{'Вкл' if s.get('badwords_enabled') else 'Выкл'}</b>\n"
+            f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required') else 'Выкл'}</b>\n"
+            f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n"
+            f"Варны: лимит <b>{warn_limit or '∞'}</b>, действие <b>{warn_action}</b>\n\n"
+            f"<i>Нажмите кнопку, чтобы переключить настройку.</i>"
+        )
+    try:
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("preset_"))
@@ -696,7 +824,7 @@ async def handle_moderation_logs(message: types.Message, bot: Bot):
 # ===================== АВТОМАТИЧЕСКИЙ АНТИСПАМ =====================
 
 @router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
-    "антиспам", "!антиспам", "/antispam", "антифлуд", "!антифлуд"
+    "антиспам", "!антиспам", "/antispam"
 ])))
 async def handle_antispam_settings(message: types.Message, bot: Bot):
     """Включение/выключение и настройка автоматического антиспама."""
@@ -781,8 +909,202 @@ async def handle_antispam_settings(message: types.Message, bot: Bot):
             await session.flush()
             await message.reply(f"⚙️ Авто-наказание: <b>{settings['antispam_action']}</b>")
             return
+        if cmd in ("повторы", "дубликаты", "dupes") and len(parts) >= 3 and parts[2].isdigit():
+            settings["antispam_duplicate_threshold"] = max(2, int(parts[2]))
+            _persist()
+            await session.flush()
+            await message.reply(f"🔁 Порог повторов: <b>{settings['antispam_duplicate_threshold']}</b> подряд одинаковых сообщений.")
+            return
+        if cmd in ("эскалация", "escalate") and len(parts) >= 3 and parts[2].isdigit():
+            settings["antispam_escalate_after"] = max(1, int(parts[2]))
+            _persist()
+            await session.flush()
+            await message.reply(f"⬆️ Эскалация до бана после <b>{settings['antispam_escalate_after']}</b> срабатываний.")
+            return
+        if cmd in ("капс", "caps") and len(parts) >= 3:
+            try:
+                ratio = float(parts[2].replace(",", "."))
+            except ValueError:
+                await message.reply("Укажите долю заглавных букв, например: <code>антиспам капс 0.7</code> (0 — выключить)")
+                return
+            settings["antispam_caps_ratio"] = max(0.0, min(1.0, ratio))
+            _persist()
+            await session.flush()
+            await message.reply(f"🔠 Порог капса: <b>{settings['antispam_caps_ratio']}</b> (0 — выключено).")
+            return
+        if cmd in ("эмодзи", "emoji") and len(parts) >= 3 and parts[2].isdigit():
+            settings["antispam_emoji_limit"] = int(parts[2])
+            _persist()
+            await session.flush()
+            await message.reply(f"😀 Лимит эмодзи в сообщении: <b>{settings['antispam_emoji_limit']}</b> (0 — выключено).")
+            return
 
         await message.reply("Неизвестная настройка антиспама. Напишите <code>антиспам</code> для справки.", parse_mode="HTML")
+
+
+# ===================== СПРАВКА ПО МОДЕРАЦИИ =====================
+
+@router.message(F.text.casefold().in_([
+    "модерация", "!модерация", "команды модерации", "!команды модерации",
+    "/modhelp", "модхелп", "помощь модерация",
+]))
+async def handle_moderation_help(message: types.Message):
+    """Показывает справку по всем командам модерации и авто-модерации."""
+    from app.services.help_service import MODERATION_HELP_TEXT
+
+    await message.reply(MODERATION_HELP_TEXT, parse_mode="HTML")
+
+
+# ===================== АНТИ-ФЛУД «ПАУЗА» =====================
+
+@router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
+    "антифлуд пауза", "флуд пауза", "!антифлуд пауза", "антифлуд"
+])))
+async def handle_antiflood_pause(message: types.Message, bot: Bot):
+    """Минимальный интервал между сообщениями одного игрока (анти-флуд «пауза»)."""
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    parts = (message.text or "").split()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
+        if lvl < 3:
+            return
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+
+        if len(parts) >= 3 and parts[2].casefold() in ("выкл", "off", "0"):
+            settings["antiflood_pause_seconds"] = 0
+            chat.settings = settings
+            await session.flush()
+            await message.reply("🛑 Анти-флуд «пауза» выключен.")
+            return
+        if len(parts) >= 3:
+            try:
+                dur = parse_duration_string(" ".join(parts[2:]))
+                seconds = int(dur.total_seconds())
+            except Exception:
+                seconds = int(parts[2]) if parts[2].isdigit() else 0
+            settings["antiflood_pause_seconds"] = max(0, seconds)
+            chat.settings = settings
+            await session.flush()
+            await message.reply(
+                f"⏳ Анти-флуд «пауза»: минимальный интервал <b>{_format_duration_ru(timedelta(seconds=seconds)) if seconds else 'выкл'}</b> "
+                f"между сообщениями игрока.",
+                parse_mode="HTML",
+            )
+            return
+
+        cur = int(settings.get("antiflood_pause_seconds", 0) or 0)
+        await message.reply(
+            f"⏳ <b>Анти-флуд «пауза»</b>\n\n"
+            f"Текущий интервал: <b>{_format_duration_ru(timedelta(seconds=cur)) if cur else 'выключено'}</b>\n\n"
+            f"Установить: <code>антифлуд пауза 5</code> (5 секунд), <code>антифлуд пауза 10м</code>.\n"
+            f"Выключить: <code>антифлуд пауза выкл</code>.\n"
+            f"<i>Игрок не сможет отправлять сообщения чаще указанного интервала.</i>",
+            parse_mode="HTML",
+        )
+
+
+# ===================== НАСТРОЙКА ВАРНОВ (АВТО-ЭСКАЛАЦИЯ) =====================
+# (Обработчик находится в social_moderation_handlers, чтобы срабатывать раньше
+#  базовой команды "варн".)
+
+
+# ===================== АНТИМАТ (ФИЛЬТР НЕЦЕНЗУРНОЙ ЛЕКСИКИ) =====================
+
+@router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
+    "антимат", "!антимат", "/badwords"
+])))
+async def handle_badwords_settings(message: types.Message, bot: Bot):
+    """Настройка фильтра нецензурной лексики (антимат)."""
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        return
+    parts = (message.text or "").split()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
+        if lvl < 3:
+            return
+
+        from app.services import badwords_service as bw
+
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+
+        def _persist() -> None:
+            chat.settings = settings
+
+        if len(parts) == 1:
+            custom = await bw.get_custom_bad_words(session, chat_id=message.chat.id)
+            await message.reply(
+                f"🤬 <b>Антимат (фильтр мата)</b>\n\n"
+                f"Статус: <b>{'Вкл' if settings.get('badwords_enabled') else 'Выкл'}</b>\n"
+                f"Действие: <b>{settings.get('badwords_action', 'delete')}</b>\n"
+                f"Своих слов в фильтре: <b>{len(custom)}</b>\n\n"
+                f"<b>Управление:</b>\n"
+                f"• <code>антимат вкл</code> / <code>антимат выкл</code>\n"
+                f"• <code>антимат действие удалить|варн|мут</code>\n"
+                f"• <code>антимат срок 10м</code> — срок авто-мута\n"
+                f"• <code>антимат добавить слово</code> / <code>антимат убрать слово</code>\n"
+                f"• <code>антимат список</code> — свои слова",
+                parse_mode="HTML",
+            )
+            return
+
+        cmd = parts[1].casefold()
+        if cmd in ("вкл", "включить", "on"):
+            settings["badwords_enabled"] = True
+            _persist()
+            await session.flush()
+            await message.reply("🤬 Антимат <b>включён</b>. Сообщения с матом будут удаляться.", parse_mode="HTML")
+            return
+        if cmd in ("выкл", "отключить", "off"):
+            settings["badwords_enabled"] = False
+            _persist()
+            await session.flush()
+            await message.reply("🛑 Антимат <b>выключен</b>.")
+            return
+        if cmd in ("действие", "action") and len(parts) >= 3:
+            act = parts[2].casefold()
+            mapping = {"удалить": "delete", "delete": "delete", "варн": "warn", "warn": "warn", "мут": "mute", "mute": "mute"}
+            if act not in mapping:
+                await message.reply("Укажите: <code>антимат действие удалить|варн|мут</code>", parse_mode="HTML")
+                return
+            settings["badwords_action"] = mapping[act]
+            _persist()
+            await session.flush()
+            await message.reply(f"⚙️ Действие антимата: <b>{settings['badwords_action']}</b>")
+            return
+        if cmd in ("срок", "время") and len(parts) >= 3:
+            try:
+                dur = parse_duration_string(parts[2])
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+                return
+            settings["badwords_duration_seconds"] = int(dur.total_seconds())
+            _persist()
+            await session.flush()
+            await message.reply(f"⏱ Срок авто-мута за мат: <b>{_format_duration_ru(dur)}</b>", parse_mode="HTML")
+            return
+        if cmd in ("добавить", "add") and len(parts) >= 3:
+            try:
+                word = await bw.add_custom_bad_word(session, chat_id=message.chat.id, word=parts[2])
+                await message.reply(f"✅ Слово <code>{word}</code> добавлено в фильтр.", parse_mode="HTML")
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+        if cmd in ("убрать", "удалить", "remove", "del") and len(parts) >= 3:
+            ok = await bw.remove_custom_bad_word(session, chat_id=message.chat.id, word=parts[2])
+            await message.reply("✅ Слово удалено из фильтра." if ok else "Слово не найдено в фильтре.")
+            return
+        if cmd in ("список", "list"):
+            custom = await bw.get_custom_bad_words(session, chat_id=message.chat.id)
+            if not custom:
+                await message.reply("Персональный список слов пуст.")
+                return
+            await message.reply("📝 <b>Свои слова в фильтре:</b>\n" + "\n".join(f"• <code>{w}</code>" for w in custom), parse_mode="HTML")
+            return
+
+        await message.reply("Неизвестная настройка антимата. Напишите <code>антимат</code> для справки.", parse_mode="HTML")
 
 
 # ===================== КАПЧА (ВКЛЮЧЕНИЕ АДМИНОМ) =====================
