@@ -37,6 +37,7 @@ from app.handlers.ai_handlers import router as ai_router
 from app.handlers.promo_handlers import router as promo_router
 from app.handlers.randomizer_handlers import router as randomizer_router
 from app.handlers.randomizer_admin_handlers import router as randomizer_admin_router
+from app.handlers.user_contest_handlers import router as user_contest_router
 from app.middlewares import MessageActivityAndSecurityMiddleware, CallbackAnswerMiddleware
 from app.handlers.owner_handlers import router as owner_router
 from app.tasks.background import (
@@ -59,6 +60,7 @@ def create_dispatcher() -> Dispatcher:
     all_subrouters = [
         randomizer_router,
         randomizer_admin_router,
+        user_contest_router,
         owner_router,
         promo_router,
         economy_router,

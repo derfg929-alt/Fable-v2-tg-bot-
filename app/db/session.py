@@ -226,6 +226,38 @@ async def _migrate_legacy_schema(conn) -> None:
         except Exception:
             pass
 
+    # 2. Дополнительные колонки Randomizer (пользовательские конкурсы каналов).
+    try:
+        check_contests = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='contests'")
+        )
+        if check_contests.scalar_one_or_none():
+            cols_res = await conn.execute(text("PRAGMA table_info(contests)"))
+            cols = [row[1] for row in cols_res.fetchall()]
+            if "owner_id" not in cols:
+                try:
+                    await conn.execute(text("ALTER TABLE contests ADD COLUMN owner_id BIGINT"))
+                except Exception:
+                    pass
+            if "source_channel_id" not in cols:
+                try:
+                    await conn.execute(text("ALTER TABLE contests ADD COLUMN source_channel_id BIGINT"))
+                except Exception:
+                    pass
+        check_channels = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='channels'")
+        )
+        if check_channels.scalar_one_or_none():
+            cols_res = await conn.execute(text("PRAGMA table_info(channels)"))
+            cols = [row[1] for row in cols_res.fetchall()]
+            if "owner_id" not in cols:
+                try:
+                    await conn.execute(text("ALTER TABLE channels ADD COLUMN owner_id BIGINT"))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 async def init_database() -> None:
     """Инициализирует таблицы и схему базы данных при старте."""

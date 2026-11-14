@@ -647,21 +647,6 @@ async def on_my_contests(callback: types.CallbackQuery):
     await _render_admin_contest_list(callback.message, rows)
 
 
-@router.message(Command("mycontests"))
-async def cmd_mycontests(message: types.Message):
-    if not message.from_user:
-        return
-    async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id):
-            await _deny(message)
-            return
-        contests = await cs.list_contests(session, category="all", include_archived=True)
-        rows = []
-        for c in contests:
-            rows.append((c, await cs.participants_count(session, c.id)))
-    await _render_admin_contest_list(message, rows)
-
-
 async def _render_admin_contest_list(message, rows):
     if not rows:
         text = "📋 Конкурсов пока нет. Нажмите «➕ Создать конкурс»."

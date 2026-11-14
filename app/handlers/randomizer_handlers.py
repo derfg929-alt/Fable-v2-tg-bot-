@@ -25,31 +25,37 @@ logger = logging.getLogger("fable.randomizer.handlers")
 router = Router(name="randomizer_router")
 
 MENU_CONTESTS = "🎁 Конкурсы"
+MENU_MY_CONTESTS = "📣 Мои конкурсы"
+MENU_CREATE = "➕ Создать конкурс"
 MENU_PROFILE = "👤 Мой профиль"
 MENU_INVITE = "👥 Пригласить друзей"
 MENU_WINNERS = "🏆 Победители"
 MENU_HISTORY = "📜 История участия"
 MENU_HELP = "ℹ️ Помощь"
 
-WELCOME_BACK = (
-    "С возвращением в Fable Randomizer! ✨\n\n"
-    "Участвуй в конкурсах, приглашай друзей и получай возможность выиграть призы! 🎁"
-)
-WELCOME_NEW = (
-    "Добро пожаловать в Fable Randomizer! ✨\n\n"
-    "Участвуй в конкурсах, приглашай друзей и получай возможность выиграть призы! 🎁"
+WELCOME_BACK = "С возвращением в Fable Randomizer! ✨"
+WELCOME_NEW = "Добро пожаловать в Fable Randomizer! ✨"
+
+GREETING_BODY = (
+    "🎲 <b>Fable Randomizer</b> — конкурсы и розыгрыши призов.\n\n"
+    "🎁 Участвуй в конкурсах и выигрывай призы\n"
+    "📣 Создавай свои конкурсы для каналов\n"
+    "👥 Приглашай друзей и повышай свои шансы\n\n"
+    "Выбери раздел в меню ниже 👇"
 )
 
 
 def _menu_keyboard(mini_app_url: str | None = None):
     kb = ReplyKeyboardBuilder()
     kb.button(text=MENU_CONTESTS)
+    kb.button(text=MENU_MY_CONTESTS)
+    kb.button(text=MENU_CREATE)
     kb.button(text=MENU_PROFILE)
     kb.button(text=MENU_INVITE)
     kb.button(text=MENU_WINNERS)
     kb.button(text=MENU_HISTORY)
     kb.button(text=MENU_HELP)
-    kb.adjust(2, 2, 2)
+    kb.adjust(2, 2, 2, 2)
     if mini_app_url:
         kb.button(text="🚀 Открыть Mini App", web_app=types.WebAppInfo(url=mini_app_url))
     return kb.as_markup(resize_keyboard=True)
@@ -62,9 +68,11 @@ async def _resolve_bot_username(bot: Bot, session) -> str | None:
         return username
     try:
         me = await bot.get_me()
-        if me and me.username:
-            await rset.set_bot_username(session, me.username)
-            return me.username
+        candidate = getattr(me, "username", None)
+        if isinstance(candidate, str) and candidate.strip():
+            candidate = candidate.strip().lstrip("@")
+            await rset.set_bot_username(session, candidate)
+            return candidate
     except Exception as e:  # noqa: BLE001
         logger.error("Не удалось получить username бота из Telegram API: %s", e)
     return None
@@ -102,6 +110,7 @@ async def _handle_start(message: types.Message, bot: Bot, payload: str | None):
     if not message.from_user:
         return
     inviter_id = ref.parse_referral_payload(payload)
+    contest_deeplink = _parse_contest_payload(payload)
     invited_ok = False
     async with session_scope() as session:
         reg = await get_or_create_player(
@@ -119,14 +128,71 @@ async def _handle_start(message: types.Message, bot: Bot, payload: str | None):
             )
 
         mini_url = await _mini_app_url(session)
+        # Автоматически формируем реферальную ссылку, чтобы у каждого была своя.
+        bot_username = await _resolve_bot_username(bot, session)
+        invited_count = await ref.count_invited(session, message.from_user.id)
+        active_contests = await cs.list_contests(session, category="active")
+        contest_total = len(active_contests)
 
-    greeting = WELCOME_NEW if created else WELCOME_BACK
+    ref_link = ref.build_referral_link(bot_username, message.from_user.id) if bot_username else None
+
+    head = WELCOME_NEW if created else WELCOME_BACK
+    lines = [head, "", GREETING_BODY]
     if created and invited_ok:
-        greeting += "\n\n🎉 Ты пришёл по приглашению друга — удачи в конкурсах!"
+        lines.append("\n🎉 Ты пришёл по приглашению друга — удачи в конкурсах!")
     elif created and inviter_id and not invited_ok:
-        greeting += "\n\n<i>Реферальная ссылка недействительна, но ты всё равно в игре!</i>"
+        lines.append("\n<i>Реферальная ссылка недействительна, но ты всё равно в игре!</i>")
+    lines.append(f"\n🔥 Активных конкурсов сейчас: <b>{contest_total}</b>")
+    lines.append(f"👥 Приглашено друзей: <b>{invited_count}</b>")
+    if ref_link:
+        lines.append(f"\n🔗 Твоя ссылка для друзей:\n<code>{ref_link}</code>")
 
-    await message.answer(greeting, reply_markup=_menu_keyboard(mini_url))
+    await message.answer("\n".join(lines), reply_markup=_menu_keyboard(mini_url), parse_mode="HTML")
+    await _send_quick_menu(message)
+
+    if contest_deeplink:
+        await _send_contest_message(message, contest_deeplink)
+
+
+def _parse_contest_payload(payload: str | None) -> int | None:
+    """Извлекает ID конкурса из диплинка /start c_<id>."""
+    if not payload:
+        return None
+    payload = payload.strip()
+    if payload.startswith("c_") and payload[2:].isdigit():
+        return int(payload[2:])
+    return None
+
+
+async def _send_contest_message(message: types.Message, contest_id: int):
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            return
+        channels = await cs.get_contest_channels(session, contest_id)
+        entry = await cs.get_entry(session, contest_id, message.from_user.id)
+        is_participant = bool(entry and entry.status == "active")
+        text = await _contest_page_text(session, contest)
+        markup = _contest_page_keyboard(contest, channels, is_participant=is_participant)
+    try:
+        await message.answer(text, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+async def _send_quick_menu(message: types.Message):
+    """Отправляет компактное inline-меню быстрых действий сразу после приветствия."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎁 Активные конкурсы", callback_data="rz_list_active")
+    kb.button(text="📣 Мои конкурсы", callback_data="uc_my_contests")
+    kb.button(text="➕ Создать конкурс", callback_data="uc_create")
+    kb.button(text="🏆 Победители", callback_data="rz_show_winners")
+    kb.button(text="👥 Пригласить друзей", callback_data="rz_invite")
+    kb.adjust(2, 2, 1)
+    try:
+        await message.answer("⚡️ <b>Быстрые действия:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception:
+        pass
 
 
 # ===================== КОНКУРСЫ =====================
@@ -331,6 +397,13 @@ async def _attempt_join(event, bot: Bot, contest_id: int, is_message: bool = Fal
             missing_channels = e.missing
         except cs.AlreadyParticipatingError:
             await _reply(event, "Ты уже участвуешь в этом конкурсе!", is_message)
+            return
+        except cs.OwnerCannotJoinError:
+            await _reply(
+                event,
+                "🙅 Ты организатор этого конкурса и не можешь в нём участвовать — но можешь следить за статистикой!",
+                is_message,
+            )
             return
         except cs.BannedFromContestError:
             await _reply(event, "🚫 Вы заблокированы администратором и не можете участвовать.", is_message)
@@ -623,6 +696,15 @@ async def on_ref_list(callback: types.CallbackQuery):
 @router.message(F.text.casefold().in_(["победители", "!победители", MENU_WINNERS.casefold()]))
 async def cmd_winners(message: types.Message):
     await _send_winners(message)
+
+
+@router.callback_query(F.data == "rz_show_winners")
+async def on_show_winners_cb(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    await _send_winners(callback.message)
 
 
 async def _send_winners(message, edit: bool = False):

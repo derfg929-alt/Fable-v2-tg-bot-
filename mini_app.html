@@ -109,6 +109,7 @@
 <nav>
   <button data-nav="home" class="active"><span class="ic">🏠</span>Главная</button>
   <button data-nav="contests"><span class="ic">🎁</span>Конкурсы</button>
+  <button data-nav="mycontests"><span class="ic">📣</span>Мои</button>
   <button data-nav="profile"><span class="ic">👤</span>Профиль</button>
   <button data-nav="invite"><span class="ic">👥</span>Друзья</button>
   <button data-nav="winners"><span class="ic">🏆</span>Победители</button>
@@ -166,6 +167,7 @@ async function render() {
   try {
     if (state.view === "home") await renderHome();
     else if (state.view === "contests") await renderContests();
+    else if (state.view === "mycontests") await renderMyContests();
     else if (state.view === "profile") await renderProfile();
     else if (state.view === "invite") await renderInvite();
     else if (state.view === "winners") await renderWinners();
@@ -279,6 +281,68 @@ async function leaveContest(id) {
   const res = await api("/api/contests/leave", { method: "POST", body: JSON.stringify({ contest_id: id }) });
   toast(res.message || "Готово");
   setTimeout(() => openContest(id), 800);
+}
+
+async function renderMyContests() {
+  const data = await api("/api/my-contests");
+  if (!data.contests.length) {
+    app.innerHTML = `<div class="card">
+      <h3>📣 Мои конкурсы</h3>
+      <p>У тебя пока нет конкурсов.</p>
+      <p>Создавать конкурсы можно для канала, где ты <b>владелец</b> или <b>администратор</b>.
+      Открой бота и нажми «➕ Создать конкурс» — там же доступна статистика по твоим конкурсам.</p>
+    </div>`;
+    return;
+  }
+  app.innerHTML = data.contests.map(c => `
+    <div class="card">
+      <div class="row"><h3>${esc(c.title)}</h3><span class="pill">${esc(c.status_label)}</span></div>
+      ${c.prize ? `<p>🎁 ${esc(c.prize)}</p>` : ""}
+      <p>👥 ${c.participants} участников · 🏆 ${c.winners}/${c.winners_count} победителей</p>
+      <p>🏁 ${fmtDate(c.ends_at)}${c.peak_hour != null ? " · ⏰ пик " + String(c.peak_hour).padStart(2,"0") + ":00" : ""}</p>
+      <button class="btn secondary" onclick="openStats(${c.id})">📊 Статистика</button>
+    </div>`).join("");
+}
+
+async function openStats(id) {
+  const s = await api("/api/contests/" + id + "/stats");
+  const hours = s.timeline?.by_hour || {};
+  const maxV = Math.max(1, ...Object.values(hours));
+  let bars = "";
+  for (let h = 0; h < 24; h++) {
+    const v = hours[h] || 0;
+    const w = Math.round((v / maxV) * 100);
+    if (v > 0 || h % 3 === 0) {
+      bars += `<div class="row"><span style="font-size:11px;color:var(--muted)">${String(h).padStart(2,"0")}:00</span>
+        <div style="flex:1;margin:0 8px;background:var(--card2);border-radius:6px;height:10px">
+          <div style="width:${w}%;height:10px;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div>
+        </div><span style="font-size:11px">${v}</span></div>`;
+    }
+  }
+  const wd = s.timeline?.by_weekday || {};
+  const wlabels = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+  const wdText = wlabels.map((l,i) => `${l}:${wd[i]||0}`).join("  ");
+  app.innerHTML = `
+    <button class="btn ghost" onclick="go('mycontests')">◀️ Назад</button>
+    <div class="card">
+      <h3>📊 ${esc(s.title)}</h3>
+      <p>Статус: ${esc(s.status_label)}</p>
+    </div>
+    <div class="grid">
+      <div class="stat"><b>${s.participants_active}</b><span>Активных</span></div>
+      <div class="stat"><b>${s.participants_left}</b><span>Отменили</span></div>
+      <div class="stat"><b>${s.winners}</b><span>Победителей</span></div>
+      <div class="stat"><b>${s.referred_participants}</b><span>По приглашениям</span></div>
+    </div>
+    <div class="card">
+      <h3>⏰ Активность по часам (UTC)</h3>
+      ${s.timeline?.peak_hour != null ? `<p>Пик регистраций: <b>${String(s.timeline.peak_hour).padStart(2,"0")}:00</b> (${s.timeline.peak_hour_value} участн.)</p>` : "<p>Пока нет данных.</p>"}
+      ${bars}
+    </div>
+    <div class="card">
+      <h3>📅 По дням недели</h3>
+      <p>${wdText}</p>
+    </div>`;
 }
 
 async function renderProfile() {

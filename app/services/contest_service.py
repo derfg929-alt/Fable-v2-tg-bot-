@@ -22,6 +22,7 @@ from app.db.models import (
     Contest,
     ContestChannel,
     ContestEntry,
+    Player,
     Winner,
 )
 from app.services.player_service import get_or_create_player
@@ -53,6 +54,10 @@ class ContestClosedError(ContestError):
 
 class BannedFromContestError(ContestError):
     pass
+
+
+class OwnerCannotJoinError(ContestError):
+    """Владелец конкурса (владелец канала) не может участвовать в своём конкурсе."""
 
 
 # Статусы конкурса.
@@ -102,6 +107,8 @@ async def create_contest(
     allow_leave: bool = True,
     status: str = STATUS_DRAFT,
     created_by: int | None = None,
+    owner_id: int | None = None,
+    source_channel_id: int | None = None,
 ) -> Contest:
     contest = Contest(
         title=title.strip()[:200],
@@ -116,6 +123,8 @@ async def create_contest(
         allow_leave=allow_leave,
         status=status,
         created_by=created_by,
+        owner_id=owner_id,
+        source_channel_id=source_channel_id,
     )
     session.add(contest)
     await session.flush()
@@ -360,6 +369,10 @@ async def join_contest(
     if player.is_globally_banned:
         raise BannedFromContestError("Вы заблокированы администратором и не можете участвовать")
 
+    # Владелец конкурса не участвует в своём же розыгрыше.
+    if contest.owner_id is not None and contest.owner_id == user_id:
+        raise OwnerCannotJoinError("Организатор конкурса не может участвовать в своём конкурсе")
+
     existing = await get_entry(session, contest_id, user_id)
     if existing is not None and existing.status == "active":
         raise AlreadyParticipatingError("Ты уже участвуешь в этом конкурсе!")
@@ -462,3 +475,123 @@ async def get_user_stats(session: AsyncSession, user_id: int) -> dict:
         await session.scalar(select(func.count(Winner.id)).where(Winner.user_id == user_id)) or 0
     )
     return {"active": active, "finished": finished, "cancelled": cancelled, "wins": wins}
+
+
+# ===================== ВЛАДЕЛЬЦЫ КОНКУРСОВ =====================
+
+async def list_contests_by_owner(session: AsyncSession, owner_id: int) -> list[Contest]:
+    """Конкурсы, созданные конкретным владельцем канала."""
+    await sync_statuses(session)
+    rows = await session.scalars(
+        select(Contest)
+        .where(Contest.owner_id == owner_id, Contest.is_archived.is_(False))
+        .order_by(Contest.created_at.desc())
+    )
+    return list(rows.all())
+
+
+async def is_contest_owner(session: AsyncSession, contest_id: int, user_id: int) -> bool:
+    contest = await session.get(Contest, contest_id)
+    return bool(contest and contest.owner_id == user_id)
+
+
+async def contest_join_timeline(session: AsyncSession, contest_id: int) -> dict:
+    """Возвращает распределение регистраций по часам и дням.
+
+    Позволяет увидеть «пиковые» часы и дни активности участников. Считается в
+    Python, поэтому работает одинаково на SQLite и PostgreSQL.
+    """
+    entries = (
+        await session.scalars(
+            select(ContestEntry)
+            .where(ContestEntry.contest_id == contest_id)
+            .order_by(ContestEntry.joined_at.asc())
+        )
+    ).all()
+
+    by_hour = {h: 0 for h in range(24)}
+    by_day: dict[str, int] = {}
+    by_weekday = {d: 0 for d in range(7)}
+    for entry in entries:
+        joined = _as_aware(entry.joined_at)
+        if joined is None:
+            continue
+        by_hour[joined.hour] = by_hour.get(joined.hour, 0) + 1
+        day_key = joined.strftime("%d.%m")
+        by_day[day_key] = by_day.get(day_key, 0) + 1
+        by_weekday[joined.weekday()] = by_weekday.get(joined.weekday(), 0) + 1
+
+    peak_hour = max(by_hour, key=by_hour.get) if entries else None
+    peak_hour_value = by_hour.get(peak_hour, 0) if peak_hour is not None else 0
+    peak_day = max(by_day, key=by_day.get) if by_day else None
+    return {
+        "by_hour": by_hour,
+        "by_day": by_day,
+        "by_weekday": by_weekday,
+        "peak_hour": peak_hour,
+        "peak_hour_value": peak_hour_value,
+        "peak_day": peak_day,
+        "total": len(entries),
+    }
+
+
+_WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def weekday_labels() -> list[str]:
+    """Человекочитаемые названия дней недели (Пн..Вс) для отображения статистики."""
+    return list(_WEEKDAY_LABELS)
+
+
+async def contest_statistics(session: AsyncSession, contest_id: int) -> dict:
+    """Полная статистика конкурса для владельца/администратора.
+
+    Включает: участников, отмены, конверсию, победителей, розыгрыши, а также
+    распределение регистраций по часам/дням/дням недели (пиковые периоды).
+    """
+    contest = await session.get(Contest, contest_id)
+    if contest is None:
+        raise ContestNotFoundError(f"Конкурс {contest_id} не найден")
+
+    entries = (
+        await session.scalars(
+            select(ContestEntry).where(ContestEntry.contest_id == contest_id)
+        )
+    ).all()
+    active = sum(1 for e in entries if e.status == "active")
+    left = sum(1 for e in entries if e.status == "left")
+    total = len(entries)
+    winners = int(
+        await session.scalar(select(func.count(Winner.id)).where(Winner.contest_id == contest_id)) or 0
+    )
+    timeline = await contest_join_timeline(session, contest_id)
+
+    # Рефералы среди участников (сколько пришло по приглашениям).
+    referred = 0
+    for e in entries:
+        player = await session.get(Player, e.user_id)
+        if player is not None and player.referred_by:
+            referred += 1
+
+    duration_days = None
+    if contest.starts_at and contest.ends_at:
+        start = _as_aware(contest.starts_at)
+        end = _as_aware(contest.ends_at)
+        if start and end:
+            duration_days = max(0.0, (end - start).total_seconds() / 86400.0)
+
+    return {
+        "contest_id": contest_id,
+        "title": contest.title,
+        "status": compute_status(contest),
+        "status_label": STATUS_LABELS.get(compute_status(contest), contest.status),
+        "participants_active": active,
+        "participants_left": left,
+        "participants_total": total,
+        "winners": winners,
+        "referred_participants": referred,
+        "conversion": (winners / active) if active else 0.0,
+        "duration_days": duration_days,
+        "timeline": timeline,
+    }
+

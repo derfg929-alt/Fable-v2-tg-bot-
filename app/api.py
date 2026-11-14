@@ -252,6 +252,8 @@ async def join_contest(payload: JoinRequest, x_init_data: str | None = Header(de
         return JSONResponse(status_code=200, content={"ok": False, "message": "Для участия необходимо подписаться на все указанные каналы", "reason": "not_subscribed"})
     except cs.AlreadyParticipatingError:
         return JSONResponse(status_code=200, content={"ok": False, "message": "Ты уже участвуешь в этом конкурсе!", "reason": "already"})
+    except cs.OwnerCannotJoinError:
+        return JSONResponse(status_code=200, content={"ok": False, "message": "Ты организатор этого конкурса и не можешь в нём участвовать.", "reason": "owner"})
     except cs.BannedFromContestError:
         return JSONResponse(status_code=403, content={"ok": False, "message": "Вы заблокированы и не можете участвовать.", "reason": "banned"})
     except cs.ContestClosedError:
@@ -339,8 +341,56 @@ async def help_info(x_init_data: str | None = Header(default=None)):
             "/profile — профиль",
             "/history — история участия",
             "/winners — победители",
+            "/mycontests — мои конкурсы (для владельцев каналов)",
+            "/createcontest — создать конкурс для своего канала",
         ],
     }
+
+
+@app.get("/api/my-contests")
+async def my_contests(x_init_data: str | None = Header(default=None)):
+    """Конкурсы, созданные текущим пользователем как владельцем канала."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        contests = await cs.list_contests_by_owner(session, user_id)
+        result = []
+        for c in contests:
+            stats = await cs.contest_statistics(session, c.id)
+            result.append({
+                "id": c.id,
+                "title": c.title,
+                "prize": c.prize,
+                "status": cs.compute_status(c),
+                "status_label": cs.STATUS_LABELS.get(cs.compute_status(c), c.status),
+                "winners_count": c.winners_count,
+                "participants": stats["participants_active"],
+                "winners": stats["winners"],
+                "ends_at": c.ends_at.isoformat() if c.ends_at else None,
+                "peak_hour": stats["timeline"].get("peak_hour"),
+            })
+    return {"contests": result}
+
+
+@app.get("/api/contests/{contest_id}/stats")
+async def contest_stats(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Полная статистика конкурса. Доступна владельцу конкурса или администратору."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            raise HTTPException(status_code=404, detail="Конкурс не найден")
+        is_admin = await rset.is_admin(session, user_id)
+        if contest.owner_id != user_id and not is_admin:
+            raise HTTPException(status_code=403, detail="Статистика доступна только владельцу конкурса")
+        stats = await cs.contest_statistics(session, contest_id)
+        logs = await ds.get_draw_history(session, contest_id)
+    stats["draws"] = [
+        {"round": lg.round, "winners_count": lg.winners_count, "algorithm_version": lg.algorithm_version}
+        for lg in logs
+    ]
+    return stats
 
 
 @app.get("/")
