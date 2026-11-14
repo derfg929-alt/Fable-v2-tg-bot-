@@ -396,3 +396,89 @@ async def test_api_contest_stats_admin_allowed():
 
     stats = await contest_stats(cid, x_init_data=_init_data(admin_id))
     assert stats["contest_id"] == cid
+
+
+# ===================== КОНКУРС БЕЗ КАНАЛА =====================
+
+@pytest.mark.asyncio
+async def test_user_contest_wizard_without_channel():
+    """Любой пользователь может создать конкурс без канала (кнопка «Пропустить»)."""
+    from app.main import create_dispatcher
+    from sqlalchemy import select
+    from app.db.models import Contest
+
+    user_id = 690001
+    # Бот без канала: get_chat падает, но визард не должен его вызывать при пропуске.
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+
+    dp = create_dispatcher()
+    await dp.feed_update(bot=bot, update=_make_update(bot, user_id, "➕ Создать конкурс", update_id=1500))
+    # Шаг 1 — пропускаем канал кнопкой.
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, "uc_wiz_skip", 1501))
+    steps = [
+        "Конкурс без канала",  # title
+        "Описание",            # description
+        "-",                   # image
+        "Подписка на бота",    # prize
+        "1",                   # winners
+        "-",                   # ends
+        "-",                   # conditions
+    ]
+    for i, value in enumerate(steps):
+        await dp.feed_update(bot=bot, update=_make_update(bot, user_id, value, update_id=1510 + i))
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, "uc_wiz_publish", 1520))
+
+    async with session_scope() as session:
+        contest = await session.scalar(select(Contest).where(Contest.title == "Конкурс без канала"))
+        assert contest is not None
+        assert contest.owner_id == user_id
+        assert contest.source_channel_id is None
+        assert contest.status == cs.STATUS_ACTIVE
+        # Обязательных каналов нет — участвовать смогут все.
+        channels = await cs.get_contest_channels(session, contest.id)
+        assert channels == []
+
+
+@pytest.mark.asyncio
+async def test_owner_results_callback_available():
+    """Кнопка «🏆 Итоги» показывает победителей завершённого конкурса владельцу."""
+    from app.main import create_dispatcher
+    from app.db.models import Winner
+
+    owner_id = 695001
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="Итоги", status=cs.STATUS_FINISHED, winners_count=1, owner_id=owner_id
+        )
+        cid = contest.id
+        await get_or_create_player(session, telegram_id=695100, first_name="Winner")
+        session.add(Winner(contest_id=cid, user_id=695100, place=1, prize="Приз", draw_round=1))
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+
+    bot.call_args_list.clear()
+    await dp.feed_update(bot=bot, update=_callback_update(bot, owner_id, f"uc_results_{cid}", 1600))
+    from aiogram.methods import SendMessage, EditMessageText
+    texts = [
+        (getattr(c[0][0], "text", None) or getattr(c[0][0], "caption", None) or "")
+        for c in bot.call_args_list
+        if c and c[0] and isinstance(c[0][0], (SendMessage, EditMessageText))
+    ]
+    assert texts, "нет ответа на «🏆 Итоги»"
+    assert any("Итоги" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_time_left_helper():
+    from app.handlers.user_contest_handlers import _time_left
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    assert _time_left(SimpleNamespace(ends_at=None)) == "без ограничения"
+    future = datetime.now(timezone.utc) + timedelta(days=1, hours=2)
+    assert "дн." in _time_left(SimpleNamespace(ends_at=future))
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    assert _time_left(SimpleNamespace(ends_at=past)) == "время вышло"

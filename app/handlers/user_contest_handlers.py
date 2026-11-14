@@ -22,12 +22,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from app.db.models import ContestEntry, Player
+from app.db.models import Player
 from app.db.session import session_scope
 from app.services import channel_service as chs
 from app.services import contest_service as cs
 from app.services import draw_service as ds
 from app.services import notifications_service as notify
+from app.services import randomizer_settings as rset
 from app.services.audit_service import log_action
 
 logger = logging.getLogger("fable.user_contest")
@@ -82,6 +83,33 @@ def _hour_bar(value: int, max_value: int, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def _time_left(contest) -> str:
+    """Человекочитаемый остаток времени до окончания конкурса."""
+    ends = getattr(contest, "ends_at", None)
+    if not ends:
+        return "без ограничения"
+    if ends.tzinfo is None:
+        ends = ends.replace(tzinfo=timezone.utc)
+    delta = ends - datetime.now(timezone.utc)
+    total = int(delta.total_seconds())
+    if total <= 0:
+        return "время вышло"
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days} дн. {hours} ч."
+    if hours:
+        return f"{hours} ч. {minutes} мин."
+    return f"{minutes} мин."
+
+
+def _progress_bar(done: int, total: int, width: int = 10) -> str:
+    total = max(1, total)
+    filled = min(width, max(0, round(done / total * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
 # ===================== МОИ КОНКУРСЫ =====================
 
 @router.message(Command("mycontests"))
@@ -116,15 +144,25 @@ async def _send_my_contests(message, user_id: int, *, edit: bool = False):
             "📣 <b>Мои конкурсы</b>\n\n"
             "У тебя пока нет конкурсов.\n\n"
             "Создать конкурс можно для канала, где ты <b>владелец</b> или "
-            "<b>администратор</b> — нажми «➕ Создать конкурс»."
+            "<b>администратор</b>, — или вообще без канала. Нажми «➕ Создать конкурс»."
         )
         kb.button(text="➕ Создать конкурс", callback_data="uc_create")
     else:
-        lines = ["📣 <b>Мои конкурсы</b>\n"]
+        active = sum(1 for c, _, _ in rows if cs.compute_status(c) == cs.STATUS_ACTIVE)
+        total_parts = sum(p for _, p, _ in rows)
+        total_wins = sum(w for _, _, w in rows)
+        lines = [
+            "📣 <b>Мои конкурсы</b>\n",
+            f"📊 Всего: <b>{len(rows)}</b> | 🟢 активных: <b>{active}</b> | "
+            f"👥 участников: <b>{total_parts}</b> | 🏆 победителей: <b>{total_wins}</b>\n",
+        ]
         for c, participants, winners in rows:
+            status = _status_label(c)
+            left = _time_left(c)
             lines.append(
-                f"• <b>{c.title}</b> (ID <code>{c.id}</code>) — {_status_label(c)}\n"
-                f"   👥 {participants} участников | 🏆 победителей: {winners}/{c.winners_count}"
+                f"• <b>{c.title}</b> <i>(ID {c.id})</i>\n"
+                f"   {status} | 🏁 {left}\n"
+                f"   👥 {participants} | 🏆 {winners}/{c.winners_count}"
             )
         text = "\n".join(lines)
         for c, _, _ in rows[:12]:
@@ -161,32 +199,55 @@ async def _render_owner_contest(callback: types.CallbackQuery, contest_id: int):
         participants = await cs.participants_count(session, contest_id)
         winners = await cs.winners_count(session, contest_id)
         channels = await cs.get_contest_channels(session, contest_id)
+        latest_winners = await ds.get_latest_winners(session, contest_id)
     try:
         await callback.answer()
     except Exception:
         pass
 
+    status = cs.compute_status(contest)
+    status_label = _status_label(contest)
     ends = contest.ends_at.strftime("%d.%m.%Y %H:%M") if contest.ends_at else "—"
+    winners_goal = max(1, contest.winners_count)
+    progress = _progress_bar(winners, winners_goal)
+
     lines = [
-        f"📊 <b>{contest.title}</b> (ID <code>{contest.id}</code>)",
-        f"Статус: {_status_label(contest)} | 🏁 Окончание: {ends}",
-        f"👥 Участников: <b>{participants}</b> | 🏆 Победителей: {winners}/{contest.winners_count}",
+        f"🎯 <b>{contest.title}</b> <i>(ID {contest.id})</i>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Статус: {status_label}",
+        f"🏁 Окончание: {ends}",
     ]
+    if status in (cs.STATUS_ACTIVE, cs.STATUS_SCHEDULED):
+        lines.append(f"⏳ Осталось: <b>{_time_left(contest)}</b>")
     if contest.prize:
-        lines.append(f"🎁 Приз: {contest.prize}")
+        lines.append(f"🎁 Приз: <b>{contest.prize}</b>")
+    lines.append(f"👥 Участников: <b>{participants}</b>")
+    lines.append(f"🏆 Победителей: <b>{winners}</b>/{winners_goal}  {progress}")
     if channels:
-        lines.append("📢 Каналы: " + ", ".join(ch.title or ch.username or str(ch.chat_id) for ch in channels))
+        lines.append("📢 Каналы: " + ", ".join(
+            ch.title or ch.username or str(ch.chat_id) for ch in channels
+        ))
+    else:
+        lines.append("🌍 Без обязательной подписки (участвовать могут все)")
+
+    if latest_winners:
+        lines.append("\n🥇 <b>Победители:</b>")
+        for w, player in latest_winners[:5]:
+            name = (player.custom_nickname or player.first_name) if player else f"ID {w.user_id}"
+            lines.append(f"   {w.place}. {name}")
 
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Статистика", callback_data=f"uc_stats_{contest.id}")
     kb.button(text="👥 Участники", callback_data=f"uc_parts_{contest.id}")
-    if cs.compute_status(contest) in (cs.STATUS_ACTIVE, cs.STATUS_SCHEDULED):
+    if status in (cs.STATUS_ACTIVE, cs.STATUS_SCHEDULED):
         kb.button(text="🏁 Завершить", callback_data=f"uc_finish_{contest.id}")
         kb.button(text="❌ Отменить", callback_data=f"uc_cancel_{contest.id}")
-    if cs.compute_status(contest) == cs.STATUS_FINISHED and not contest.draw_done:
+    if status == cs.STATUS_FINISHED and not contest.draw_done:
         kb.button(text="🎲 Провести розыгрыш", callback_data=f"uc_draw_{contest.id}")
+    if status in (cs.STATUS_FINISHED, cs.STATUS_CANCELLED):
+        kb.button(text="🏆 Итоги", callback_data=f"uc_results_{contest.id}")
     kb.button(text="◀️ К моим конкурсам", callback_data="uc_my_contests")
-    kb.adjust(2, 2, 1)
+    kb.adjust(2, 2, 1, 1)
     try:
         await callback.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
@@ -210,14 +271,21 @@ async def on_owner_participants(callback: types.CallbackQuery):
     except Exception:
         pass
     if not rows:
-        text = "👥 Участников пока нет."
+        text = "👥 Участников пока нет. Поделись ссылкой на конкурс, чтобы привлечь людей!"
     else:
-        lines = [f"👥 <b>Участники ({len(rows)}):</b>\n"]
-        for e, p in rows[:50]:
+        active = sum(1 for e, _ in rows if e.status == "active")
+        left = len(rows) - active
+        lines = [
+            f"👥 <b>Участники ({len(rows)})</b>",
+            f"🟢 активных: {active} | 🚪 вышли: {left}\n",
+        ]
+        for i, (e, p) in enumerate(rows[:50], start=1):
             name = (p.custom_nickname or p.first_name) if p else f"ID {e.user_id}"
             uname = f" (@{p.username})" if p and p.username else ""
             mark = "🟢" if e.status == "active" else "🚪"
-            lines.append(f"{mark} {name}{uname}")
+            lines.append(f"{i}. {mark} {name}{uname}")
+        if len(rows) > 50:
+            lines.append(f"\n…и ещё {len(rows) - 50}")
         text = "\n".join(lines)
     kb = InlineKeyboardBuilder()
     kb.button(text="◀️ Назад", callback_data=f"uc_view_{contest_id}")
@@ -253,22 +321,31 @@ async def on_owner_stats(callback: types.CallbackQuery):
     max_hour = max(by_hour.values()) if by_hour else 0
     peak_hour = timeline.get("peak_hour")
 
+    active = stats["participants_active"]
     lines = [
-        f"📊 <b>Статистика конкурса «{stats['title']}»</b>\n",
+        f"📊 <b>Статистика «{stats['title']}»</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
         f"Статус: {stats['status_label']}",
-        f"👥 Активных участников: <b>{stats['participants_active']}</b>",
+        "",
+        f"👥 Активных участников: <b>{active}</b>",
         f"🚪 Отменили участие: <b>{stats['participants_left']}</b>",
         f"👤 Всего записей: <b>{stats['participants_total']}</b>",
         f"🔗 Пришли по приглашениям: <b>{stats['referred_participants']}</b>",
         f"🏆 Победителей: <b>{stats['winners']}</b>",
     ]
-    if stats["participants_active"]:
-        lines.append(f"🎯 Шанс победы (в среднем): ~1 к {max(1, round(stats['participants_active'] / max(1, stats['winners'])))}")
+    if active:
+        lines.append(
+            f"🎯 Шанс победы (в среднем): ~1 к "
+            f"{max(1, round(active / max(1, stats['winners'])))}"
+        )
     if stats["duration_days"] is not None:
         lines.append(f"⏳ Длительность: {stats['duration_days']:.1f} дн.")
 
     if peak_hour is not None:
-        lines.append(f"\n⏰ <b>Пик регистраций:</b> {peak_hour:02d}:00 ({timeline['peak_hour_value']} участн.)")
+        lines.append(
+            f"\n⏰ <b>Пик регистраций:</b> {peak_hour:02d}:00 "
+            f"({timeline['peak_hour_value']} участн.)"
+        )
         lines.append("<b>Активность по часам (UTC):</b>")
         for h in range(24):
             v = by_hour.get(h, 0)
@@ -278,16 +355,66 @@ async def on_owner_stats(callback: types.CallbackQuery):
     by_weekday = timeline["by_weekday"]
     if any(by_weekday.values()):
         labels = cs.weekday_labels()
+        max_wd = max(by_weekday.values())
         lines.append("\n📅 <b>По дням недели:</b>")
-        lines.append("  ".join(f"{labels[d]}:{by_weekday.get(d, 0)}" for d in range(7)))
+        for d in range(7):
+            lines.append(f"<code>{labels[d]}</code> {_hour_bar(by_weekday.get(d, 0), max_wd, 8)} {by_weekday.get(d, 0)}")
+
+    by_day = timeline.get("by_day") or {}
+    if by_day:
+        recent = list(by_day.items())[-7:]
+        max_day = max(by_day.values())
+        lines.append("\n🗓 <b>Последние дни:</b>")
+        for day, v in recent:
+            lines.append(f"<code>{day}</code> {_hour_bar(v, max_day, 8)} {v}")
 
     if logs:
         lines.append("\n🎲 <b>Розыгрыши:</b>")
         for lg in logs:
-            lines.append(f"• Раунд {lg.round}: {lg.winners_count} победителей (алг. {lg.algorithm_version})")
+            reason = f" — {lg.reason}" if lg.reason else ""
+            lines.append(
+                f"• Раунд {lg.round}: {lg.winners_count} победителей "
+                f"(алг. {lg.algorithm_version}){reason}"
+            )
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="◀️ Назад", callback_data=f"uc_view_{contest_id}")
+    kb.button(text="◀️ К конкурсу", callback_data=f"uc_view_{contest_id}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception:
+        await callback.message.answer("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("uc_results_"))
+async def on_owner_results(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("uc_results_", ""))
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest or contest.owner_id != callback.from_user.id:
+            try:
+                await callback.answer("Конкурс не найден", show_alert=True)
+            except Exception:
+                pass
+            return
+        winners = await ds.get_latest_winners(session, contest_id)
+        participants = await cs.participants_count(session, contest_id)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    lines = [f"🏆 <b>Итоги «{contest.title}»</b>\n"]
+    if winners:
+        lines.append(f"👥 Участвовало: {participants} | 🏆 Победителей: {len(winners)}\n")
+        for w, player in winners:
+            name = (player.custom_nickname or player.first_name) if player else f"ID {w.user_id}"
+            uname = f" (@{player.username})" if player and player.username else ""
+            prize = f" — 🎁 {w.prize}" if w.prize else ""
+            lines.append(f"{w.place}. <b>{name}</b>{uname}{prize}")
+    else:
+        lines.append("Победители ещё не определены. Нажми «🎲 Провести розыгрыш».")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ К конкурсу", callback_data=f"uc_view_{contest_id}")
     kb.adjust(1)
     try:
         await callback.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -415,12 +542,19 @@ async def _start_create(event, state: FSMContext, is_callback: bool):
     await state.set_state(UserContestWizard.channel)
     text = (
         "➕ <b>Создание конкурса</b>\n\n"
-        "Шаг 1/8. Отправь @username канала (или ссылку вида https://t.me/канал), "
-        "в котором ты <b>владелец</b> или <b>администратор</b>.\n\n"
-        "❗️ Бот должен быть добавлен в этот канал администратором — иначе подписки "
-        "участников не будут проверяться."
+        "Шаг 1/8. Укажи канал, для которого создаётся конкурс: отправь "
+        "@username канала или ссылку вида https://t.me/канал.\n\n"
+        "Ты должен быть <b>владельцем</b> или <b>администратором</b> этого канала, "
+        "а бот — добавлен в канал администратором, чтобы проверять подписку "
+        "участников.\n\n"
+        "💡 <b>Нет канала?</b> Нажми «⏭ Пропустить» — конкурс создастся без "
+        "обязательной подписки, участвовать смогут все."
     )
-    markup = _skip_kb()
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⏭ Пропустить (без канала)", callback_data="uc_wiz_skip")
+    kb.button(text="❌ Отменить", callback_data="uc_wiz_cancel")
+    kb.adjust(1)
+    markup = kb.as_markup()
     if is_callback:
         await event.message.answer(text, reply_markup=markup, parse_mode="HTML")
     else:
@@ -465,6 +599,18 @@ async def on_wizard_skip(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Пропущено")
     except Exception:
         pass
+    current = await state.get_state()
+    # Шаг 1 (канал) не входит в _UC_FIELDS — обрабатываем пропуск отдельно.
+    if current == UserContestWizard.channel.state:
+        await state.update_data(channel_id=None, channel_title=None)
+        await state.set_state(UserContestWizard.title)
+        await callback.message.answer(
+            "Ок, конкурс будет без обязательной подписки на канал. 🌍\n\n"
+            "Шаг 2/8. Введите название конкурса:",
+            reply_markup=_skip_kb(),
+            parse_mode="HTML",
+        )
+        return
     await _wizard_advance(callback.message, state, None)
 
 
@@ -472,7 +618,17 @@ async def on_wizard_skip(callback: types.CallbackQuery, state: FSMContext):
 async def uc_channel(message: types.Message, state: FSMContext, bot: Bot):
     token = (message.text or "").strip()
     if not token:
-        await message.answer("❌ Отправь @username канала или ссылку.")
+        await message.answer("❌ Отправь @username канала или ссылку (или нажми «⏭ Пропустить»).")
+        return
+    if token.lower() in ("-", "нет", "пропустить", "skip", "—", "без канала"):
+        await state.update_data(channel_id=None, channel_title=None)
+        await state.set_state(UserContestWizard.title)
+        await message.answer(
+            "Ок, конкурс будет без обязательной подписки на канал. 🌍\n\n"
+            "Шаг 2/8. Введите название конкурса:",
+            reply_markup=_skip_kb(),
+            parse_mode="HTML",
+        )
         return
 
     channel = None
@@ -480,17 +636,21 @@ async def uc_channel(message: types.Message, state: FSMContext, bot: Bot):
         channel = await chs.ensure_channel(session, bot, token, added_by=message.from_user.id)
         if channel is None:
             await message.answer(
-                "❌ Не удалось найти канал. Проверь @username/ссылку и убедись, что бот добавлен в канал."
+                "❌ Не удалось найти канал. Проверь @username/ссылку и убедись, что бот добавлен в канал.\n\n"
+                "💡 Можно нажать «⏭ Пропустить» и создать конкурс без канала."
             )
             return
         if channel.chat_id is None:
-            await message.answer("❌ У канала нет chat_id — добавь бота в канал и попробуй снова.")
+            await message.answer(
+                "❌ У канала нет chat_id — добавь бота в канал и попробуй снова, "
+                "или нажми «⏭ Пропустить»."
+            )
             return
         is_admin = await chs.is_channel_admin(bot, channel.chat_id, message.from_user.id)
         if not is_admin:
             await message.answer(
                 "⛔ Ты не являешься владельцем или администратором этого канала.\n"
-                "Создавать конкурс может только владелец канала или его администратор."
+                "Укажи свой канал или нажми «⏭ Пропустить», чтобы создать конкурс без канала."
             )
             return
         channel.owner_id = message.from_user.id
@@ -602,21 +762,25 @@ async def _wizard_advance(message: types.Message, state: FSMContext, value):
 
 async def _show_preview(message: types.Message, data: dict):
     ends = data.get("ends_at")
-    ends_s = ends.strftime("%d.%m.%Y %H:%M") if isinstance(ends, datetime) else "—"
+    ends_s = ends.strftime("%d.%m.%Y %H:%M") if isinstance(ends, datetime) else "без ограничения"
+    channel = data.get("channel_title")
     lines = [
         "📋 <b>Предпросмотр конкурса</b>\n",
-        f"📢 Канал: <b>{data.get('channel_title') or '—'}</b>",
+        f"📢 Канал: <b>{channel or 'без канала (участвовать смогут все)'}</b>",
         f"📛 Название: <b>{data.get('title') or '—'}</b>",
         f"📝 Описание: {data.get('description') or '—'}",
-        f"🖼 Изображение: {'есть' if data.get('image_url') else '—'}",
+        f"🖼 Изображение: {'есть ✅' if data.get('image_url') else '—'}",
         f"🎁 Приз: {data.get('prize') or '—'}",
         f"🏆 Победителей: {data.get('winners_count') or 1}",
         f"🏁 Окончание: {ends_s}",
         f"📌 Условия: {data.get('extra_conditions') or '—'}",
         "",
-        "ℹ️ Участники должны будут подписаться на твой канал.",
-        "❗️ Как владелец канала ты <b>не участвуешь</b> в розыгрыше своего конкурса.",
     ]
+    if channel:
+        lines.append("ℹ️ Участники должны будут подписаться на твой канал.")
+        lines.append("❗️ Как владелец канала ты <b>не участвуешь</b> в розыгрыше своего конкурса.")
+    else:
+        lines.append("ℹ️ Обязательной подписки нет — участвовать смогут все.")
     kb = InlineKeyboardBuilder()
     kb.button(text="📢 Опубликовать", callback_data="uc_wiz_publish")
     kb.button(text="✏️ Начать заново", callback_data="uc_wiz_restart")
@@ -643,10 +807,6 @@ async def on_wizard_publish(callback: types.CallbackQuery, state: FSMContext, bo
     data = await state.get_data()
     channel_id = data.get("channel_id")
     async with session_scope() as session:
-        if not channel_id:
-            await callback.message.answer("❌ Канал не подтверждён. Начни заново: «➕ Создать конкурс».")
-            await state.clear()
-            return
         ends = data.get("ends_at")
         status = cs.STATUS_ACTIVE
         contest = await cs.create_contest(
@@ -663,8 +823,9 @@ async def on_wizard_publish(callback: types.CallbackQuery, state: FSMContext, bo
             owner_id=callback.from_user.id,
             source_channel_id=channel_id,
         )
-        # Обязательная подписка на канал владельца.
-        await cs.set_contest_channels(session, contest.id, [channel_id])
+        # Обязательная подписка на канал владельца (если канал указан).
+        if channel_id:
+            await cs.set_contest_channels(session, contest.id, [channel_id])
         await log_action(
             session, actor_id=callback.from_user.id, action="contest_create_user",
             target_type="contest", target_id=contest.id,
@@ -672,17 +833,25 @@ async def on_wizard_publish(callback: types.CallbackQuery, state: FSMContext, bo
         )
         contest_id = contest.id
         title = contest.title
-        prize = contest.prize
 
     await state.clear()
+    # Пытаемся определить username бота для красивой ссылки-приглашения.
+    async with session_scope() as session:
+        bot_username = await rset.get_bot_username(session)
+    link_line = ""
+    if bot_username:
+        link_line = (
+            f"\n\n🔗 <b>Ссылка на конкурс</b> (делись с участниками):\n"
+            f"<code>https://t.me/{bot_username}?start=c_{contest_id}</code>"
+        )
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Мои конкурсы", callback_data="uc_my_contests")
     kb.button(text="👁 Открыть конкурс", callback_data=f"rz_view_{contest_id}")
     kb.adjust(1)
     await callback.message.answer(
-        f"✅ Конкурс «{title}» опубликован! (ID: <code>{contest_id}</code>)\n\n"
+        f"🎉 Конкурс «{title}» опубликован! (ID: <code>{contest_id}</code>)\n\n"
         "Участники могут присоединяться через раздел «🎁 Конкурсы». "
-        "Статистику смотри в «📣 Мои конкурсы» → «📊 Статистика».",
+        "Статистику смотри в «📣 Мои конкурсы» → «📊 Статистика»." + link_line,
         reply_markup=kb.as_markup(),
         parse_mode="HTML",
     )
