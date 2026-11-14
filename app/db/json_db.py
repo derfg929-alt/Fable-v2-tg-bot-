@@ -21,7 +21,26 @@ from app.db.models import Base
 
 logger = logging.getLogger("fable.json_db")
 
-DEFAULT_JSON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "bot_database.json")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _default_json_path() -> str:
+    """Путь к файлу JSON-базы. Переопределяется переменной JSON_DATABASE_PATH.
+
+    Значение "-" или пустая строка полностью отключают JSON-синхронизацию.
+    """
+    raw = os.environ.get("JSON_DATABASE_PATH")
+    if raw is None:
+        raw = os.path.join("data", "bot_database.json")
+    raw = raw.strip()
+    if raw in ("", "-"):
+        return ""
+    if not os.path.isabs(raw):
+        raw = os.path.join(_REPO_ROOT, raw)
+    return raw
+
+
+DEFAULT_JSON_PATH = _default_json_path()
 
 def _json_serial(obj: Any) -> Any:
     """JSON serializer for objects not serializable by default json code"""
@@ -37,11 +56,13 @@ def _json_serial(obj: Any) -> Any:
 class JsonDatabaseManager:
     def __init__(self, json_path: str = DEFAULT_JSON_PATH):
         self.json_path = json_path
+        self.enabled = bool(json_path)
         self._lock = asyncio.Lock()
-        os.makedirs(os.path.dirname(self.json_path), exist_ok=True)
+        if self.enabled:
+            os.makedirs(os.path.dirname(self.json_path), exist_ok=True)
 
     def load_json(self) -> dict[str, list[dict[str, Any]]]:
-        if not os.path.exists(self.json_path):
+        if not self.enabled or not os.path.exists(self.json_path):
             return {}
         try:
             with open(self.json_path, "r", encoding="utf-8") as f:
@@ -54,6 +75,8 @@ class JsonDatabaseManager:
             return {}
 
     def save_json(self, data: dict[str, list[dict[str, Any]]]) -> None:
+        if not self.enabled:
+            return
         try:
             tmp_path = self.json_path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -64,6 +87,8 @@ class JsonDatabaseManager:
 
     async def restore_to_session(self, session: AsyncSession) -> None:
         """Загружает все данные из JSON-файла в текущую активную базу SQLite."""
+        if not self.enabled:
+            return
         async with self._lock:
             data = self.load_json()
             if not data:
@@ -97,11 +122,13 @@ class JsonDatabaseManager:
                     try:
                         await session.execute(table.insert().values(**row_data))
                     except Exception as err:
-                        pass
+                        logger.debug("Не удалось восстановить строку таблицы %s: %s", table_name, err)
             await session.commit()
 
     async def dump_from_session(self, session: AsyncSession) -> None:
         """Выгружает все таблицы из базы данных SQLite в JSON-файл."""
+        if not self.enabled:
+            return
         async with self._lock:
             tables_data = {}
             for table_name, table in Base.metadata.tables.items():

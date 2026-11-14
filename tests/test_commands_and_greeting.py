@@ -78,10 +78,10 @@ async def test_start_command_dispatcher():
     # В aiogram 3 message.answer(...) вызывает bot(SendMessage(...))
     call_args_list = bot.call_args_list
     assert len(call_args_list) > 0
-    # Проверяем переданный SendMessage
+    # Первый запуск в Fable Randomizer приветствует нового пользователя.
     send_msg = call_args_list[0][0][0]
-    assert get_greeting_text() in send_msg.text
-    assert "напиши <code>команды</code>" in send_msg.text.lower()
+    assert "Fable Randomizer" in send_msg.text
+    assert "конкурсах" in send_msg.text.lower()
 
 
 @pytest.mark.asyncio

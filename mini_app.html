@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Fable Randomizer</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0f1220;
+    --card: #1b1f36;
+    --card2: #232a4d;
+    --accent: #7c5cff;
+    --accent2: #ffb703;
+    --text: #f5f6ff;
+    --muted: #9aa3c7;
+    --ok: #37d67a;
+    --err: #ff5c7a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 0 0 84px 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(180deg, #12152a 0%, #0b0d18 100%);
+    color: var(--text); min-height: 100vh;
+  }
+  header {
+    padding: 20px 16px 12px; display: flex; align-items: center; gap: 12px;
+    position: sticky; top: 0; background: rgba(15,18,32,.92);
+    backdrop-filter: blur(10px); z-index: 5; border-bottom: 1px solid #232a4d;
+  }
+  .logo {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center; font-size: 24px;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  main { padding: 16px; max-width: 720px; margin: 0 auto; }
+  .card {
+    background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px;
+    border: 1px solid #262d52; box-shadow: 0 6px 24px rgba(0,0,0,.25);
+  }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 4px 0; color: var(--muted); font-size: 13px; }
+  .pill {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; background: var(--card2); color: var(--accent2); margin-right: 6px;
+  }
+  .btn {
+    display: inline-block; width: 100%; text-align: center; border: none;
+    border-radius: 12px; padding: 12px; font-size: 15px; font-weight: 600;
+    background: linear-gradient(135deg, var(--accent), #5b8cff); color: #fff;
+    margin-top: 10px; cursor: pointer;
+  }
+  .btn.secondary { background: var(--card2); color: var(--text); }
+  .btn.ghost { background: transparent; border: 1px solid #2e3765; color: var(--muted); }
+  .btn:active { transform: scale(.99); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { background: var(--card2); border-radius: 12px; padding: 12px; }
+  .stat b { font-size: 20px; display: block; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .tabs {
+    display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 12px;
+  }
+  .tabs button {
+    flex: 0 0 auto; border: 1px solid #2e3765; background: var(--card);
+    color: var(--muted); border-radius: 999px; padding: 8px 14px; font-size: 13px;
+  }
+  .tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  nav {
+    position: fixed; bottom: 0; left: 0; right: 0; display: flex;
+    background: rgba(15,18,32,.97); border-top: 1px solid #232a4d; z-index: 6;
+    padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
+  }
+  nav button {
+    flex: 1; background: none; border: none; color: var(--muted);
+    font-size: 11px; padding: 6px 2px; display: flex; flex-direction: column;
+    align-items: center; gap: 3px;
+  }
+  nav button .ic { font-size: 18px; }
+  nav button.active { color: var(--accent2); }
+  .center { text-align: center; padding: 40px 16px; color: var(--muted); }
+  .img { width: 100%; border-radius: 12px; margin-bottom: 8px; object-fit: cover; max-height: 200px; }
+  a.link { color: #8ab4ff; text-decoration: none; }
+  .toast {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 96px;
+    background: #232a4d; color: #fff; padding: 12px 18px; border-radius: 12px;
+    font-size: 14px; max-width: 90%; text-align: center; z-index: 10;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5); display: none;
+  }
+  .toast.show { display: block; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">🎁</div>
+  <div>
+    <h1>Fable Randomizer</h1>
+    <p id="greeting">Загрузка…</p>
+  </div>
+</header>
+
+<main id="app">
+  <div class="center">Загрузка данных…</div>
+</main>
+
+<nav>
+  <button data-nav="home" class="active"><span class="ic">🏠</span>Главная</button>
+  <button data-nav="contests"><span class="ic">🎁</span>Конкурсы</button>
+  <button data-nav="profile"><span class="ic">👤</span>Профиль</button>
+  <button data-nav="invite"><span class="ic">👥</span>Друзья</button>
+  <button data-nav="winners"><span class="ic">🏆</span>Победители</button>
+  <button data-nav="history"><span class="ic">📜</span>История</button>
+  <button data-nav="help"><span class="ic">ℹ️</span>Помощь</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const initData = tg?.initData || "";
+
+const app = document.getElementById("app");
+const toastEl = document.getElementById("toast");
+let state = { view: "home", category: "active", historyFilter: "all" };
+
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  setTimeout(() => toastEl.classList.remove("show"), 2600);
+}
+
+async function api(path, options = {}) {
+  const headers = Object.assign({ "X-Init-Data": initData }, options.headers || {});
+  if (options.body) headers["Content-Type"] = "application/json";
+  const res = await fetch(path, Object.assign({}, options, { headers }));
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error(data?.detail || "Ошибка авторизации Telegram");
+    }
+    if (data && data.message) return data;
+    throw new Error(data?.detail || ("Ошибка " + res.status));
+  }
+  return data;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+async function render() {
+  try {
+    if (state.view === "home") await renderHome();
+    else if (state.view === "contests") await renderContests();
+    else if (state.view === "profile") await renderProfile();
+    else if (state.view === "invite") await renderInvite();
+    else if (state.view === "winners") await renderWinners();
+    else if (state.view === "history") await renderHistory();
+    else if (state.view === "help") await renderHelp();
+  } catch (e) {
+    app.innerHTML = `<div class="center">⚠️ ${esc(e.message)}</div>`;
+  }
+}
+
+async function renderHome() {
+  const me = await api("/api/me");
+  document.getElementById("greeting").textContent =
+    "Привет, " + (me.user.first_name || "друг") + "! ✨";
+  const contests = await api("/api/contests?category=active");
+  let cards = "";
+  for (const c of contests.contests.slice(0, 4)) {
+    cards += contestCard(c);
+  }
+  if (!cards) cards = `<div class="card"><p>Пока нет активных конкурсов. Загляни позже! 🎁</p></div>`;
+  app.innerHTML = `
+    <div class="card">
+      <h3>Участвуй и побеждай! 🎁</h3>
+      <p>Приглашай друзей, участвуй в конкурсах и получай возможность выиграть призы.</p>
+    </div>
+    <div class="grid">
+      <div class="stat"><b>${me.stats.active}</b><span>Активных участий</span></div>
+      <div class="stat"><b>${me.stats.wins}</b><span>Побед</span></div>
+      <div class="stat"><b>${me.invited}</b><span>Приглашено друзей</span></div>
+      <div class="stat"><b>${me.stats.finished}</b><span>Завершено</span></div>
+    </div>
+    <h3 style="margin:18px 0 8px">🔥 Активные конкурсы</h3>
+    ${cards}
+    <button class="btn" onclick="go('contests')">🎁 Все конкурсы</button>
+    <button class="btn secondary" onclick="go('invite')">👥 Пригласить друзей</button>
+  `;
+}
+
+function contestCard(c) {
+  const img = c.image_url ? `<img class="img" src="${esc(c.image_url)}" alt="" onerror="this.style.display='none'">` : "";
+  return `
+    <div class="card">
+      ${img}
+      <div class="row"><h3>${esc(c.title)}</h3><span class="pill">${esc(c.status_label)}</span></div>
+      <p>${esc(c.description || "")}</p>
+      <p>👥 ${c.participants} участников · 🏆 ${c.winners_count} победителей${c.prize ? " · 🎁 " + esc(c.prize) : ""}</p>
+      <button class="btn" onclick="openContest(${c.id})">Открыть</button>
+    </div>`;
+}
+
+async function renderContests() {
+  const cats = [["active","Активные"],["upcoming","Скоро начнутся"],["finished","Завершённые"]];
+  const tabs = cats.map(([k,l]) =>
+    `<button class="${state.category===k?"active":""}" onclick="setCategory('${k}')">${l}</button>`).join("");
+  const data = await api("/api/contests?category=" + state.category);
+  let cards = data.contests.map(contestCard).join("");
+  if (!cards) cards = `<div class="card"><p>Пока нет конкурсов в этой категории. Загляни позже! 🎁</p></div>`;
+  app.innerHTML = `<div class="tabs">${tabs}</div>${cards}`;
+}
+
+async function openContest(id) {
+  const c = await api("/api/contests/" + id);
+  let channels = "";
+  if (c.channels && c.channels.length) {
+    channels = "<h3 style='margin-top:12px'>📢 Обязательные каналы</h3>" +
+      c.channels.map(ch => {
+        const url = ch.username ? `https://t.me/${ch.username.replace('@','')}` : ch.invite_link;
+        return url ? `<a class="btn secondary" style="display:block;margin-top:6px" href="${esc(url)}" target="_blank">📢 ${esc(ch.title||ch.username)}</a>` : `<p>• ${esc(ch.title||ch.chat_id)}</p>`;
+      }).join("");
+  }
+  let winners = "";
+  if (c.winners && c.winners.length) {
+    winners = "<h3 style='margin-top:12px'>🏆 Победители</h3>" +
+      c.winners.map(w => `<p>${w.place}. <b>${esc(w.name)}</b>${w.prize?" — 🎁 "+esc(w.prize):""}</p>`).join("");
+  }
+  const canJoin = ["active","scheduled"].includes(c.status);
+  let action = "";
+  if (canJoin) {
+    if (c.is_participant) {
+      action = c.allow_leave
+        ? `<button class="btn secondary" onclick="leaveContest(${c.id})">🚪 Отменить участие</button>`
+        : `<button class="btn ghost" disabled>Ты участвуешь</button>`;
+    } else {
+      action = `<button class="btn" onclick="joinContest(${c.id})">🎉 Участвовать</button>`;
+    }
+  }
+  const img = c.image_url ? `<img class="img" src="${esc(c.image_url)}" alt="" onerror="this.style.display='none'">` : "";
+  app.innerHTML = `
+    <button class="btn ghost" onclick="go('contests')">◀️ К конкурсам</button>
+    <div class="card">
+      ${img}
+      <div class="row"><h3>${esc(c.title)}</h3><span class="pill">${esc(c.status_label)}</span></div>
+      <p>${esc(c.description || "")}</p>
+      ${c.prize ? `<p>🎁 Приз: <b>${esc(c.prize)}</b></p>` : ""}
+      <p>📅 ${fmtDate(c.starts_at)} — ${fmtDate(c.ends_at)}</p>
+      <p>👥 ${c.participants} участников · 🏆 ${c.winners_count} победителей</p>
+      ${c.extra_conditions ? `<p>📌 ${esc(c.extra_conditions)}</p>` : ""}
+      ${channels}
+      ${winners}
+      ${action}
+    </div>`;
+}
+
+async function joinContest(id) {
+  const res = await api("/api/contests/join", { method: "POST", body: JSON.stringify({ contest_id: id }) });
+  toast(res.message || (res.ok ? "Готово!" : "Не удалось"));
+  setTimeout(() => openContest(id), 800);
+}
+
+async function leaveContest(id) {
+  const res = await api("/api/contests/leave", { method: "POST", body: JSON.stringify({ contest_id: id }) });
+  toast(res.message || "Готово");
+  setTimeout(() => openContest(id), 800);
+}
+
+async function renderProfile() {
+  const me = await api("/api/me");
+  app.innerHTML = `
+    <div class="card">
+      <h3>👤 ${esc(me.user.first_name || "Игрок")}</h3>
+      <p>📛 @${esc(me.user.username || "не указан")}</p>
+      <p>🆔 ${me.user.id}</p>
+      <p>🗓 Регистрация: ${fmtDate(me.user.registered_at)}</p>
+    </div>
+    <div class="grid">
+      <div class="stat"><b>${me.invited}</b><span>Приглашено</span></div>
+      <div class="stat"><b>${me.stats.active}</b><span>Активных</span></div>
+      <div class="stat"><b>${me.stats.finished}</b><span>Завершено</span></div>
+      <div class="stat"><b>${me.stats.wins}</b><span>Побед</span></div>
+    </div>
+    <button class="btn secondary" onclick="go('invite')">👥 Пригласить друзей</button>
+    <button class="btn secondary" onclick="go('history')">📜 История участия</button>
+  `;
+}
+
+async function renderInvite() {
+  const me = await api("/api/me");
+  const link = me.referral_link || "";
+  app.innerHTML = `
+    <div class="card">
+      <h3>👥 Приглашай друзей!</h3>
+      <p>Делись своей персональной ссылкой. Приглашения помогают увеличить твои шансы на победу в конкурсах!</p>
+      <p style="word-break:break-all"><code>${esc(link || "ссылка недоступна")}</code></p>
+      <p>👥 Приглашено: <b>${me.invited}</b></p>
+      <button class="btn" onclick="copyLink('${esc(link)}')">📋 Скопировать ссылку</button>
+      <button class="btn secondary" onclick="shareLink('${esc(link)}')">📤 Поделиться ссылкой</button>
+    </div>`;
+}
+
+function copyLink(link) {
+  if (!link) return toast("Ссылка недоступна");
+  navigator.clipboard?.writeText(link).then(() => toast("Ссылка скопирована!")).catch(() => toast(link));
+}
+function shareLink(link) {
+  if (!link) return toast("Ссылка недоступна");
+  const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent("Участвуй в конкурсах Fable Randomizer!")}`;
+  if (tg?.openTelegramLink) tg.openTelegramLink(share); else window.open(share, "_blank");
+}
+
+async function renderWinners() {
+  const data = await api("/api/winners");
+  if (!data.contests.length) {
+    app.innerHTML = `<div class="card"><p>Пока нет завершённых конкурсов с результатами. Следи за обновлениями! 🏆</p></div>`;
+    return;
+  }
+  app.innerHTML = data.contests.map(c => `
+    <div class="card">
+      <h3>🎁 ${esc(c.title)}</h3>
+      ${c.prize ? `<p>🎁 ${esc(c.prize)}</p>` : ""}
+      <p>📅 Розыгрыш: ${fmtDate(c.drawn_at)} · 👥 ${c.participants ?? 0} участников</p>
+      ${c.winners.map(w => `<p>${w.place}. <b>${esc(w.name)}</b>${w.prize?" — "+esc(w.prize):""}</p>`).join("")}
+    </div>`).join("");
+}
+
+async function renderHistory() {
+  const filters = [["all","Все"],["active","Активные"],["finished","Завершённые"],["wins","Победы"]];
+  const tabs = filters.map(([k,l]) =>
+    `<button class="${state.historyFilter===k?"active":""}" onclick="setHistoryFilter('${k}')">${l}</button>`).join("");
+  const data = await api("/api/history?filter=" + state.historyFilter);
+  let body;
+  if (!data.history.length) {
+    body = `<div class="card"><p>История участия пуста.</p></div>`;
+  } else {
+    body = data.history.map(h => {
+      let status = "🎯 Участвуешь";
+      if (h.status === "left") status = "🚪 Участие отменено";
+      else if (h.is_winner) status = "🏆 Ты победил";
+      else if (["finished","cancelled"].includes(h.contest_status)) status = "😔 Ты не выиграл";
+      return `<div class="card">
+        <h3>${esc(h.title)}</h3>
+        <p>📅 ${fmtDate(h.joined_at)} · 🎁 ${esc(h.prize || "—")}</p>
+        <p>${status}</p>
+      </div>`;
+    }).join("");
+  }
+  app.innerHTML = `<div class="tabs">${tabs}</div>${body}`;
+}
+
+async function renderHelp() {
+  const h = await api("/api/help");
+  const support = h.support_link
+    ? (h.support_link.startsWith("http")
+        ? `<a class="btn" href="${esc(h.support_link)}" target="_blank">🆘 Связаться с поддержкой</a>`
+        : `<a class="btn" href="https://t.me/${esc(h.support_link.replace('@',''))}" target="_blank">🆘 Связаться с поддержкой</a>`)
+    : "";
+  app.innerHTML = `
+    <div class="card">
+      <h3>ℹ️ Помощь Fable Randomizer</h3>
+      ${h.commands.map(c => `<p>${esc(c)}</p>`).join("")}
+      <p>Приглашай друзей по своей ссылке — это помогает увеличить шансы на победу!</p>
+      ${support}
+    </div>`;
+}
+
+function go(view) {
+  state.view = view;
+  document.querySelectorAll("nav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.nav === view));
+  render();
+}
+function setCategory(cat) { state.category = cat; render(); }
+function setHistoryFilter(f) { state.historyFilter = f; render(); }
+
+document.querySelectorAll("nav button").forEach(b =>
+  b.addEventListener("click", () => go(b.dataset.nav)));
+
+go("home");
+</script>
+</body>
+</html>

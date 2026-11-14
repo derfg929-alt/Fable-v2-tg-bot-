@@ -35,6 +35,8 @@ from app.handlers.social_moderation_handlers import router as social_moderation_
 from app.handlers.extended_moderation_handlers import router as extended_moderation_router
 from app.handlers.ai_handlers import router as ai_router
 from app.handlers.promo_handlers import router as promo_router
+from app.handlers.randomizer_handlers import router as randomizer_router
+from app.handlers.randomizer_admin_handlers import router as randomizer_admin_router
 from app.middlewares import MessageActivityAndSecurityMiddleware, CallbackAnswerMiddleware
 from app.handlers.owner_handlers import router as owner_router
 from app.tasks.background import (
@@ -42,6 +44,7 @@ from app.tasks.background import (
     background_market_maker_worker,
     background_engagement_worker,
     background_moderation_expiry_worker,
+    background_randomizer_worker,
 )
 
 logger = logging.getLogger("fable")
@@ -50,17 +53,12 @@ logger = logging.getLogger("fable")
 def create_dispatcher() -> Dispatcher:
     """Создает и настраивает Dispatcher aiogram 3 со всеми роутерами."""
     dp = Dispatcher()
-    
-    # --- ОБРАБОТЧИК START ---
-    from app.services.help_service import get_greeting_text
 
-    @dp.message(CommandStart())
-    @dp.message(F.text.casefold().in_(["старт", "!старт"]))
-    async def cmd_start(message: types.Message):
-        await message.answer(get_greeting_text(), parse_mode="HTML")
-    # ------------------------------------
-
+    # Fable Randomizer регистрируется первым: его главное меню и /start
+    # определяют основной пользовательский опыт, остальные модули — дополняют.
     all_subrouters = [
+        randomizer_router,
+        randomizer_admin_router,
         owner_router,
         promo_router,
         economy_router,
@@ -122,6 +120,10 @@ async def main() -> None:
     )
     dp = create_dispatcher()
 
+    # Автоматически определяем username бота через Telegram API (ТЗ 18.5),
+    # чтобы реферальные ссылки формировались без ручной настройки BOT_USERNAME.
+    await _ensure_bot_username(bot, settings)
+
     # Запуск фоновых задач
     bank_task = asyncio.create_task(background_bank_interest_worker(interval_seconds=3600))
     mm_task = asyncio.create_task(background_market_maker_worker(interval_seconds=60))
@@ -131,6 +133,10 @@ async def main() -> None:
     moderation_expiry_task = asyncio.create_task(
         background_moderation_expiry_worker(bot, interval_seconds=60)
     )
+    randomizer_task = asyncio.create_task(background_randomizer_worker(bot, interval_seconds=300))
+
+    # Серверный API и Mini App (запускается параллельно с ботом).
+    api_server = await _maybe_start_api(settings)
 
     logger.info("Запуск Telegram-бота Fable в режиме Long Polling...")
     try:
@@ -140,9 +146,58 @@ async def main() -> None:
         mm_task.cancel()
         engagement_task.cancel()
         moderation_expiry_task.cancel()
+        randomizer_task.cancel()
+        if api_server is not None:
+            api_server.should_exit = True
         await bot.session.close()
         await dispose_engine()
         logger.info("Бот Fable успешно остановлен.")
+
+
+async def _ensure_bot_username(bot, settings) -> None:
+    """Сохраняет username бота в настройках Randomizer для реферальных ссылок."""
+    from app.db.session import session_scope
+    from app.services import randomizer_settings as rset
+
+    try:
+        async with session_scope() as session:
+            existing = await rset.get_bot_username(session)
+            if existing:
+                return
+            if settings.bot_username:
+                await rset.set_bot_username(session, settings.bot_username)
+                logger.info("Username бота взят из настроек: @%s", settings.bot_username)
+                return
+            me = await bot.get_me()
+            if me and me.username:
+                await rset.set_bot_username(session, me.username)
+                logger.info("Username бота определён через Telegram API: @%s", me.username)
+            else:
+                logger.error("Не удалось определить username бота — реферальные ссылки недоступны.")
+    except Exception as e:  # noqa: BLE001
+        logger.error("Ошибка автоопределения username бота: %s", e)
+
+
+async def _maybe_start_api(settings):
+    """Запускает серверный API Mini App, если установлен uvicorn."""
+    try:
+        import uvicorn
+
+        from app.api import app as api_app
+    except Exception as e:  # noqa: BLE001
+        logger.warning("API-сервер Mini App не запущен (uvicorn/FastAPI недоступны): %s", e)
+        return None
+
+    config = uvicorn.Config(
+        api_app,
+        host=settings.api_host,
+        port=settings.api_port,
+        log_level=settings.log_level.lower(),
+    )
+    server = uvicorn.Server(config)
+    asyncio.create_task(server.serve())
+    logger.info("API Fable Randomizer запущен на %s:%s", settings.api_host, settings.api_port)
+    return server
 
 
 if __name__ == "__main__":
