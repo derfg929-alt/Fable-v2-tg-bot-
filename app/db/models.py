@@ -688,7 +688,15 @@ class Contest(Base, TimestampMixin):
     post_text: Mapped[str | None] = mapped_column(Text)
     allow_leave: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    # Владелец конкурса (для пользовательских конкурсов канала). Владелец не может
+    # выиграть в своём конкурсе и получает статистику по нему.
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    # Канал-источник конкурса, если конкурс создан владельцем канала (None для
+    # конкурсов, созданных администрацией Randomizer).
+    source_channel_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("channels.id", ondelete="SET NULL"), index=True
+    )
     draw_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
@@ -703,6 +711,9 @@ class Channel(Base, TimestampMixin):
     invite_link: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     added_by: Mapped[int | None] = mapped_column(BigInteger)
+    # Владелец канала, закрепивший канал за конкурсами (проверяется через
+    # getChatMember при создании конкурса пользователем).
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
 
 
 class ContestChannel(Base, TimestampMixin):

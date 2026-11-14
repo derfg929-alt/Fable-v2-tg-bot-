@@ -26,7 +26,7 @@ from app.services.randomizer_settings import get_max_referral_bonus_units
 
 logger = logging.getLogger("fable.draw")
 
-ALGORITHM_VERSION = "1.1"
+ALGORITHM_VERSION = "1.2"
 BASE_WEIGHT = 10000  # 100% в базисных пунктах
 
 
@@ -54,9 +54,14 @@ async def _eligible_participants(
     """Участники, допущенные к розыгрышу, без дубликатов.
 
     Проверяются условия ТЗ: игрок участвует (status=active), зарегистрирован,
-    не заблокирован глобально, без дублирующих записей.
+    не заблокирован глобально, без дублирующих записей. Владелец конкурса
+    (для пользовательских конкурсов канала) исключается из розыгрыша.
     """
-    exclude = exclude or set()
+    exclude = set(exclude or set())
+    contest = await session.get(Contest, contest_id)
+    if contest is not None and contest.owner_id:
+        exclude.add(contest.owner_id)
+
     entries = (
         await session.scalars(
             select(ContestEntry)
