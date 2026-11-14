@@ -16,8 +16,10 @@ class Settings(BaseSettings):
 
     bot_token: SecretStr = Field(default=SecretStr("123456:dummy_token_default"), alias="BOT_TOKEN")
     owner_id: int = Field(default=8039111975, alias="OWNER_ID", gt=0)
+    # По умолчанию — локальный SQLite-файл, а долговременное хранилище — JSON
+    # (data/bot_database.json). PostgreSQL опционален: задайте DATABASE_URL.
     database_url: SecretStr = Field(
-        default=SecretStr("postgresql+asyncpg://fable:fable@localhost:5432/fable"),
+        default=SecretStr("sqlite+aiosqlite:///data/bot_database.db"),
         alias="DATABASE_URL",
     )
     json_database_path: str = Field(
@@ -39,6 +41,14 @@ class Settings(BaseSettings):
     # Ограничения Telegram API и обработки обновлений.
     polling_timeout: int = Field(default=30, alias="POLLING_TIMEOUT", ge=5, le=60)
     update_concurrency: int = Field(default=32, alias="UPDATE_CONCURRENCY", ge=1, le=256)
+
+    # Fable Randomizer: Mini App и API.
+    bot_username: str = Field(default="", alias="BOT_USERNAME")
+    mini_app_url: str = Field(default="", alias="MINI_APP_URL")
+    api_host: str = Field(default="0.0.0.0", alias="API_HOST")
+    api_port: int = Field(default=8080, alias="API_PORT")
+    # Срок жизни подписи Telegram initData (секунды).
+    initdata_ttl_seconds: int = Field(default=86400, alias="INITDATA_TTL_SECONDS", ge=0)
 
     # Настройки интеграции с AI: Grok (xAI) и Groq Cloud API.
     grok_api_key: SecretStr | None = Field(default=None, alias="GROK_API_KEY")

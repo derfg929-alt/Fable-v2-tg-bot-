@@ -87,3 +87,76 @@ async def background_engagement_worker(
         except Exception as e:
             logger.error(f"Ошибка в воркере вовлечения: {e}")
         await asyncio.sleep(sleep_duration)
+
+
+async def background_randomizer_worker(bot: Bot, interval_seconds: int = 300) -> None:
+    """Обслуживает конкурсы Randomizer: обновляет статусы и рассылает уведомления
+    о старте, скором окончании и завершении конкурсов (без повторных отправок).
+    """
+    from app.services import contest_service as cs
+    from app.services import notifications_service as notify
+    from app.db.models import Contest
+
+    while True:
+        try:
+            async with session_scope() as session:
+                await cs.sync_statuses(session)
+                contests = (await session.scalars(select_all_contests())).all()
+                now = datetime.now(timezone.utc)
+                for contest in contests:
+                    if contest.status not in (cs.STATUS_ACTIVE, cs.STATUS_SCHEDULED):
+                        continue
+                    # Уведомление о старте, если конкурс стал активным.
+                    if contest.status == cs.STATUS_ACTIVE and contest.starts_at:
+                        starts = contest.starts_at
+                        if starts.tzinfo is None:
+                            starts = starts.replace(tzinfo=timezone.utc)
+                        if starts <= now:
+                            try:
+                                await notify.notify_contest_participants(
+                                    session, bot, contest_id=contest.id,
+                                    event_type="contest_start", event_key_suffix="auto_start",
+                                    text_builder=f"🚀 Конкурс «{contest.title}» начался! Успей принять участие.",
+                                )
+                            except Exception:
+                                pass
+                    # Уведомление о скором окончании (менее 24 часов).
+                    if contest.ends_at:
+                        ends = contest.ends_at
+                        if ends.tzinfo is None:
+                            ends = ends.replace(tzinfo=timezone.utc)
+                        remaining = (ends - now).total_seconds()
+                        if 0 < remaining <= 86400:
+                            try:
+                                await notify.notify_contest_participants(
+                                    session, bot, contest_id=contest.id,
+                                    event_type="contest_ending", event_key_suffix="auto_ending",
+                                    text_builder=f"⏰ Конкурс «{contest.title}» скоро завершится! Успей принять участие.",
+                                )
+                            except Exception:
+                                pass
+                    # Уведомление о завершении.
+                    if contest.ends_at:
+                        ends = contest.ends_at
+                        if ends.tzinfo is None:
+                            ends = ends.replace(tzinfo=timezone.utc)
+                        if ends <= now:
+                            try:
+                                await notify.notify_contest_participants(
+                                    session, bot, contest_id=contest.id,
+                                    event_type="contest_finished", event_key_suffix="auto_finished",
+                                    text_builder=f"🏁 Конкурс «{contest.title}» завершён. Скоро объявим победителей!",
+                                )
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.error(f"Ошибка в воркере Randomizer: {e}")
+        await asyncio.sleep(interval_seconds)
+
+
+def select_all_contests():
+    from sqlalchemy import select
+
+    from app.db.models import Contest
+
+    return select(Contest)

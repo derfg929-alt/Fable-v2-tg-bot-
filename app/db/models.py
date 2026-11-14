@@ -666,3 +666,179 @@ class FloodTracker(Base, TimestampMixin):
     last_content: Mapped[str | None] = mapped_column(Text)
     duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     auto_mute_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+# ===================== FABLE RANDOMIZER: КОНКУРСЫ И РОЗЫГРЫШИ =====================
+
+class Contest(Base, TimestampMixin):
+    """Конкурс/розыгрыш призов Fable Randomizer."""
+    __tablename__ = "contests"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    image_url: Mapped[str | None] = mapped_column(Text)
+    prize: Mapped[str | None] = mapped_column(String(255))
+    # Статусы: draft, scheduled, active, finished, cancelled, archived
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft", index=True)
+    winners_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    extra_conditions: Mapped[str | None] = mapped_column(Text)
+    post_text: Mapped[str | None] = mapped_column(Text)
+    allow_leave: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    draw_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class Channel(Base, TimestampMixin):
+    """Telegram-канал, подписка на который проверяется при участии в конкурсах."""
+    __tablename__ = "channels"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(64))
+    title: Mapped[str | None] = mapped_column(String(255))
+    invite_link: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    added_by: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class ContestChannel(Base, TimestampMixin):
+    """Связь конкурса с обязательным каналом."""
+    __tablename__ = "contest_channels"
+    __table_args__ = (UniqueConstraint("contest_id", "channel_id", name="uq_contest_channel"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    contest_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("contests.id", ondelete="CASCADE"), index=True
+    )
+    channel_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("channels.id", ondelete="CASCADE"), index=True
+    )
+
+
+class ContestEntry(Base, TimestampMixin):
+    """Участие игрока в конкурсе. Один игрок — одна запись на конкурс."""
+    __tablename__ = "entries"
+    __table_args__ = (UniqueConstraint("contest_id", "user_id", name="uq_contest_entry_user"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    contest_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("contests.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    # active | left
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    bonus_weight: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # базисные пункты бонуса
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Referral(Base, TimestampMixin):
+    """Факт приглашения: один приглашённый может быть привязан только к одному пригласившему."""
+    __tablename__ = "referrals"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    inviter_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    invited_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True
+    )
+    bonus_units: Mapped[int] = mapped_column(Integer, nullable=False, default=1)  # 1 = 0.01%
+    invited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Winner(Base, TimestampMixin):
+    """Победитель конкретного розыгрыша."""
+    __tablename__ = "winners"
+    __table_args__ = (UniqueConstraint("contest_id", "user_id", "draw_round", name="uq_winner_unique"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    contest_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("contests.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    place: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    prize: Mapped[str | None] = mapped_column(String(255))
+    draw_round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    drawn_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DrawLog(Base, TimestampMixin):
+    """Журнал розыгрыша для проверки честности и повторных розыгрышей."""
+    __tablename__ = "draw_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    contest_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("contests.id", ondelete="CASCADE"), index=True
+    )
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    algorithm_version: Mapped[str] = mapped_column(String(24), nullable=False, default="1.0")
+    seed: Mapped[str | None] = mapped_column(String(64))
+    participants: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    weights: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    winners: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    winners_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reason: Mapped[str | None] = mapped_column(Text)
+    executed_by: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class Notification(Base, TimestampMixin):
+    """Отправленное уведомление (защита от повторной отправки одного события)."""
+    __tablename__ = "notifications"
+    __table_args__ = (UniqueConstraint("user_id", "event_key", name="uq_notification_user_event"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    contest_id: Mapped[int | None] = mapped_column(BigInteger)
+    event_key: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False, default="info")
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Admin(Base, TimestampMixin):
+    """Администратор Fable Randomizer (доступ к админ-панели)."""
+    __tablename__ = "admins"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    added_by: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class BotSetting(Base, TimestampMixin):
+    """Глобальные настройки Fable Randomizer (ключ-значение)."""
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(96), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class AuditLog(Base, TimestampMixin):
+    """Аудит действий администраторов Fable Randomizer."""
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    actor_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_type: Mapped[str | None] = mapped_column(String(32))
+    target_id: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
