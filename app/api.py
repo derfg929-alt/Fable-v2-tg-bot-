@@ -438,9 +438,65 @@ class ContestCreateRequest(BaseModel):
     settings: dict | None = None
 
 
+class ContestUpdateRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    prize: str | None = None
+    winners_count: int | None = None
+    ends_at: str | None = None
+    extra_conditions: str | None = None
+    allow_leave: bool | None = None
+
+
+class ContestSettingsRequest(BaseModel):
+    settings: dict
+
+
+class DrawRequest(BaseModel):
+    exclude_previous_winners: bool = False
+    winners_count: int | None = None
+
+
 class CodeWordRequest(BaseModel):
     contest_id: int
     word: str
+
+
+def _build_bot():
+    """Создаёт Bot для уведомлений/проверки подписки (сессию закрывает вызывающий)."""
+    from aiogram import Bot
+    from aiogram.client.default import DefaultBotProperties
+    from aiogram.enums import ParseMode
+
+    settings = get_settings()
+    return Bot(token=settings.bot_token_value, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+
+async def _require_contest_owner(session, contest_id: int, user_id: int):
+    """Возвращает конкурс, если пользователь — его владелец или администратор Randomizer."""
+    contest = await cs.get_contest(session, contest_id)
+    if not contest:
+        raise HTTPException(status_code=404, detail="Конкурс не найден")
+    is_admin = await rset.is_admin(session, user_id)
+    if contest.owner_id != user_id and not is_admin:
+        raise HTTPException(status_code=403, detail="Действие доступно только организатору конкурса")
+    return contest
+
+
+def _serialize_owner_contest(contest, stats: dict) -> dict:
+    return {
+        "id": contest.id,
+        "title": contest.title,
+        "prize": contest.prize,
+        "status": cs.compute_status(contest),
+        "status_label": cs.STATUS_LABELS.get(cs.compute_status(contest), contest.status),
+        "winners_count": contest.winners_count,
+        "participants": stats["participants_active"],
+        "winners": stats["winners"],
+        "draw_done": bool(contest.draw_done),
+        "ends_at": contest.ends_at.isoformat() if contest.ends_at else None,
+        "peak_hour": stats["timeline"].get("peak_hour"),
+    }
 
 
 @app.post("/api/contests/create")
@@ -475,6 +531,238 @@ async def create_contest(payload: ContestCreateRequest, x_init_data: str | None 
         contest_id = contest.id
         title = contest.title
     return {"ok": True, "contest_id": contest_id, "title": title}
+
+
+@app.patch("/api/contests/{contest_id}")
+async def update_contest(
+    contest_id: int,
+    payload: ContestUpdateRequest,
+    x_init_data: str | None = Header(default=None),
+):
+    """Редактирует основные поля конкурса (только организатор)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    ends_at = None
+    has_ends = "ends_at" in payload.model_fields_set
+    if payload.ends_at:
+        try:
+            ends_at = datetime.fromisoformat(payload.ends_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Некорректная дата окончания")
+    fields: dict = {}
+    if payload.title is not None:
+        if not payload.title.strip():
+            raise HTTPException(status_code=400, detail="Укажите название конкурса")
+        fields["title"] = payload.title.strip()[:200]
+    if payload.description is not None:
+        fields["description"] = payload.description
+    if payload.prize is not None:
+        fields["prize"] = payload.prize
+    if payload.winners_count is not None:
+        fields["winners_count"] = max(1, int(payload.winners_count))
+    if has_ends:
+        fields["ends_at"] = ends_at
+    if payload.extra_conditions is not None:
+        fields["extra_conditions"] = payload.extra_conditions
+    if payload.allow_leave is not None:
+        fields["allow_leave"] = bool(payload.allow_leave)
+
+    async with session_scope() as session:
+        await _require_contest_owner(session, contest_id, user_id)
+        if fields:
+            contest = await cs.update_contest(session, contest_id, **fields)
+        else:
+            contest = await cs.get_contest(session, contest_id)
+        stats = await cs.contest_statistics(session, contest_id)
+    return {"ok": True, "contest": _serialize_owner_contest(contest, stats)}
+
+
+@app.put("/api/contests/{contest_id}/settings")
+async def update_contest_settings(
+    contest_id: int,
+    payload: ContestSettingsRequest,
+    x_init_data: str | None = Header(default=None),
+):
+    """Полностью перезаписывает настройки конкурса (только организатор)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        await _require_contest_owner(session, contest_id, user_id)
+        contest = await cs.require_contest(session, contest_id)
+        contest.settings_json = cset.normalize_settings(payload.settings)
+        await session.flush()
+        settings = cset.read_settings(contest)
+    return {"ok": True, "settings": settings}
+
+
+@app.post("/api/contests/{contest_id}/finish")
+async def finish_contest(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Завершает конкурс (только организатор)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    bot = _build_bot()
+    try:
+        async with session_scope() as session:
+            contest = await _require_contest_owner(session, contest_id, user_id)
+            await cs.update_contest(session, contest_id, status=cs.STATUS_FINISHED)
+            title = contest.title
+            try:
+                from app.services import notifications_service as notify
+
+                await notify.notify_contest_participants(
+                    session, bot, contest_id=contest_id, event_type="contest_finished",
+                    event_key_suffix="owner_finished",
+                    text_builder=f"🏁 Конкурс «{title}» завершён. Скоро объявим победителей!",
+                )
+            except Exception:
+                pass
+    finally:
+        await bot.session.close()
+    return {"ok": True, "message": f"Конкурс «{title}» завершён."}
+
+
+@app.post("/api/contests/{contest_id}/cancel")
+async def cancel_contest(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Отменяет конкурс (только организатор)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    bot = _build_bot()
+    try:
+        async with session_scope() as session:
+            contest = await _require_contest_owner(session, contest_id, user_id)
+            await cs.update_contest(session, contest_id, status=cs.STATUS_CANCELLED)
+            title = contest.title
+            try:
+                from app.services import notifications_service as notify
+
+                await notify.notify_contest_participants(
+                    session, bot, contest_id=contest_id, event_type="contest_cancelled",
+                    event_key_suffix="owner_cancelled",
+                    text_builder=f"❌ Конкурс «{title}» отменён организатором.",
+                )
+            except Exception:
+                pass
+    finally:
+        await bot.session.close()
+    return {"ok": True, "message": f"Конкурс «{title}» отменён."}
+
+
+@app.post("/api/contests/{contest_id}/draw")
+async def draw_contest(
+    contest_id: int,
+    payload: DrawRequest | None = None,
+    x_init_data: str | None = Header(default=None),
+):
+    """Проводит розыгрыш конкурса (только организатор)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    payload = payload or DrawRequest()
+    bot = _build_bot()
+    try:
+        async with session_scope() as session:
+            await _require_contest_owner(session, contest_id, user_id)
+            try:
+                result = await ds.run_draw(
+                    session,
+                    contest_id=contest_id,
+                    executed_by=user_id,
+                    winners_count=payload.winners_count,
+                    exclude_previous_winners=payload.exclude_previous_winners,
+                )
+            except ds.DrawError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            contest = await cs.get_contest(session, contest_id)
+            title = contest.title if contest else str(contest_id)
+            prize = contest.prize if contest else None
+            winners = list(result.winners)
+            reserves = list(result.reserves)
+            participants = len(result.participants)
+            try:
+                from app.services import notifications_service as notify
+
+                await notify.notify_winners_selected(
+                    session, bot, contest_id=contest_id, title=title,
+                    winner_ids=winners, prize=prize,
+                )
+                if reserves:
+                    await notify.notify_reserve_winners(
+                        session, bot, contest_id=contest_id, title=title,
+                        reserve_ids=reserves, prize=prize,
+                    )
+            except Exception:
+                pass
+    finally:
+        await bot.session.close()
+    return {
+        "ok": True,
+        "message": f"Розыгрыш конкурса «{title}» проведён!",
+        "winners": winners,
+        "reserves": reserves,
+        "participants": participants,
+        "round": result.round,
+    }
+
+
+@app.get("/api/contests/{contest_id}/results")
+async def contest_results(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Итоги конкурса: победители, запасные и история розыгрышей (владелец/админ)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        contest = await _require_contest_owner(session, contest_id, user_id)
+        winners = await ds.get_latest_winners(session, contest_id)
+        reserves = await ds.get_latest_reserves(session, contest_id)
+        logs = await ds.get_draw_history(session, contest_id)
+        participants = await cs.participants_count(session, contest_id)
+
+        def _rows(items):
+            return [
+                {
+                    "place": w.place,
+                    "name": (p.custom_nickname or p.first_name) if p else f"ID {w.user_id}",
+                    "username": p.username if p else None,
+                    "prize": w.prize,
+                    "is_reserve": bool(w.is_reserve),
+                }
+                for w, p in items
+            ]
+
+        result = {
+            "id": contest.id,
+            "title": contest.title,
+            "participants": participants,
+            "winners": _rows(winners),
+            "reserves": _rows(reserves),
+            "draws": [
+                {"round": lg.round, "winners_count": lg.winners_count, "algorithm_version": lg.algorithm_version}
+                for lg in logs
+            ],
+        }
+    return result
+
+
+@app.post("/api/contests/{contest_id}/delete")
+async def delete_contest(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Удаляет конкурс вместе с участниками и победителями (только организатор)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        contest = await _require_contest_owner(session, contest_id, user_id)
+        title = contest.title
+        await cs.delete_contest(session, contest_id)
+    return {"ok": True, "message": f"Конкурс «{title}» удалён."}
+
+
+@app.post("/api/contests/{contest_id}/archive")
+async def archive_contest(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Отправляет конкурс в архив (только организатор)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        contest = await _require_contest_owner(session, contest_id, user_id)
+        title = contest.title
+        await cs.archive_contest(session, contest_id)
+    return {"ok": True, "message": f"Конкурс «{title}» перемещён в архив."}
 
 
 @app.post("/api/contests/code-word")

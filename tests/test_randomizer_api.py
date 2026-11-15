@@ -323,3 +323,129 @@ async def test_api_leaderboard_and_verify(monkeypatch):
     ver = await contest_verify(cid, x_init_data=_init_data(900081))
     assert ver["rounds"] and ver["rounds"][0]["salt"]
     assert ver["rounds"][0]["participants_hash"]
+
+
+# ===================== УПРАВЛЕНИЕ КОНКУРСОМ ВЛАДЕЛЬЦЕМ (Mini App) =====================
+
+def _fake_bot(monkeypatch):
+    import aiogram
+
+    class FakeBot:
+        def __init__(self, *a, **k):
+            self.session = AsyncMock()
+
+        async def get_chat_member(self, chat_id=None, user_id=None, **kwargs):
+            m = MagicMock()
+            m.status = "member"
+            m.is_member = True
+            return m
+
+        async def send_message(self, *a, **k):
+            return MagicMock()
+
+    monkeypatch.setattr(aiogram, "Bot", FakeBot)
+
+
+async def _owner_contest(owner_id: int, **kwargs):
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="Owner Contest", status=cs.STATUS_ACTIVE,
+            owner_id=owner_id, **kwargs,
+        )
+        return contest.id
+
+
+@pytest.mark.asyncio
+async def test_api_owner_update_and_settings(monkeypatch):
+    from app.api import update_contest, update_contest_settings, ContestUpdateRequest, ContestSettingsRequest
+
+    _fake_bot(monkeypatch)
+    cid = await _owner_contest(910001)
+
+    res = await update_contest(
+        cid,
+        ContestUpdateRequest(title="Новое имя", prize="Prize", winners_count=3),
+        x_init_data=_init_data(910001),
+    )
+    assert res["ok"] and res["contest"]["title"] == "Новое имя"
+    assert res["contest"]["winners_count"] == 3
+
+    sres = await update_contest_settings(
+        cid, ContestSettingsRequest(settings={"leaderboard": True, "tickets_per_ref": 5}),
+        x_init_data=_init_data(910001),
+    )
+    assert sres["settings"]["leaderboard"] is True
+    assert sres["settings"]["tickets_per_ref"] == 5
+
+
+@pytest.mark.asyncio
+async def test_api_owner_actions_require_owner(monkeypatch):
+    from app.api import update_contest, ContestUpdateRequest
+
+    _fake_bot(monkeypatch)
+    cid = await _owner_contest(910010)
+    with pytest.raises(HTTPException) as exc:
+        await update_contest(cid, ContestUpdateRequest(title="X"), x_init_data=_init_data(910011))
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_api_owner_finish_cancel_archive_delete(monkeypatch):
+    from app.api import finish_contest, cancel_contest, archive_contest, delete_contest
+
+    _fake_bot(monkeypatch)
+    cid = await _owner_contest(910020)
+
+    fin = await finish_contest(cid, x_init_data=_init_data(910020))
+    assert fin["ok"] is True
+    async with session_scope() as session:
+        assert (await cs.get_contest(session, cid)).status == cs.STATUS_FINISHED
+
+    cid2 = await _owner_contest(910020)
+    canc = await cancel_contest(cid2, x_init_data=_init_data(910020))
+    assert canc["ok"] is True
+    async with session_scope() as session:
+        assert (await cs.get_contest(session, cid2)).status == cs.STATUS_CANCELLED
+
+    cid3 = await _owner_contest(910020)
+    arch = await archive_contest(cid3, x_init_data=_init_data(910020))
+    assert arch["ok"] is True
+    async with session_scope() as session:
+        assert (await cs.get_contest(session, cid3)).is_archived is True
+
+    cid4 = await _owner_contest(910020)
+    dele = await delete_contest(cid4, x_init_data=_init_data(910020))
+    assert dele["ok"] is True
+    async with session_scope() as session:
+        assert (await cs.get_contest(session, cid4)) is None
+
+
+@pytest.mark.asyncio
+async def test_api_owner_draw_and_results(monkeypatch):
+    from app.api import draw_contest, contest_results, join_contest, JoinRequest, DrawRequest
+
+    _fake_bot(monkeypatch)
+    cid = await _owner_contest(910030, winners_count=1)
+
+    # Двое участников (не владелец).
+    for uid in (910031, 910032):
+        await join_contest(JoinRequest(contest_id=cid), x_init_data=_init_data(uid))
+
+    res = await draw_contest(cid, DrawRequest(), x_init_data=_init_data(910030))
+    assert res["ok"] is True
+    assert len(res["winners"]) == 1
+
+    results = await contest_results(cid, x_init_data=_init_data(910030))
+    assert len(results["winners"]) == 1
+    assert results["draws"][0]["round"] == 1
+
+
+@pytest.mark.asyncio
+async def test_api_draw_requires_owner(monkeypatch):
+    from app.api import draw_contest, DrawRequest
+
+    _fake_bot(monkeypatch)
+    cid = await _owner_contest(910040)
+    with pytest.raises(HTTPException) as exc:
+        await draw_contest(cid, DrawRequest(), x_init_data=_init_data(910041))
+    assert exc.value.status_code == 403

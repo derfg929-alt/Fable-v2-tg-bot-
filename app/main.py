@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import signal
 import sys
 
 from aiogram import Bot, Dispatcher, Router, types, F
@@ -126,6 +128,14 @@ async def main() -> None:
     # чтобы реферальные ссылки формировались без ручной настройки BOT_USERNAME.
     await _ensure_bot_username(bot, settings)
 
+    # Mini App и верификатор: регистрируем кнопки меню, если известен публичный адрес.
+    await _setup_bot_menu(bot, settings)
+
+    # Серверный API и Mini App запускается ДО polling: если Telegram недоступен,
+    # HTTP-сервер продолжает работать, и Mini App остаётся доступным.
+    api = await _maybe_start_api(settings)
+    api_server, api_task = api if api else (None, None)
+
     # Запуск фоновых задач
     bank_task = asyncio.create_task(background_bank_interest_worker(interval_seconds=3600))
     mm_task = asyncio.create_task(background_market_maker_worker(interval_seconds=60))
@@ -137,20 +147,62 @@ async def main() -> None:
     )
     randomizer_task = asyncio.create_task(background_randomizer_worker(bot, interval_seconds=300))
 
-    # Серверный API и Mini App (запускается параллельно с ботом).
-    api_server = await _maybe_start_api(settings)
-
     logger.info("Запуск Telegram-бота Fable в режиме Long Polling...")
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _request_stop(sig_name: str) -> None:
+        logger.info("Получен сигнал %s — останавливаем бота…", sig_name)
+        stop_event.set()
+        # Если polling сейчас активен, мягко останавливаем его; иначе цикл
+        # _poll_forever сам завершится по stop_event (например, во время паузы).
+        if dp._running_lock.locked():
+            asyncio.create_task(dp.stop_polling())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, _request_stop, sig.name)
+
+    async def _poll_forever() -> None:
+        # Polling перезапускается при ошибках (например, Telegram недоступен или
+        # временно отклонил запросы), чтобы не ронять процесс: HTTP-сервер Mini App
+        # должен продолжать работать даже если Telegram-соединение потеряно.
+        while not stop_event.is_set():
+            try:
+                # handle_signals=False: сигналы обрабатываем сами выше, иначе
+                # aiogram перехватывает их и «глотает» в паузах между рестартами.
+                await dp.start_polling(
+                    bot, polling_timeout=settings.polling_timeout, handle_signals=False
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "Polling остановился: %s. Повторная попытка через 15 секунд "
+                    "(Mini App продолжает работать).", e,
+                )
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=15)
+
     try:
-        await dp.start_polling(bot, polling_timeout=settings.polling_timeout)
+        await _poll_forever()
     finally:
-        bank_task.cancel()
-        mm_task.cancel()
-        engagement_task.cancel()
-        moderation_expiry_task.cancel()
-        randomizer_task.cancel()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.remove_signal_handler(sig)
+        for task in (bank_task, mm_task, engagement_task, moderation_expiry_task, randomizer_task):
+            task.cancel()
+        with contextlib.suppress(Exception):
+            await asyncio.gather(
+                bank_task, mm_task, engagement_task, moderation_expiry_task, randomizer_task,
+                return_exceptions=True,
+            )
         if api_server is not None:
             api_server.should_exit = True
+        if api_task is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(api_task, timeout=10)
         await bot.session.close()
         await dispose_engine()
         logger.info("Бот Fable успешно остановлен.")
@@ -180,6 +232,22 @@ async def _ensure_bot_username(bot, settings) -> None:
         logger.error("Ошибка автоопределения username бота: %s", e)
 
 
+async def _setup_bot_menu(bot, settings) -> None:
+    """Регистрирует кнопки меню бота: Mini App и верификатор честности."""
+    from aiogram.types import MenuButtonWebApp, WebAppInfo
+
+    base = settings.effective_mini_app_url
+    if not base:
+        return
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="🎁 Конкурсы", web_app=WebAppInfo(url=base))
+        )
+        logger.info("Кнопка меню Mini App установлена: %s", base)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Не удалось установить кнопку меню Mini App: %s", e)
+
+
 async def _maybe_start_api(settings):
     """Запускает серверный API Mini App, если установлен uvicorn."""
     try:
@@ -190,16 +258,31 @@ async def _maybe_start_api(settings):
         logger.warning("API-сервер Mini App не запущен (uvicorn/FastAPI недоступны): %s", e)
         return None
 
+    port = settings.effective_api_port
     config = uvicorn.Config(
         api_app,
         host=settings.api_host,
-        port=settings.api_port,
+        port=port,
         log_level=settings.log_level.lower(),
     )
     server = uvicorn.Server(config)
-    asyncio.create_task(server.serve())
-    logger.info("API Fable Randomizer запущен на %s:%s", settings.api_host, settings.api_port)
-    return server
+    # Uvicorn по умолчанию перехватывает SIGTERM/SIGINT и после остановки заново
+    # поднимает полученный сигнал — это конфликтует с обработчиком aiogram и
+    # приводит к «Получен сигнал SIGTERM» и аварийному завершению процесса.
+    # Отключаем захват сигналов: сервер останавливается только через should_exit.
+    server.capture_signals = contextlib.nullcontext
+    task = asyncio.create_task(server.serve())
+
+    def _log_api_failure(t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.error("API-сервер Mini App остановлен с ошибкой: %s", exc)
+
+    task.add_done_callback(_log_api_failure)
+    logger.info("API Fable Randomizer запущен на %s:%s", settings.api_host, port)
+    return server, task
 
 
 if __name__ == "__main__":
