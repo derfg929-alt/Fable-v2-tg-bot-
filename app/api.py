@@ -16,10 +16,11 @@ import time
 from datetime import datetime
 from urllib.parse import parse_qsl
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy.exc import StatementError
 
 from app.config import get_settings
 from app.db.session import session_scope
@@ -45,6 +46,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Значения из URL/тела запроса (например, contest_id) могут не помещаться в
+# целочисленный столбец БД. Без этого обработчика драйвер бросает OverflowError
+# и клиент получает 500 вместо понятного «не найдено».
+@app.exception_handler(OverflowError)
+@app.exception_handler(StatementError)
+async def _handle_bad_numeric_id(request: Request, exc: Exception):
+    return JSONResponse(status_code=404, content={"ok": False, "message": "Конкурс не найден.", "reason": "not_found"})
 
 
 # ===================== ПРОВЕРКА initData =====================
@@ -274,6 +284,13 @@ async def join_contest(payload: JoinRequest, x_init_data: str | None = Header(de
         return JSONResponse(status_code=403, content={"ok": False, "message": "Вы заблокированы и не можете участвовать.", "reason": "banned"})
     except cs.ContestClosedError:
         return JSONResponse(status_code=200, content={"ok": False, "message": "Конкурс недоступен для участия.", "reason": "closed"})
+    except cs.ContestNotFoundError:
+        return JSONResponse(status_code=404, content={"ok": False, "message": "Конкурс не найден.", "reason": "not_found"})
+    except cs.ContestError as e:
+        return JSONResponse(status_code=200, content={"ok": False, "message": str(e), "reason": "contest_error"})
+    except (OverflowError, StatementError):
+        # contest_id не помещается в целочисленный столбец БД — такого конкурса нет.
+        return JSONResponse(status_code=404, content={"ok": False, "message": "Конкурс не найден.", "reason": "not_found"})
     except Exception as e:  # noqa: BLE001
         logger.exception("Ошибка участия через API: %s", e)
         return JSONResponse(status_code=500, content={"ok": False, "message": "Ошибка сервера"})

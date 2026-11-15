@@ -152,6 +152,66 @@ async def test_api_join_not_subscribed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_api_join_missing_contest(monkeypatch):
+    # Участие в несуществующем конкурсе должно давать понятный ответ,
+    # а не 500 из-за необработанного ContestNotFoundError.
+    import aiogram
+
+    class FakeBot:
+        def __init__(self, *a, **k):
+            self.session = AsyncMock()
+
+        async def get_chat_member(self, chat_id, user_id):
+            m = MagicMock()
+            m.status = "member"
+            m.is_member = True
+            return m
+
+    monkeypatch.setattr(aiogram, "Bot", FakeBot)
+
+    res = await join_contest(JoinRequest(contest_id=9_999_999), x_init_data=_init_data(900070))
+    assert res.status_code == 404
+    payload = json.loads(res.body)
+    assert payload["ok"] is False
+    assert payload["reason"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_api_join_huge_contest_id(monkeypatch):
+    # Гигантский contest_id не помещается в целочисленный столбец БД; драйвер
+    # бросает OverflowError, который должен превращаться в понятный 404, а не 500.
+    import aiogram
+
+    class FakeBot:
+        def __init__(self, *a, **k):
+            self.session = AsyncMock()
+
+        async def get_chat_member(self, chat_id, user_id):
+            m = MagicMock()
+            m.status = "member"
+            m.is_member = True
+            return m
+
+    monkeypatch.setattr(aiogram, "Bot", FakeBot)
+
+    res = await join_contest(JoinRequest(contest_id=10**21), x_init_data=_init_data(900071))
+    assert res.status_code == 404
+    assert json.loads(res.body)["reason"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_api_numeric_overflow_handler():
+    # Глобальный обработчик превращает OverflowError/StatementError (нечисловой
+    # по размеру id из URL) в 404 вместо 500 на всех эндпойнтах.
+    from app.api import app
+
+    handler = app.exception_handlers[OverflowError]
+    resp = await handler(None, OverflowError("Python int too large to convert to SQLite INTEGER"))
+    assert resp.status_code == 404
+    assert json.loads(resp.body)["reason"] == "not_found"
+
+
+@pytest.mark.asyncio
 async def test_api_history_and_winners():
     init = _init_data(900050)
     h = await history(filter="all", x_init_data=init)
