@@ -14,6 +14,7 @@ from aiogram.methods import SendMessage
 from app.db.session import session_scope
 from app.services import randomizer_settings as rset
 from app.services import contest_service as cs
+from app.services import contest_settings as cset
 from app.services.player_service import get_or_create_player
 
 
@@ -309,3 +310,114 @@ async def test_all_notification_types_are_emitted_somewhere():
             blob += path.read_text(encoding="utf-8")
     missing = [t for t in NOTIFICATION_TYPES if f'"{t}"' not in blob]
     assert not missing, f"Типы уведомлений без отправки: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_admin_wizard_settings_step_and_persist():
+    """Мастер создания конкурса проходит шаг настроек и сохраняет settings_json."""
+    from app.main import create_dispatcher
+    from app.db.models import Contest
+    from sqlalchemy import select
+
+    admin_id = 890001
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=admin_id, first_name="Admin")
+        await rset.add_admin(session, admin_id, added_by=admin_id)
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+
+    await dp.feed_update(bot=bot, update=_callback_update(bot, admin_id, "adm_create", 900))
+    steps = [
+        "Конкурс с настройками",  # title
+        "Описание",               # description
+        "-",                      # image
+        "Приз",                   # prize
+        "1",                      # winners
+        "-",                      # starts
+        "-",                      # ends
+        "-",                      # channels
+        "-",                      # conditions
+        "-",                      # post
+    ]
+    for i, value in enumerate(steps):
+        await dp.feed_update(bot=bot, update=_make_update(bot, admin_id, value, update_id=1000 + i))
+
+    # На шаге настроек включаем кодовые слова и задаём билеты за реферала.
+    await dp.feed_update(bot=bot, update=_callback_update(bot, admin_id, "adm_set_code_words", 1100))
+    await dp.feed_update(bot=bot, update=_callback_update(bot, admin_id, "adm_set_code_words_list", 1101))
+    await dp.feed_update(bot=bot, update=_make_update(bot, admin_id, "FABLE:5", update_id=1102))
+    await dp.feed_update(bot=bot, update=_callback_update(bot, admin_id, "adm_set_tickets_per_ref", 1103))
+    await dp.feed_update(bot=bot, update=_make_update(bot, admin_id, "7", update_id=1104))
+    await dp.feed_update(bot=bot, update=_callback_update(bot, admin_id, "adm_set_done", 1105))
+    await dp.feed_update(bot=bot, update=_callback_update(bot, admin_id, "adm_wiz_publish", 1106))
+
+    async with session_scope() as session:
+        contest = await session.scalar(
+            select(Contest).where(Contest.title == "Конкурс с настройками")
+        )
+        assert contest is not None
+        settings = cset.normalize_settings(contest.settings_json)
+        assert settings["code_words"] is True
+        assert settings["tickets_per_ref"] == 7
+        assert settings["code_words_list"][0]["word"] == "FABLE"
+        assert settings["code_words_list"][0]["tickets"] == 5
+
+
+@pytest.mark.asyncio
+async def test_participant_code_word_and_tickets_via_callbacks():
+    """Участник вводит кодовое слово через FSM и видит свои билеты."""
+    from app.main import create_dispatcher
+
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="CW Flow", status=cs.STATUS_ACTIVE,
+            settings={"code_words": True, "code_words_list": [{"word": "WIN", "tickets": 4}]},
+        )
+        cid = contest.id
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+    user_id = 891001
+
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, f"rz_join_{cid}", 1200))
+    bot.call_args_list.clear()
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, f"rz_codeword_{cid}", 1201))
+    await dp.feed_update(bot=bot, update=_make_update(bot, user_id, "win", update_id=1202))
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("Кодовое слово принято" in t for t in texts), texts
+
+    bot.call_args_list.clear()
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, "rz_my_tickets", 1203))
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("Мои билеты" in t for t in texts), texts
+
+
+@pytest.mark.asyncio
+async def test_participant_leaderboard_and_share_callbacks():
+    from app.main import create_dispatcher
+
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="LB Flow", status=cs.STATUS_ACTIVE,
+            settings={"leaderboard": True, "leaderboard_size": 5, "share_button": True},
+        )
+        cid = contest.id
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+    user_id = 892001
+
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, f"rz_join_{cid}", 1300))
+    bot.call_args_list.clear()
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, f"rz_top_{cid}", 1301))
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("Рейтинг" in t or "Топ" in t for t in texts), texts
+
+    bot.call_args_list.clear()
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, f"rz_share_{cid}", 1302))
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("Поделись" in t for t in texts), texts

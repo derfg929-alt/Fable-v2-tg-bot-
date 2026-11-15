@@ -9,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index,
+    JSON, BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index,
     Integer, Numeric, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -698,6 +698,10 @@ class Contest(Base, TimestampMixin):
         BigInteger, ForeignKey("channels.id", ondelete="SET NULL"), index=True
     )
     draw_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Гибкие настройки конкурса (все 8 переключателей ТЗ + запасные победители).
+    # Хранятся строго как JSON-объект (тип JSON, не отдельные колонки);
+    # схема — app/services/contest_settings.py.
+    settings_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
 class Channel(Base, TimestampMixin):
@@ -749,6 +753,89 @@ class ContestEntry(Base, TimestampMixin):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Число билетов участника в этом конкурсе (1 базовый + бонусы за рефералов,
+    # кодовые слова и задания спонсоров). Источник истины — ticket_logs.
+    tickets: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Условия пройдены (для зачёта реферала пригласившему): подписка + задания.
+    conditions_met: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    conditions_met_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TicketLog(Base):
+    """Журнал начисления билетов участнику конкурса (идемпотентный леджер).
+
+    Каждое начисление имеет уникальный ключ (contest_id, user_id, reason_key),
+    поэтому повторная обработка одного события не удваивает билеты.
+    """
+    __tablename__ = "ticket_logs"
+    __table_args__ = (
+        UniqueConstraint("contest_id", "user_id", "reason_key", name="uq_ticket_log_event"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    contest_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("contests.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    amount: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # base | referral | code_word | sponsor_task | manual
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, default="base")
+    reason_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ContestReferral(Base):
+    """Засчитанный реферал в рамках конкурса.
+
+    Реферал засчитывается только после того, как приглашённый выполнит условия
+    конкурса (conditions_met). Один приглашённый — один зачёт на конкурс.
+    """
+    __tablename__ = "contest_referrals"
+    __table_args__ = (
+        UniqueConstraint("contest_id", "referred_id", name="uq_contest_referral_referred"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    contest_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("contests.id", ondelete="CASCADE"), index=True
+    )
+    referrer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    referred_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    tickets_awarded: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    credited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ContestLeaderboard(Base):
+    """Материализованный рейтинг приглашающих по конкурсу.
+
+    Обновляется по событию/периодически, чтобы не считать топ при каждом просмотре.
+    """
+    __tablename__ = "contest_leaderboard"
+    __table_args__ = (
+        UniqueConstraint("contest_id", "user_id", name="uq_contest_leaderboard_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    contest_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("contests.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True
+    )
+    invited_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class Referral(Base, TimestampMixin):
@@ -783,6 +870,11 @@ class Winner(Base, TimestampMixin):
     place: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     prize: Mapped[str | None] = mapped_column(String(255))
     draw_round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Запасной победитель (приз переходит к нему, если основной не выйдет на связь).
+    is_reserve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # pending | confirmed | transferred | declined
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     drawn_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -799,6 +891,10 @@ class DrawLog(Base, TimestampMixin):
     round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     algorithm_version: Mapped[str] = mapped_column(String(24), nullable=False, default="1.0")
     seed: Mapped[str | None] = mapped_column(String(64))
+    # Соль перемешивания и SHA-256 хэш списка участников с билетами — публикуются
+    # после розыгрыша для независимой проверки честности (ТЗ 7.2).
+    salt: Mapped[str | None] = mapped_column(String(64))
+    participants_hash: Mapped[str | None] = mapped_column(String(64))
     participants: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     weights: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     winners: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

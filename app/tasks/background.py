@@ -90,10 +90,13 @@ async def background_engagement_worker(
 
 
 async def background_randomizer_worker(bot: Bot, interval_seconds: int = 300) -> None:
-    """Обслуживает конкурсы Randomizer: обновляет статусы и рассылает уведомления
+    """Обслуживает конкурсы Randomizer: обновляет статусы, зачитывает рефералы,
+    передаёт призы запасным при невыходе на связь и рассылает уведомления
     о старте, скором окончании и завершении конкурсов (без повторных отправок).
     """
     from app.services import contest_service as cs
+    from app.services import contest_referral_service as crefs
+    from app.services import draw_service as ds
     from app.services import notifications_service as notify
     from app.db.models import Contest
 
@@ -103,6 +106,21 @@ async def background_randomizer_worker(bot: Bot, interval_seconds: int = 300) ->
                 await cs.sync_statuses(session)
                 contests = (await session.scalars(select_all_contests())).all()
                 now = datetime.now(timezone.utc)
+                # Зачитываем рефералы активных конкурсов (реферал = действие друга).
+                for contest in contests:
+                    if contest.status == cs.STATUS_ACTIVE:
+                        try:
+                            await crefs.process_contest_referrals(session, contest.id)
+                        except Exception:
+                            pass
+                # Передаём призы запасным, если основной победитель не вышел на связь.
+                for contest in contests:
+                    if contest.status != cs.STATUS_FINISHED:
+                        continue
+                    try:
+                        await _process_reserve_timeouts(session, bot, contest)
+                    except Exception as e:
+                        logger.error(f"Ошибка обработки запасных конкурса {contest.id}: {e}")
                 for contest in contests:
                     if contest.status not in (cs.STATUS_ACTIVE, cs.STATUS_SCHEDULED):
                         continue
@@ -152,6 +170,43 @@ async def background_randomizer_worker(bot: Bot, interval_seconds: int = 300) ->
         except Exception as e:
             logger.error(f"Ошибка в воркере Randomizer: {e}")
         await asyncio.sleep(interval_seconds)
+
+
+async def _process_reserve_timeouts(session, bot: Bot, contest) -> int:
+    """Передаёт приз запасному, если основной победитель не подтвердил связь.
+
+    Возвращает число переданных призов. Таймаут (часы) берётся из настроек
+    конкурса (`reserve_timeout_hours`, по умолчанию 24).
+    """
+    from datetime import datetime, timezone
+
+    from app.services import contest_settings as cset
+    from app.services import draw_service as ds
+    from app.services import notifications_service as notify
+
+    settings = cset.read_settings(contest)
+    timeout_hours = int(settings.get("reserve_timeout_hours", 24) or 24)
+    pending = await ds.get_pending_main_winners(session, contest.id)
+    now = datetime.now(timezone.utc)
+    transferred = 0
+    for winner in pending:
+        notified = winner.notified_at
+        if notified is not None and notified.tzinfo is None:
+            notified = notified.replace(tzinfo=timezone.utc)
+        if notified is not None and (now - notified).total_seconds() < timeout_hours * 3600:
+            continue
+        reserve = await ds.transfer_to_reserve(session, contest_id=contest.id, main_winner_id=winner.user_id)
+        if reserve is None:
+            continue
+        try:
+            await notify.notify_prize_transferred(
+                session, bot, contest_id=contest.id, title=contest.title,
+                winner_id=reserve.user_id, prize=contest.prize,
+            )
+        except Exception:
+            pass
+        transferred += 1
+    return transferred
 
 
 def select_all_contests():

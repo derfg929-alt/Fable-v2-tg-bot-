@@ -22,9 +22,11 @@ from app.db.models import (
     Contest,
     ContestChannel,
     ContestEntry,
+    ContestReferral,
     Player,
     Winner,
 )
+from app.services import contest_settings as cset
 from app.services.player_service import get_or_create_player
 
 logger = logging.getLogger("fable.contest")
@@ -109,6 +111,7 @@ async def create_contest(
     created_by: int | None = None,
     owner_id: int | None = None,
     source_channel_id: int | None = None,
+    settings: dict | None = None,
 ) -> Contest:
     contest = Contest(
         title=title.strip()[:200],
@@ -125,8 +128,19 @@ async def create_contest(
         created_by=created_by,
         owner_id=owner_id,
         source_channel_id=source_channel_id,
+        settings_json=cset.normalize_settings(settings),
     )
     session.add(contest)
+    await session.flush()
+    return contest
+
+
+async def update_settings(session: AsyncSession, contest_id: int, **fields) -> Contest:
+    """Обновляет отдельные поля settings_json конкурса (по ТЗ 6 — можно менять)."""
+    contest = await require_contest(session, contest_id)
+    merged = cset.read_settings(contest)
+    merged.update(fields)
+    contest.settings_json = cset.normalize_settings(merged)
     await session.flush()
     return contest
 
@@ -396,7 +410,27 @@ async def join_contest(
         )
         session.add(entry)
     await session.flush()
+
+    # Базовый билет начисляется сразу при участии (идемпотентно).
+    from app.services import ticket_service as tickets
+
+    await tickets.ensure_base_ticket(session, contest_id=contest_id, user_id=user_id)
+
+    # Подписки уже проверены. Если дополнительных условий (кодовых слов/заданий)
+    # нет, действие приглашённого выполнено — можно зачесть реферал пригласившему.
+    settings = cset.read_settings(contest)
+    if not cset_code_or_task(settings):
+        from app.services import contest_referral_service as crefs
+
+        await crefs.mark_conditions_met(session, contest_id=contest_id, user_id=user_id)
+        await crefs.credit_referral_for_user(session, contest_id=contest_id, user_id=user_id)
+
     return entry
+
+
+def cset_code_or_task(settings: dict) -> bool:
+    """True, если в конкурсе включены кодовые слова или задания спонсоров."""
+    return bool(settings.get("code_words") or settings.get("sponsor_tasks"))
 
 
 async def leave_contest(session: AsyncSession, *, contest_id: int, user_id: int) -> bool:
@@ -541,6 +575,69 @@ _WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 def weekday_labels() -> list[str]:
     """Человекочитаемые названия дней недели (Пн..Вс) для отображения статистики."""
     return list(_WEEKDAY_LABELS)
+
+
+async def list_participants_public(
+    session: AsyncSession, contest_id: int, *, limit: int = 50, offset: int = 0
+) -> list[tuple[ContestEntry, Player | None, int]]:
+    """Постраничный список участников для публичного показа.
+
+    Возвращает (entry, player, invited_count) с числом зачтённых рефералов.
+    """
+    from app.db.models import ContestReferral
+
+    entries = (
+        await session.scalars(
+            select(ContestEntry)
+            .where(ContestEntry.contest_id == contest_id, ContestEntry.status == "active")
+            .order_by(ContestEntry.joined_at.asc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+    result: list[tuple[ContestEntry, Player | None, int]] = []
+    for entry in entries:
+        player = await session.get(Player, entry.user_id)
+        invited = int(
+            await session.scalar(
+                select(func.count(ContestReferral.id)).where(
+                    ContestReferral.contest_id == contest_id,
+                    ContestReferral.referrer_id == entry.user_id,
+                )
+            )
+            or 0
+        )
+        result.append((entry, player, invited))
+    return result
+
+
+async def sources_report(session: AsyncSession, contest_id: int, *, limit: int = 20) -> list[dict]:
+    """Отчёт по источникам приглашений: кто сколько друзей привёл (только для админа)."""
+    rows = (
+        await session.execute(
+            select(
+                ContestReferral.referrer_id,
+                func.count(ContestReferral.id),
+                func.coalesce(func.sum(ContestReferral.tickets_awarded), 0),
+            )
+            .where(ContestReferral.contest_id == contest_id)
+            .group_by(ContestReferral.referrer_id)
+            .order_by(func.count(ContestReferral.id).desc())
+            .limit(limit)
+        )
+    ).all()
+    report: list[dict] = []
+    for referrer_id, invited, tickets in rows:
+        player = await session.get(Player, referrer_id)
+        name = (player.custom_nickname or player.first_name) if player else f"ID {referrer_id}"
+        report.append({
+            "user_id": int(referrer_id),
+            "name": name,
+            "username": player.username if player else None,
+            "invited": int(invited),
+            "tickets_awarded": int(tickets),
+        })
+    return report
 
 
 async def contest_statistics(session: AsyncSession, contest_id: int) -> dict:

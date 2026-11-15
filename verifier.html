@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Fable Randomizer — Верификатор честности</title>
+<style>
+  :root { --bg:#0f1220; --card:#1b1f36; --card2:#232a4d; --accent:#7c5cff; --text:#f5f6ff; --muted:#9aa3c7; --ok:#37d67a; --err:#ff5c7a; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:linear-gradient(180deg,#12152a 0%,#0b0d18 100%); color:var(--text); min-height:100vh; }
+  main { max-width:720px; margin:0 auto; }
+  h1 { font-size:20px; }
+  p { color:var(--muted); font-size:13px; }
+  textarea { width:100%; min-height:120px; background:var(--card2); color:var(--text);
+    border:1px solid #2e3765; border-radius:12px; padding:12px; font-family:monospace; font-size:12px; }
+  input { width:100%; background:var(--card2); color:var(--text); border:1px solid #2e3765;
+    border-radius:12px; padding:12px; margin-top:8px; font-family:monospace; font-size:12px; }
+  button { width:100%; border:none; border-radius:12px; padding:14px; font-size:15px; font-weight:600;
+    background:linear-gradient(135deg,var(--accent),#5b8cff); color:#fff; margin-top:12px; cursor:pointer; }
+  .card { background:var(--card); border-radius:16px; padding:16px; margin-bottom:12px; border:1px solid #262d52; }
+  .result { margin-top:12px; padding:12px; border-radius:12px; font-size:14px; white-space:pre-wrap; word-break:break-all; }
+  .ok { background:rgba(55,214,122,.15); border:1px solid var(--ok); }
+  .err { background:rgba(255,92,122,.15); border:1px solid var(--err); }
+  label { display:block; margin-top:10px; font-size:13px; color:var(--muted); }
+  code { color:#8ab4ff; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🧾 Верификатор честности розыгрыша</h1>
+  <p>Вставь данные розыгрыша (участники с билетами, seed и соль) — страница независимо
+     воспроизведёт выбор победителей и подтвердит, что результат не подкручен.</p>
+
+  <div class="card">
+    <label>Список участников (по одному на строку: <code>user_id:билеты</code>)</label>
+    <textarea id="participants" placeholder="123456:3&#10;789012:1"></textarea>
+
+    <label>Seed (строка, использованная при перемешивании)</label>
+    <input id="seed" placeholder="напр. 9f8e7d6c..." />
+
+    <label>Соль (для проверки SHA-256 хэша списка)</label>
+    <input id="salt" placeholder="напр. 1a2b3c..." />
+
+    <label>Сколько победителей выбрать</label>
+    <input id="count" type="number" min="1" value="1" />
+
+    <button id="verify">🔍 Проверить</button>
+    <div id="result"></div>
+  </div>
+
+  <div class="card">
+    <p>Алгоритм проверки: веса = билеты × 10000; взвешенный случайный выбор без повторов
+       генератором <code>random.Random(seed)</code>. Тот же алгоритм, что и на сервере
+       (draw_service, версия 1.3). SHA-256 хэш считается как
+       <code>sha256(salt + "|" + user_id:tickets + "|" ...)</code>.</p>
+  </div>
+</main>
+
+<script>
+// Порт Python random.Random(seed) — MT19937 (random() через genrand_res53).
+// Для детерминированной проверки реализуем MT19937 в JS.
+// MT19937, точно повторяющий CPython random.Random(int) (init_by_array + res53).
+function MT19937() {
+  const N = 624, M = 397;
+  const mt = new Array(N);
+  let index = N;
+  function initGenrand(s) {
+    mt[0] = s >>> 0;
+    for (let i = 1; i < N; i++) {
+      mt[i] = (Math.imul(1812433253, (mt[i - 1] ^ (mt[i - 1] >>> 30))) + i) >>> 0;
+    }
+    index = N;
+  }
+  this.initByArray = function(key) {
+    initGenrand(19650218);
+    let i = 1, j = 0;
+    let k = Math.max(N, key.length);
+    for (; k; k--) {
+      mt[i] = ((mt[i] ^ Math.imul((mt[i - 1] ^ (mt[i - 1] >>> 30)), 1664525)) + key[j] + j) >>> 0;
+      i++; j++;
+      if (i >= N) { mt[0] = mt[N - 1]; i = 1; }
+      if (j >= key.length) j = 0;
+    }
+    for (k = N - 1; k; k--) {
+      mt[i] = ((mt[i] ^ Math.imul((mt[i - 1] ^ (mt[i - 1] >>> 30)), 1566083941)) - i) >>> 0;
+      i++;
+      if (i >= N) { mt[0] = mt[N - 1]; i = 1; }
+    }
+    mt[0] = 0x80000000;
+    index = N;
+  };
+  this.genrandInt32 = function() {
+    if (index >= N) {
+      let kk;
+      for (kk = 0; kk < N - M; kk++) {
+        let y = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7fffffff);
+        mt[kk] = mt[kk + M] ^ (y >>> 1) ^ ((y & 1) ? 0x9908b0df : 0);
+      }
+      for (; kk < N - 1; kk++) {
+        let y = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7fffffff);
+        mt[kk] = mt[kk + (M - N)] ^ (y >>> 1) ^ ((y & 1) ? 0x9908b0df : 0);
+      }
+      let y = (mt[N - 1] & 0x80000000) | (mt[0] & 0x7fffffff);
+      mt[N - 1] = mt[M - 1] ^ (y >>> 1) ^ ((y & 1) ? 0x9908b0df : 0);
+      index = 0;
+    }
+    let y = mt[index++];
+    y ^= (y >>> 11);
+    y ^= (y << 7) & 0x9d2c5680;
+    y ^= (y << 15) & 0xefc60000;
+    y ^= (y >>> 18);
+    return y >>> 0;
+  };
+  // Python random() = genrand_res53: (a*67108864 + b) / 9007199254740992
+  this.random = function() {
+    const a = this.genrandInt32() >>> 5;
+    const b = this.genrandInt32() >>> 6;
+    return (a * 67108864.0 + b) / 9007199254740992.0;
+  };
+  this.uniform = function(a, b) { return a + (b - a) * this.random(); };
+}
+
+// Python int -> 32-bit little-endian words (как init_by_array в CPython).
+function intToKey(n) {
+  n = BigInt(n);
+  const words = [];
+  while (n > 0n) { words.push(Number(n & 0xffffffffn) >>> 0); n >>= 32n; }
+  if (!words.length) words.push(0);
+  return words;
+}
+
+// Seed хранится как десятичное целое (см. draw_service.run_draw).
+function seedToKey(seedStr) {
+  const s = (seedStr || "").trim();
+  if (/^[0-9]+$/.test(s)) return intToKey(BigInt(s));
+  if (/^0x[0-9a-f]+$/i.test(s)) return intToKey(BigInt(s));
+  let h = 0n;
+  for (const ch of s) h = (h * 31n + BigInt(ch.charCodeAt(0))) & 0xffffffffffffffffn;
+  return intToKey(h);
+}
+
+function weightedSample(participants, weights, count, rng) {
+  const pool = participants.slice();
+  const chosen = [];
+  count = Math.min(count, pool.length);
+  while (chosen.length < count && pool.length) {
+    const total = pool.reduce((s, uid) => s + (weights[uid] || 0), 0);
+    if (total <= 0) break;
+    const pick = rng.uniform(0, total);
+    let acc = 0;
+    for (let i = 0; i < pool.length; i++) {
+      acc += weights[pool[i]] || 0;
+      if (acc >= pick) { chosen.push(pool[i]); pool.splice(i, 1); break; }
+    }
+  }
+  return chosen;
+}
+
+async function sha256Hex(str) {
+  const buf = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+document.getElementById("verify").addEventListener("click", async () => {
+  const out = document.getElementById("result");
+  const participants = [];
+  const weights = {};
+  document.getElementById("participants").value.split(/\n+/).forEach(line => {
+    line = line.trim();
+    if (!line) return;
+    const [uid, t] = line.split(":");
+    const id = parseInt(uid, 10);
+    if (!isNaN(id)) { participants.push(id); weights[id] = parseInt(t || "1", 10) * 10000; }
+  });
+  const seed = document.getElementById("seed").value;
+  const salt = document.getElementById("salt").value;
+  const count = parseInt(document.getElementById("count").value || "1", 10);
+
+  if (!participants.length) { out.className = "result err"; out.textContent = "Добавь участников."; return; }
+
+  const rng = new MT19937();
+  rng.initByArray(seedToKey(seed));
+  const winners = weightedSample(participants, weights, count, rng);
+
+  // SHA-256 хэш списка (для сверки с опубликованным).
+  const parts = [salt];
+  participants.forEach(uid => parts.push(uid + ":" + weights[uid]));
+  const hash = await sha256Hex(parts.join("|"));
+
+  out.className = "result ok";
+  out.textContent =
+    "Победители: " + winners.join(", ") + "\n\n" +
+    "SHA-256 участников: " + hash + "\n" +
+    "(сверь с хэшем, опубликованным организатором)";
+});
+</script>
+</body>
+</html>

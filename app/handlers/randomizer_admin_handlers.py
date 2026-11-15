@@ -28,6 +28,7 @@ from app.db.models import (
     Winner,
 )
 from app.services import contest_service as cs
+from app.services import contest_settings as cset
 from app.services import draw_service as ds
 from app.services import notifications_service as notify
 from app.services import randomizer_settings as rset
@@ -67,6 +68,8 @@ class ContestWizard(StatesGroup):
     channels = State()
     conditions = State()
     post = State()
+    settings = State()
+    settings_value = State()
     confirm = State()
 
 
@@ -466,8 +469,8 @@ _WIZ_FIELDS = [
     ("starts", "starts_at", "дата начала", ContestWizard.ends, "Шаг 7/10. Введите дату окончания (ДД.ММ.ГГГГ ЧЧ:ММ) или «-»:"),
     ("ends", "ends_at", "дата окончания", ContestWizard.channels, "Шаг 8/10. Введите обязательные каналы через запятую (@username или -100ID), или «-»:"),
     ("channels", "channel_ids", "каналы", ContestWizard.conditions, "Шаг 9/10. Введите дополнительные условия участия, или «-»:"),
-    ("conditions", "extra_conditions", "условия", ContestWizard.post, "Шаг 10/10. Введите текст публикации конкурса, или «-»:"),
-    ("post", "post_text", "текст публикации", None, None),
+    ("conditions", "extra_conditions", "условия", ContestWizard.post, "Шаг 10/11. Введите текст публикации конкурса, или «-»:"),
+    ("post", "post_text", "текст публикации", ContestWizard.settings, None),
 ]
 
 
@@ -496,8 +499,193 @@ async def _wizard_advance(message: types.Message, state: FSMContext, value, is_c
         await _show_preview(message, state, data, is_callback)
         return
 
+    if next_state == ContestWizard.settings:
+        # Шаг гибких настроек: показываем переключатели.
+        data = await state.get_data()
+        settings = cset.normalize_settings(data.get("settings"))
+        await state.update_data(settings=settings)
+        await state.set_state(ContestWizard.settings)
+        await _render_settings_step(message, settings, is_callback=is_callback)
+        return
+
     await state.set_state(next_state)
     await message.answer(next_prompt, reply_markup=_wizard_skip_kb(), parse_mode="HTML")
+
+
+def _settings_step_kb(settings: dict):
+    kb = InlineKeyboardBuilder()
+    for key in cset.TOGGLE_ORDER:
+        label = cset.TOGGLE_LABELS.get(key, key)
+        mark = "✅" if settings.get(key) else "⬜️"
+        kb.button(text=f"{mark} {label}", callback_data=f"adm_set_{key}")
+    kb.button(
+        text=f"🎟 Билетов за реферала: {settings.get('tickets_per_ref', 1)}",
+        callback_data="adm_set_tickets_per_ref",
+    )
+    kb.button(
+        text=f"🔄 Запасных победителей: {settings.get('reserve_winners', 0)}",
+        callback_data="adm_set_reserve_winners",
+    )
+    kb.button(text="🔑 Настроить кодовые слова", callback_data="adm_set_code_words_list")
+    kb.button(text="🎯 Настроить задание спонсора", callback_data="adm_set_sponsor_task")
+    kb.button(text="📤 Текст «Поделиться»", callback_data="adm_set_share_text")
+    kb.button(text="🏅 Размер рейтинга", callback_data="adm_set_leaderboard_size")
+    kb.button(text="✅ Готово", callback_data="adm_set_done")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def _render_settings_step(message, settings: dict, *, is_callback: bool = False, edit: bool = False):
+    words = settings.get("code_words_list") or []
+    lines = [
+        "⚙️ <b>Шаг 11/11. Настройки конкурса</b>\n",
+        "Включай и выключай механики кнопками. Текущее состояние:",
+        f"• Кодовые слова: {'✅' if settings['code_words'] else '⬜️'} "
+        f"({len(words)} шт.)",
+        f"• Задания спонсоров: {'✅' if settings['sponsor_tasks'] else '⬜️'}",
+        f"• Билетов за 1 реферала: <b>{settings['tickets_per_ref']}</b>",
+        f"• Показывать участников: {'✅' if settings['show_participants'] else '⬜️'}",
+        f"• Счётчик билетов: {'✅' if settings['show_tickets'] else '⬜️'}",
+        f"• Кнопка «Поделиться»: {'✅' if settings['share_button'] else '⬜️'}",
+        f"• Рейтинг приглашающих: {'✅' if settings['leaderboard'] else '⬜️'} "
+        f"(топ-{settings['leaderboard_size']})",
+        f"• Отчёт по источникам: {'✅' if settings['sources_report'] else '⬜️'}",
+        f"• Запасных победителей: <b>{settings['reserve_winners']}</b>",
+        "",
+        "Когда всё готово — нажми «✅ Готово».",
+    ]
+    markup = _settings_step_kb(settings)
+    if edit:
+        try:
+            await message.edit_text("\n".join(lines), reply_markup=markup, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    await message.answer("\n".join(lines), reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("adm_set_"))
+async def on_settings_toggle(callback: types.CallbackQuery, state: FSMContext):
+    action = callback.data.replace("adm_set_", "")
+    data = await state.get_data()
+    settings = cset.normalize_settings(data.get("settings"))
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+    if action == "done":
+        await state.update_data(settings=settings)
+        await state.set_state(ContestWizard.confirm)
+        await _show_preview(callback.message, state, await state.get_data(), is_callback=True)
+        return
+
+    if action in ("tickets_per_ref", "reserve_winners", "leaderboard_size"):
+        prompts = {
+            "tickets_per_ref": "Сколько билетов за 1 приведённого друга? (число, по умолчанию 1)",
+            "reserve_winners": "Сколько запасных победителей? (число, 0 — без запасных)",
+            "leaderboard_size": "Сколько мест в рейтинге приглашающих? (число)",
+        }
+        await state.update_data(settings=settings, settings_field=action)
+        await state.set_state(ContestWizard.settings_value)
+        await callback.message.answer(prompts[action])
+        return
+
+    if action == "share_text":
+        await state.update_data(settings=settings, settings_field="share_text")
+        await state.set_state(ContestWizard.settings_value)
+        await callback.message.answer(
+            "Отправь текст для кнопки «Поделиться». Можно вставить <code>{link}</code> — "
+            "он заменится на реферальную ссылку участника. «-» — вернуть стандартный.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "code_words_list":
+        await state.update_data(settings=settings, settings_field="code_words_list")
+        await state.set_state(ContestWizard.settings_value)
+        await callback.message.answer(
+            "Отправь кодовые слова в формате <code>слово:билеты</code> через запятую.\n"
+            "Пример: <code>FABLE:3, ПРИЗ:5</code>\n"
+            "Без «:билеты» каждому слову будет назначен 1 билет. «-» — очистить.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "sponsor_task":
+        await state.update_data(settings=settings, settings_field="sponsor_task")
+        await state.set_state(ContestWizard.settings_value)
+        await callback.message.answer(
+            "Отправь задание спонсора в формате <code>текст|билеты</code>.\n"
+            "Пример: <code>Перейди на сайт и пришли промокод|5</code>\n"
+            "Или просто текст (1 билет). «-» — очистить.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Простой булев переключатель.
+    if action in settings and isinstance(settings[action], bool):
+        settings = cset.toggle(settings, action)
+        await state.update_data(settings=settings)
+    await _render_settings_step(callback.message, settings, edit=True)
+
+
+@router.message(ContestWizard.settings_value)
+async def wiz_settings_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    settings = cset.normalize_settings(data.get("settings"))
+    field = data.get("settings_field")
+    raw = (message.text or "").strip()
+    cleared = raw.lower() in ("-", "нет", "очистить", "—", "")
+
+    if field == "tickets_per_ref":
+        if not raw.isdigit() or int(raw) < 1:
+            await message.answer("❌ Введи целое число не меньше 1.")
+            return
+        settings["tickets_per_ref"] = int(raw)
+    elif field == "reserve_winners":
+        if not raw.isdigit():
+            await message.answer("❌ Введи целое число (0 — без запасных).")
+            return
+        settings["reserve_winners"] = int(raw)
+    elif field == "leaderboard_size":
+        if not raw.isdigit() or int(raw) < 1:
+            await message.answer("❌ Введи целое число не меньше 1.")
+            return
+        settings["leaderboard_size"] = int(raw)
+    elif field == "share_text":
+        settings["share_text"] = "" if cleared else raw
+    elif field == "code_words_list":
+        words: list[dict] = []
+        if not cleared:
+            for part in re.split(r"[,\n]+", raw):
+                part = part.strip()
+                if not part:
+                    continue
+                if ":" in part:
+                    word, _, tcount = part.partition(":")
+                    word = word.strip()
+                    tickets_n = int(tcount) if tcount.strip().isdigit() else 1
+                else:
+                    word, tickets_n = part, 1
+                if word:
+                    words.append({"word": word, "tickets": max(1, tickets_n)})
+        settings["code_words_list"] = words
+        if words:
+            settings["code_words"] = True
+    elif field == "sponsor_task":
+        if cleared:
+            settings["sponsor_task_text"] = ""
+        else:
+            text_part, _, tickets_part = raw.partition("|")
+            settings["sponsor_task_text"] = text_part.strip()
+            settings["sponsor_task_tickets"] = int(tickets_part) if tickets_part.strip().isdigit() else 1
+            settings["sponsor_tasks"] = True
+
+    await state.update_data(settings=cset.normalize_settings(settings), settings_field=None)
+    await state.set_state(ContestWizard.settings)
+    await message.answer("✅ Сохранено.")
+    await _render_settings_step(message, cset.normalize_settings(settings))
 
 
 async def _show_preview(message: types.Message, state: FSMContext, data: dict, is_callback: bool = False):
@@ -506,6 +694,7 @@ async def _show_preview(message: types.Message, state: FSMContext, data: dict, i
     starts_s = starts.strftime("%d.%m.%Y %H:%M") if isinstance(starts, datetime) else "—"
     ends_s = ends.strftime("%d.%m.%Y %H:%M") if isinstance(ends, datetime) else "—"
     channels = data.get("channel_ids") or []
+    settings = cset.normalize_settings(data.get("settings"))
     lines = [
         "📋 <b>Предпросмотр конкурса</b>\n",
         f"📛 Название: <b>{data.get('title') or '—'}</b>",
@@ -518,6 +707,18 @@ async def _show_preview(message: types.Message, state: FSMContext, data: dict, i
         f"📢 Каналов: {len(channels)}",
         f"📌 Условия: {data.get('extra_conditions') or '—'}",
         f"📰 Текст публикации: {data.get('post_text') or '—'}",
+        "",
+        "⚙️ <b>Настройки:</b>",
+        f"• Кодовые слова: {'✅' if settings['code_words'] else '⬜️'} "
+        f"({len(settings['code_words_list'])} шт.)",
+        f"• Задания спонсоров: {'✅' if settings['sponsor_tasks'] else '⬜️'}",
+        f"• Билетов за 1 реферала: {settings['tickets_per_ref']}",
+        f"• Показывать участников: {'✅' if settings['show_participants'] else '⬜️'}",
+        f"• Счётчик билетов: {'✅' if settings['show_tickets'] else '⬜️'}",
+        f"• Кнопка «Поделиться»: {'✅' if settings['share_button'] else '⬜️'}",
+        f"• Рейтинг приглашающих: {'✅' if settings['leaderboard'] else '⬜️'} (топ-{settings['leaderboard_size']})",
+        f"• Отчёт по источникам: {'✅' if settings['sources_report'] else '⬜️'}",
+        f"• Запасных победителей: {settings['reserve_winners']}",
     ]
     kb = InlineKeyboardBuilder()
     kb.button(text="📢 Опубликовать", callback_data="adm_wiz_publish")
@@ -577,6 +778,7 @@ async def _persist_contest(
             post_text=data.get("post_text"),
             status=status,
             created_by=actor_id,
+            settings=data.get("settings"),
         )
         if channel_ids:
             await cs.set_contest_channels(session, contest.id, channel_ids)
@@ -690,6 +892,8 @@ async def _render_admin_contest(callback: types.CallbackQuery, contest_id: int):
         participants = await cs.participants_count(session, contest_id)
         channels = await cs.get_contest_channels(session, contest_id)
         winners = await ds.get_latest_winners(session, contest_id)
+        reserves = await ds.get_latest_reserves(session, contest_id)
+        settings = cset.read_settings(contest)
     try:
         await callback.answer()
     except Exception:
@@ -702,12 +906,17 @@ async def _render_admin_contest(callback: types.CallbackQuery, contest_id: int):
         f"Статус: {status} | 🏁 Окончание: {ends}",
         f"👥 Участников: {participants} | 🏆 Победителей: {contest.winners_count}",
         f"📢 Каналов: {len(channels)} | 📦 Архив: {'да' if contest.is_archived else 'нет'}",
+        f"🎟 Билетов за реферала: {settings['tickets_per_ref']} | 🔄 Запасных: {settings['reserve_winners']}",
     ]
     if winners:
         lines.append("\n<b>Победители последнего розыгрыша:</b>")
         for w, player in winners:
             name = (player.custom_nickname or player.first_name) if player else f"ID {w.user_id}"
             lines.append(f"   {w.place}. {name}")
+    if reserves:
+        lines.append("<b>Запасные:</b> " + ", ".join(
+            (p.custom_nickname or p.first_name) if p else f"ID {w.user_id}" for w, p in reserves
+        ))
 
     kb = InlineKeyboardBuilder()
     kb.button(text="🚀 Запустить", callback_data=f"adm_start_{contest.id}")
@@ -716,6 +925,8 @@ async def _render_admin_contest(callback: types.CallbackQuery, contest_id: int):
     kb.button(text="🔁 Повторный розыгрыш", callback_data=f"adm_redraw_{contest.id}")
     kb.button(text="👥 Участники", callback_data=f"adm_parts_{contest.id}")
     kb.button(text="📊 Статистика", callback_data=f"adm_cstats_{contest.id}")
+    kb.button(text="📈 Источники", callback_data=f"adm_sources_{contest.id}")
+    kb.button(text="📤 Экспорт CSV", callback_data=f"adm_export_{contest.id}")
     kb.button(text="🧾 Проверить честность", callback_data=f"adm_verify_{contest.id}")
     kb.button(text="✏️ Изменить", callback_data=f"adm_edit_{contest.id}")
     kb.button(text="📢 Каналы конкурса", callback_data=f"adm_cchannels_{contest.id}")
@@ -723,7 +934,7 @@ async def _render_admin_contest(callback: types.CallbackQuery, contest_id: int):
     kb.button(text="📦 Архивировать", callback_data=f"adm_archive_{contest.id}")
     kb.button(text="🗑 Удалить", callback_data=f"adm_delete_{contest.id}")
     kb.button(text="◀️ К списку", callback_data="adm_mycontests")
-    kb.adjust(2, 2, 2, 2, 2, 2, 1)
+    kb.adjust(2, 2, 2, 2, 2, 2, 2, 1)
     try:
         await callback.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
@@ -1032,15 +1243,153 @@ async def on_contest_verify(callback: types.CallbackQuery):
             f"• Раунд {log.round} (алг. {log.algorithm_version}): "
             f"{'✅ подтверждён' if ok else '⚠️ расхождение'}\n"
             f"   seed: <code>{log.seed}</code>\n"
+            f"   соль: <code>{log.salt or '—'}</code>\n"
+            f"   SHA-256 участников: <code>{log.participants_hash or '—'}</code>\n"
             f"   победители: {', '.join(str(x) for x in stored) or '—'}"
         )
     kb = InlineKeyboardBuilder()
+    kb.button(text="🔗 Верификатор (Mini App)", callback_data=f"adm_verifier_{contest_id}")
     kb.button(text="◀️ К конкурсу", callback_data=f"adm_view_{contest_id}")
     kb.adjust(1)
     try:
         await callback.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         pass
+
+
+@router.callback_query(F.data.startswith("adm_verifier_"))
+async def on_verifier_link(callback: types.CallbackQuery):
+    if not await _admin_action_guard(callback):
+        await _deny(callback)
+        return
+    contest_id = int(callback.data.replace("adm_verifier_", ""))
+    async with session_scope() as session:
+        logs = await ds.get_draw_history(session, contest_id)
+        base_url = await _mini_app_base_url(session)
+    if not logs:
+        await callback.answer("Розыгрышей ещё не было", show_alert=True)
+        return
+    log = logs[0]
+    payload = (
+        f"Проверка честности конкурса #{contest_id}, раунд {log.round}:\n"
+        f"seed: {log.seed}\nsalt: {log.salt}\nhash: {log.participants_hash}\n"
+        f"winners: {', '.join(str(x) for x in (log.winners or []))}"
+    )
+    kb = InlineKeyboardBuilder()
+    if base_url:
+        kb.button(text="🌐 Открыть верификатор", url=f"{base_url.rstrip('/')}/verifier")
+    kb.adjust(1)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    await callback.message.answer(
+        f"🔗 <b>Данные для проверки</b>\n\n<code>{payload}</code>\n\n"
+        "Вставь участников и соль в верификатор, чтобы воспроизвести розыгрыш.",
+        reply_markup=kb.as_markup() if base_url else None,
+        parse_mode="HTML",
+    )
+
+
+async def _mini_app_base_url(session) -> str | None:
+    from app.config import get_settings
+
+    url = (get_settings().mini_app_url or "").strip()
+    return url or None
+
+
+@router.callback_query(F.data.startswith("adm_sources_"))
+async def on_contest_sources(callback: types.CallbackQuery):
+    if not await _admin_action_guard(callback):
+        await _deny(callback)
+        return
+    contest_id = int(callback.data.replace("adm_sources_", ""))
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            await callback.answer("Конкурс не найден", show_alert=True)
+            return
+        settings = cset.read_settings(contest)
+        if not settings.get("sources_report"):
+            await callback.answer("Отчёт по источникам выключен для этого конкурса", show_alert=True)
+            return
+        report = await cs.sources_report(session, contest_id)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    if not report:
+        text = "📈 Пока никто не привёл друзей, выполнивших условия."
+    else:
+        lines = [f"📈 <b>Источники приглашений «{contest.title}»</b>\n"]
+        for i, row in enumerate(report, start=1):
+            uname = f" (@{row['username']})" if row.get("username") else ""
+            lines.append(
+                f"{i}. <b>{row['name']}</b>{uname} — 👥 {row['invited']} "
+                f"(🎟 {row['tickets_awarded']})"
+            )
+        text = "\n".join(lines)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ К конкурсу", callback_data=f"adm_view_{contest_id}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("adm_export_"))
+async def on_contest_export(callback: types.CallbackQuery):
+    if not await _admin_action_guard(callback):
+        await _deny(callback)
+        return
+    contest_id = int(callback.data.replace("adm_export_", ""))
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            await callback.answer("Конкурс не найден", show_alert=True)
+            return
+        csv_text = await _build_participants_csv(session, contest)
+    try:
+        await callback.answer("Готовлю файл…")
+    except Exception:
+        pass
+    import io
+    from aiogram.types import BufferedInputFile
+
+    filename = f"contest_{contest_id}_participants.csv"
+    document = BufferedInputFile(csv_text.encode("utf-8-sig"), filename=filename)
+    await callback.message.answer_document(
+        document,
+        caption=f"📤 Экспорт участников конкурса «{contest.title}»",
+    )
+
+
+async def _build_participants_csv(session, contest) -> str:
+    """CSV-экспорт: username, имя, билеты, кто привёл, статус."""
+    import csv
+    import io
+
+    from app.services import contest_referral_service as crefs
+    from app.services import ticket_service as tickets
+
+    rows = await cs.list_entries(session, contest.id, active_only=False)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["user_id", "username", "name", "tickets", "status", "invited_by", "conditions_met"])
+    for entry in rows:
+        player = await session.get(Player, entry.user_id)
+        inviter = await crefs.get_inviter(session, entry.user_id)
+        writer.writerow([
+            entry.user_id,
+            (player.username if player else "") or "",
+            (player.custom_nickname or player.first_name) if player else "",
+            int(entry.tickets or 0),
+            entry.status,
+            inviter or "",
+            "yes" if entry.conditions_met else "no",
+        ])
+    return buffer.getvalue()
 
 
 async def _do_draw(
@@ -1085,11 +1434,18 @@ async def _do_draw(
             await notify.notify_winners_selected(
                 session, bot, contest_id=contest_id, title=title, winner_ids=result.winners, prize=prize
             )
+            if result.reserves:
+                await notify.notify_reserve_winners(
+                    session, bot, contest_id=contest_id, title=title,
+                    reserve_ids=result.reserves, prize=prize,
+                )
         except Exception:
             pass
+    reserves_line = f" Запасных: {len(result.reserves)}." if result.reserves else ""
     await callback.message.answer(
         f"🎲 Розыгрыш конкурса «{title}» завершён!\n"
-        f"Раунд {result.round}: выбрано {len(result.winners)} победителей из {len(result.participants)} участников."
+        f"Раунд {result.round}: выбрано {len(result.winners)} победителей из "
+        f"{len(result.participants)} участников.{reserves_line}"
     )
     await _render_admin_contest(callback, contest_id)
 

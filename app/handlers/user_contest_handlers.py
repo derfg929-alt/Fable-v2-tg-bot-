@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from aiogram import Router, types, F, Bot
@@ -26,6 +27,7 @@ from app.db.models import Player
 from app.db.session import session_scope
 from app.services import channel_service as chs
 from app.services import contest_service as cs
+from app.services import contest_settings as cset
 from app.services import draw_service as ds
 from app.services import notifications_service as notify
 from app.services import randomizer_settings as rset
@@ -200,6 +202,8 @@ async def _render_owner_contest(callback: types.CallbackQuery, contest_id: int):
         winners = await cs.winners_count(session, contest_id)
         channels = await cs.get_contest_channels(session, contest_id)
         latest_winners = await ds.get_latest_winners(session, contest_id)
+        reserves = await ds.get_latest_reserves(session, contest_id)
+        settings = cset.read_settings(contest)
     try:
         await callback.answer()
     except Exception:
@@ -230,11 +234,19 @@ async def _render_owner_contest(callback: types.CallbackQuery, contest_id: int):
     else:
         lines.append("🌍 Без обязательной подписки (участвовать могут все)")
 
+    lines.append(
+        f"🎟 Билетов за реферала: <b>{settings['tickets_per_ref']}</b> · "
+        f"🔄 Запасных: {settings['reserve_winners']}"
+    )
     if latest_winners:
         lines.append("\n🥇 <b>Победители:</b>")
         for w, player in latest_winners[:5]:
             name = (player.custom_nickname or player.first_name) if player else f"ID {w.user_id}"
             lines.append(f"   {w.place}. {name}")
+    if reserves:
+        lines.append("🔄 <b>Запасные:</b> " + ", ".join(
+            (p.custom_nickname or p.first_name) if p else f"ID {w.user_id}" for w, p in reserves[:5]
+        ))
 
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Статистика", callback_data=f"uc_stats_{contest.id}")
@@ -246,8 +258,12 @@ async def _render_owner_contest(callback: types.CallbackQuery, contest_id: int):
         kb.button(text="🎲 Провести розыгрыш", callback_data=f"uc_draw_{contest.id}")
     if status in (cs.STATUS_FINISHED, cs.STATUS_CANCELLED):
         kb.button(text="🏆 Итоги", callback_data=f"uc_results_{contest.id}")
+    if settings.get("sources_report"):
+        kb.button(text="📈 Источники", callback_data=f"uc_sources_{contest.id}")
+    kb.button(text="📤 Экспорт CSV", callback_data=f"uc_export_{contest.id}")
+    kb.button(text="🧾 Проверить честность", callback_data=f"uc_verify_{contest.id}")
     kb.button(text="◀️ К моим конкурсам", callback_data="uc_my_contests")
-    kb.adjust(2, 2, 1, 1)
+    kb.adjust(2, 2, 1, 1, 1, 1)
     try:
         await callback.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
@@ -263,6 +279,7 @@ async def on_owner_participants(callback: types.CallbackQuery):
             await callback.answer("Конкурс не найден", show_alert=True)
             return
         entries = await cs.list_entries(session, contest_id, active_only=False)
+        settings = cset.read_settings(contest)
         rows = []
         for e in entries:
             rows.append((e, await session.get(Player, e.user_id)))
@@ -279,11 +296,13 @@ async def on_owner_participants(callback: types.CallbackQuery):
             f"👥 <b>Участники ({len(rows)})</b>",
             f"🟢 активных: {active} | 🚪 вышли: {left}\n",
         ]
+        show_tickets = bool(settings.get("show_tickets"))
         for i, (e, p) in enumerate(rows[:50], start=1):
             name = (p.custom_nickname or p.first_name) if p else f"ID {e.user_id}"
             uname = f" (@{p.username})" if p and p.username else ""
             mark = "🟢" if e.status == "active" else "🚪"
-            lines.append(f"{i}. {mark} {name}{uname}")
+            tickets = f" — 🎟 {int(e.tickets or 0)}" if show_tickets else ""
+            lines.append(f"{i}. {mark} {name}{uname}{tickets}")
         if len(rows) > 50:
             lines.append(f"\n…и ещё {len(rows) - 50}")
         text = "\n".join(lines)
@@ -514,13 +533,116 @@ async def on_owner_draw(callback: types.CallbackQuery, bot: Bot):
             await notify.notify_winners_selected(
                 session, bot, contest_id=contest_id, title=title, winner_ids=result.winners, prize=prize
             )
+            if result.reserves:
+                await notify.notify_reserve_winners(
+                    session, bot, contest_id=contest_id, title=title,
+                    reserve_ids=result.reserves, prize=prize,
+                )
         except Exception:
             pass
+    reserves_line = f" Запасных: {len(result.reserves)}." if result.reserves else ""
     await callback.message.answer(
         f"🎲 Розыгрыш конкурса «{title}» завершён!\n"
-        f"Выбрано {len(result.winners)} победителей из {len(result.participants)} участников."
+        f"Выбрано {len(result.winners)} победителей из {len(result.participants)} участников.{reserves_line}"
     )
     await _render_owner_contest(callback, contest_id)
+
+
+@router.callback_query(F.data.startswith("uc_sources_"))
+async def on_owner_sources(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("uc_sources_", ""))
+    if not await _owner_guard(callback, contest_id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        report = await cs.sources_report(session, contest_id)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    if not report:
+        text = "📈 Пока никто не привёл друзей, выполнивших условия."
+    else:
+        lines = [f"📈 <b>Источники приглашений «{contest.title}»</b>\n"]
+        for i, row in enumerate(report, start=1):
+            uname = f" (@{row['username']})" if row.get("username") else ""
+            lines.append(f"{i}. <b>{row['name']}</b>{uname} — 👥 {row['invited']} (🎟 {row['tickets_awarded']})")
+        text = "\n".join(lines)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ К конкурсу", callback_data=f"uc_view_{contest_id}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("uc_export_"))
+async def on_owner_export(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("uc_export_", ""))
+    if not await _owner_guard(callback, contest_id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    from app.handlers.randomizer_admin_handlers import _build_participants_csv
+
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        csv_text = await _build_participants_csv(session, contest)
+    try:
+        await callback.answer("Готовлю файл…")
+    except Exception:
+        pass
+    from aiogram.types import BufferedInputFile
+
+    document = BufferedInputFile(csv_text.encode("utf-8-sig"), filename=f"contest_{contest_id}_participants.csv")
+    await callback.message.answer_document(
+        document, caption=f"📤 Экспорт участников конкурса «{contest.title}»"
+    )
+
+
+@router.callback_query(F.data.startswith("uc_verify_"))
+async def on_owner_verify(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("uc_verify_", ""))
+    if not await _owner_guard(callback, contest_id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    async with session_scope() as session:
+        logs = await ds.get_draw_history(session, contest_id)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    if not logs:
+        try:
+            await callback.message.edit_text(
+                "🧾 Розыгрышей ещё не было — проверять нечего.",
+                reply_markup=InlineKeyboardBuilder()
+                .button(text="◀️ К конкурсу", callback_data=f"uc_view_{contest_id}").as_markup(),
+            )
+        except Exception:
+            pass
+        return
+    lines = ["🧾 <b>Проверка честности розыгрышей</b>\n"]
+    for log in logs:
+        reproduced = ds.verify_draw(log)
+        stored = [int(x) for x in (log.winners or [])]
+        ok = reproduced == stored
+        lines.append(
+            f"• Раунд {log.round} (алг. {log.algorithm_version}): "
+            f"{'✅ подтверждён' if ok else '⚠️ расхождение'}\n"
+            f"   seed: <code>{log.seed}</code>\n"
+            f"   соль: <code>{log.salt or '—'}</code>\n"
+            f"   SHA-256: <code>{log.participants_hash or '—'}</code>\n"
+            f"   победители: {', '.join(str(x) for x in stored) or '—'}"
+        )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ К конкурсу", callback_data=f"uc_view_{contest_id}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception:
+        pass
 
 
 # ===================== МАСТЕР СОЗДАНИЯ КОНКУРСА =====================
@@ -534,6 +656,8 @@ class UserContestWizard(StatesGroup):
     winners = State()
     ends = State()
     conditions = State()
+    settings = State()
+    settings_value = State()
     confirm = State()
 
 
@@ -730,7 +854,7 @@ _UC_FIELDS = [
     ("prize", "prize", UserContestWizard.winners, "Шаг 6/8. Сколько победителей? (число)"),
     ("winners", "winners_count", UserContestWizard.ends, "Шаг 7/8. Дата окончания (ДД.ММ.ГГГГ ЧЧ:ММ) или «-»:"),
     ("ends", "ends_at", UserContestWizard.conditions, "Шаг 8/8. Дополнительные условия участия, или «-»:"),
-    ("conditions", "extra_conditions", None, None),
+    ("conditions", "extra_conditions", UserContestWizard.settings, None),
 ]
 
 
@@ -756,8 +880,173 @@ async def _wizard_advance(message: types.Message, state: FSMContext, value):
         await _show_preview(message, data)
         return
 
+    if next_state == UserContestWizard.settings:
+        data = await state.get_data()
+        settings = cset.normalize_settings(data.get("settings"))
+        await state.update_data(settings=settings)
+        await state.set_state(UserContestWizard.settings)
+        await _render_settings(message, settings)
+        return
+
     await state.set_state(next_state)
     await message.answer(next_prompt, reply_markup=_skip_kb(), parse_mode="HTML")
+
+
+def _settings_kb(settings: dict):
+    kb = InlineKeyboardBuilder()
+    for key in cset.TOGGLE_ORDER:
+        label = cset.TOGGLE_LABELS.get(key, key)
+        mark = "✅" if settings.get(key) else "⬜️"
+        kb.button(text=f"{mark} {label}", callback_data=f"uc_set_{key}")
+    kb.button(
+        text=f"🎟 Билетов за реферала: {settings.get('tickets_per_ref', 1)}",
+        callback_data="uc_set_tickets_per_ref",
+    )
+    kb.button(
+        text=f"🔄 Запасных победителей: {settings.get('reserve_winners', 0)}",
+        callback_data="uc_set_reserve_winners",
+    )
+    kb.button(text="🔑 Настроить кодовые слова", callback_data="uc_set_code_words_list")
+    kb.button(text="🎯 Настроить задание спонсора", callback_data="uc_set_sponsor_task")
+    kb.button(text="🏅 Размер рейтинга", callback_data="uc_set_leaderboard_size")
+    kb.button(text="✅ Готово", callback_data="uc_set_done")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def _render_settings(message, settings: dict, *, edit: bool = False):
+    words = settings.get("code_words_list") or []
+    lines = [
+        "⚙️ <b>Настройки конкурса</b>\n",
+        "Включай механики кнопками. Текущее состояние:",
+        f"• Кодовые слова: {'✅' if settings['code_words'] else '⬜️'} ({len(words)} шт.)",
+        f"• Задания спонсоров: {'✅' if settings['sponsor_tasks'] else '⬜️'}",
+        f"• Билетов за 1 реферала: <b>{settings['tickets_per_ref']}</b>",
+        f"• Показывать участников: {'✅' if settings['show_participants'] else '⬜️'}",
+        f"• Счётчик билетов: {'✅' if settings['show_tickets'] else '⬜️'}",
+        f"• Кнопка «Поделиться»: {'✅' if settings['share_button'] else '⬜️'}",
+        f"• Рейтинг приглашающих: {'✅' if settings['leaderboard'] else '⬜️'} (топ-{settings['leaderboard_size']})",
+        f"• Запасных победителей: <b>{settings['reserve_winners']}</b>",
+        "",
+        "Когда всё готово — нажми «✅ Готово».",
+    ]
+    markup = _settings_kb(settings)
+    if edit:
+        try:
+            await message.edit_text("\n".join(lines), reply_markup=markup, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    await message.answer("\n".join(lines), reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("uc_set_"))
+async def on_uc_settings_toggle(callback: types.CallbackQuery, state: FSMContext):
+    action = callback.data.replace("uc_set_", "")
+    data = await state.get_data()
+    settings = cset.normalize_settings(data.get("settings"))
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+    if action == "done":
+        await state.update_data(settings=settings)
+        await state.set_state(UserContestWizard.confirm)
+        await _show_preview(callback.message, await state.get_data())
+        return
+
+    if action in ("tickets_per_ref", "reserve_winners", "leaderboard_size"):
+        prompts = {
+            "tickets_per_ref": "Сколько билетов за 1 приведённого друга? (число)",
+            "reserve_winners": "Сколько запасных победителей? (число, 0 — без запасных)",
+            "leaderboard_size": "Сколько мест в рейтинге приглашающих? (число)",
+        }
+        await state.update_data(settings=settings, settings_field=action)
+        await state.set_state(UserContestWizard.settings_value)
+        await callback.message.answer(prompts[action])
+        return
+
+    if action == "code_words_list":
+        await state.update_data(settings=settings, settings_field="code_words_list")
+        await state.set_state(UserContestWizard.settings_value)
+        await callback.message.answer(
+            "Отправь кодовые слова в формате <code>слово:билеты</code> через запятую.\n"
+            "Пример: <code>FABLE:3, ПРИЗ:5</code>. «-» — очистить.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "sponsor_task":
+        await state.update_data(settings=settings, settings_field="sponsor_task")
+        await state.set_state(UserContestWizard.settings_value)
+        await callback.message.answer(
+            "Отправь задание спонсора в формате <code>текст|билеты</code>. «-» — очистить.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action in settings and isinstance(settings[action], bool):
+        settings = cset.toggle(settings, action)
+        await state.update_data(settings=settings)
+    await _render_settings(callback.message, settings, edit=True)
+
+
+@router.message(UserContestWizard.settings_value)
+async def uc_settings_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    settings = cset.normalize_settings(data.get("settings"))
+    field = data.get("settings_field")
+    raw = (message.text or "").strip()
+    cleared = raw.lower() in ("-", "нет", "очистить", "—", "")
+
+    if field == "tickets_per_ref":
+        if not raw.isdigit() or int(raw) < 1:
+            await message.answer("❌ Введи целое число не меньше 1.")
+            return
+        settings["tickets_per_ref"] = int(raw)
+    elif field == "reserve_winners":
+        if not raw.isdigit():
+            await message.answer("❌ Введи целое число (0 — без запасных).")
+            return
+        settings["reserve_winners"] = int(raw)
+    elif field == "leaderboard_size":
+        if not raw.isdigit() or int(raw) < 1:
+            await message.answer("❌ Введи целое число не меньше 1.")
+            return
+        settings["leaderboard_size"] = int(raw)
+    elif field == "code_words_list":
+        words = []
+        if not cleared:
+            for part in re.split(r"[,\n]+", raw):
+                part = part.strip()
+                if not part:
+                    continue
+                if ":" in part:
+                    word, _, tcount = part.partition(":")
+                    word = word.strip()
+                    tickets_n = int(tcount) if tcount.strip().isdigit() else 1
+                else:
+                    word, tickets_n = part, 1
+                if word:
+                    words.append({"word": word, "tickets": max(1, tickets_n)})
+        settings["code_words_list"] = words
+        if words:
+            settings["code_words"] = True
+    elif field == "sponsor_task":
+        if cleared:
+            settings["sponsor_task_text"] = ""
+        else:
+            text_part, _, tickets_part = raw.partition("|")
+            settings["sponsor_task_text"] = text_part.strip()
+            settings["sponsor_task_tickets"] = int(tickets_part) if tickets_part.strip().isdigit() else 1
+            settings["sponsor_tasks"] = True
+
+    settings = cset.normalize_settings(settings)
+    await state.update_data(settings=settings, settings_field=None)
+    await state.set_state(UserContestWizard.settings)
+    await message.answer("✅ Сохранено.")
+    await _render_settings(message, settings)
 
 
 async def _show_preview(message: types.Message, data: dict):
@@ -774,6 +1063,19 @@ async def _show_preview(message: types.Message, data: dict):
         f"🏆 Победителей: {data.get('winners_count') or 1}",
         f"🏁 Окончание: {ends_s}",
         f"📌 Условия: {data.get('extra_conditions') or '—'}",
+        "",
+    ]
+    settings = cset.normalize_settings(data.get("settings"))
+    lines += [
+        "⚙️ <b>Настройки:</b>",
+        f"• Кодовые слова: {'✅' if settings['code_words'] else '⬜️'} ({len(settings['code_words_list'])} шт.)",
+        f"• Задания спонсоров: {'✅' if settings['sponsor_tasks'] else '⬜️'}",
+        f"• Билетов за 1 реферала: {settings['tickets_per_ref']}",
+        f"• Показывать участников: {'✅' if settings['show_participants'] else '⬜️'}",
+        f"• Счётчик билетов: {'✅' if settings['show_tickets'] else '⬜️'}",
+        f"• Кнопка «Поделиться»: {'✅' if settings['share_button'] else '⬜️'}",
+        f"• Рейтинг приглашающих: {'✅' if settings['leaderboard'] else '⬜️'} (топ-{settings['leaderboard_size']})",
+        f"• Запасных победителей: {settings['reserve_winners']}",
         "",
     ]
     if channel:
@@ -822,6 +1124,7 @@ async def on_wizard_publish(callback: types.CallbackQuery, state: FSMContext, bo
             created_by=callback.from_user.id,
             owner_id=callback.from_user.id,
             source_channel_id=channel_id,
+            settings=data.get("settings"),
         )
         # Обязательная подписка на канал владельца (если канал указан).
         if channel_id:
