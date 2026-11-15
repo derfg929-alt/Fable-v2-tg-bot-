@@ -1037,7 +1037,9 @@ async def on_contest_archive(callback: types.CallbackQuery):
     await _render_admin_contest(callback, contest_id)
 
 
-@router.callback_query(F.data.startswith("adm_delete_"))
+@router.callback_query(
+    F.data.startswith("adm_delete_") & ~F.data.startswith("adm_delete_yes_")
+)
 async def on_contest_delete_confirm(callback: types.CallbackQuery):
     if not await _admin_action_guard(callback):
         await _deny(callback)

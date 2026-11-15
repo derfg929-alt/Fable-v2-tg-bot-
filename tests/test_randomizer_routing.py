@@ -421,3 +421,100 @@ async def test_participant_leaderboard_and_share_callbacks():
     await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, f"rz_share_{cid}", 1302))
     texts = [m.text for m in _sent_messages(bot) if m.text]
     assert any("Поделись" in t for t in texts), texts
+
+
+# ===================== РЕГРЕССИИ: «мёртвые» кнопки и команды =====================
+
+@pytest.mark.asyncio
+async def test_commands_work_inside_fsm_wizard():
+    """Команды и кнопки меню должны работать даже во время пошагового мастера.
+
+    Раньше хэндлер состояния перехватывал ввод, и «работа»/«баланс» молча
+    игнорировались, пока пользователь не отменит мастер вручную.
+    """
+    from app.main import create_dispatcher
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+    user_id = 893001
+
+    # Входим в мастер создания конкурса (шаг 1 — ожидание канала).
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, "uc_create", 1400))
+    bot.call_args_list.clear()
+
+    await dp.feed_update(bot=bot, update=_make_update(bot, user_id, "работа", update_id=1401))
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("РАБОЧАЯ СМЕНА" in t for t in texts), texts
+
+    # Мастер сброшен: следующая команда тоже обрабатывается как обычно.
+    bot.call_args_list.clear()
+    await dp.feed_update(bot=bot, update=_make_update(bot, user_id, "баланс", update_id=1402))
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("ФИНАНСОВЫЙ БАЛАНС" in t for t in texts), texts
+
+
+@pytest.mark.asyncio
+async def test_wizard_still_accepts_free_text():
+    """Мастер не должен принимать обычный текст (название конкурса) за команду."""
+    from app.main import create_dispatcher
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+    user_id = 893002
+
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, "uc_create", 1410))
+    await dp.feed_update(bot=bot, update=_callback_update(bot, user_id, "uc_wiz_skip", 1411))
+    bot.call_args_list.clear()
+
+    await dp.feed_update(bot=bot, update=_make_update(bot, user_id, "Розыгрыш iPhone", update_id=1412))
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("Шаг 3/8" in t for t in texts), texts
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_confirm_button_routes_to_confirmation():
+    """Кнопка «Да, удалить» не должна перехватываться подтверждением удаления."""
+    from app.main import create_dispatcher
+    from app.db.models import Contest
+    from sqlalchemy import select
+
+    admin_id = 893003
+    async with session_scope() as session:
+        await get_or_create_player(session, telegram_id=admin_id, first_name="Admin")
+        await rset.add_admin(session, admin_id, added_by=admin_id)
+        contest = await cs.create_contest(session, title="ToDelete", status=cs.STATUS_ACTIVE)
+        cid = contest.id
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+
+    # Нажатие «Да, удалить» должно удалить конкурс, а не упасть с ValueError.
+    await dp.feed_update(bot=bot, update=_callback_update(bot, admin_id, f"adm_delete_yes_{cid}", 1420))
+
+    async with session_scope() as session:
+        gone = await session.scalar(select(Contest).where(Contest.id == cid))
+        assert gone is None
+
+
+@pytest.mark.asyncio
+async def test_report_command_not_shadowed_by_rep():
+    """Команда «репорт» должна создавать жалобу, а не обрабатываться как «реп»."""
+    from app.main import create_dispatcher
+
+    dp = create_dispatcher()
+    bot = AsyncMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="FableRandomBot"))
+    user_id = 893004
+
+    now = datetime.now(timezone.utc)
+    user = types.User(id=user_id, is_bot=False, first_name="Reporter")
+    chat = types.Chat(id=-100555000111, type="supergroup", title="Report Chat")
+    msg = types.Message(message_id=1, date=now, chat=chat, from_user=user, text="репорт спам")
+    update = types.Update(update_id=1430, message=msg.as_(bot))
+
+    await dp.feed_update(bot=bot, update=update)
+    texts = [m.text for m in _sent_messages(bot) if m.text]
+    assert any("тикет" in t.lower() or "жалоб" in t.lower() for t in texts), texts
