@@ -61,7 +61,6 @@ async def get_or_create_mine(session: AsyncSession, *, user_id: int) -> PlayerMi
 class MineDigResult:
     pickaxe_level: int
     ores_found: dict[str, int]
-    exp_gained: int
     message: str
 
 
@@ -90,7 +89,6 @@ async def dig_in_mine(session: AsyncSession, *, user_id: int) -> MineDigResult:
         coal_cnt = random.randint(5, 15)
         mine.coal += coal_cnt
         found["coal"] = coal_cnt
-        exp = 5
     else:
         # На 2+ уровнях — уголь и цветные металлы
         coal_cnt = random.randint(10, 20 + lvl * 2)
@@ -116,9 +114,6 @@ async def dig_in_mine(session: AsyncSession, *, user_id: int) -> MineDigResult:
             mine.gold += gold_cnt
             found["gold"] = gold_cnt
 
-        exp = 10 + lvl * 3
-
-    player.experience += exp
     mine.last_mined_at = now
     await session.flush()
 
@@ -133,13 +128,11 @@ async def dig_in_mine(session: AsyncSession, *, user_id: int) -> MineDigResult:
         }.get(ore_name, ore_name)
         lines.append(f"• {title}: <b>+{count} шт.</b>")
 
-    lines.append(f"\n✨ Получено опыта: <b>+{exp}</b> XP")
     lines.append("💡 <i>Используйте <code>шахта переплавка</code> для обработки или продайте в <code>инвентарь</code>!</i>")
 
     return MineDigResult(
         pickaxe_level=lvl,
         ores_found=found,
-        exp_gained=exp,
         message="\n".join(lines),
     )
 

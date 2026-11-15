@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Sequence
 
@@ -164,8 +164,8 @@ async def get_order_book(session: AsyncSession, depth: int = 10) -> OrderBook:
     spread = (best_ask - best_bid) if (best_bid and best_ask) else None
     last_price = await get_current_market_price(session)
 
-    # 24h stats
-    since_24h = datetime.now(timezone.utc) - func.make_interval(0, 0, 0, 0, 24, 0, 0)
+    # 24h stats (интервал считаем в Python — func.make_interval есть только в PostgreSQL)
+    since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
     stats = await session.execute(
         select(
             func.coalesce(func.sum(MarketTrade.quantity), 0),

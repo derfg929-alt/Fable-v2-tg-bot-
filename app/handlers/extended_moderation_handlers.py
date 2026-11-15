@@ -605,13 +605,18 @@ async def handle_chat_settings_panel(message: types.Message, bot: Bot):
         log_channel = chat.log_chat_id or s.get("log_channel_id")
         warn_limit = int(s.get("warn_limit", 5) or 0)
         warn_action = s.get("warn_action", "mute")
+        antispam_max = int(s.get("antispam_max_messages", 6) or 0)
+        antispam_window = int(s.get("antispam_window_seconds", 10) or 0)
+        antiflood_pause = int(s.get("antiflood_pause_seconds", 0) or 0)
+        antiflood_str = f"{antiflood_pause} сек." if antiflood_pause else "выкл"
         text = (
             f"⚙️ <b>Панель настроек чата «{message.chat.title}»</b>\n\n"
             f"👑 Ваш статус: <b>{ROLE_NAMES.get(lvl, 'Админ')} (ур. {lvl})</b>\n\n"
             f"Текущий пресет: <b>{s.get('preset', 'normal')}</b>\n"
             f"Антиссылки: <b>{'Вкл' if s.get('links_restricted', False) else 'Выкл'}</b>\n"
             f"Капча при входе: <b>{'Вкл' if s.get('captcha_enabled', False) else 'Выкл'}</b>\n"
-            f"Антиспам: <b>{'Вкл' if s.get('antispam_enabled', False) else 'Выкл'}</b>\n"
+            f"Антиспам: <b>{'Вкл' if s.get('antispam_enabled', False) else 'Выкл'}</b> — лимит <b>{antispam_max}</b> сообщ. за <b>{antispam_window}</b> сек.\n"
+            f"Антифлуд «пауза»: <b>{antiflood_str}</b>\n"
             f"Антимат: <b>{'Вкл' if s.get('badwords_enabled', False) else 'Выкл'}</b>\n"
             f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required', False) else 'Выкл'}</b>\n"
             f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n"
@@ -706,13 +711,18 @@ async def _refresh_settings_panel(callback: types.CallbackQuery, chat_id: int) -
 
         warn_limit = int(s.get("warn_limit", 5) or 0)
         warn_action = s.get("warn_action", "mute")
+        antispam_max = int(s.get("antispam_max_messages", 6) or 0)
+        antispam_window = int(s.get("antispam_window_seconds", 10) or 0)
+        antiflood_pause = int(s.get("antiflood_pause_seconds", 0) or 0)
+        antiflood_str = f"{antiflood_pause} сек." if antiflood_pause else "выкл"
         text = (
             f"⚙️ <b>Панель настроек чата</b>\n\n"
             f"👑 Ваш статус: <b>{ROLE_NAMES.get(lvl, 'Админ')} (ур. {lvl})</b>\n\n"
             f"Текущий пресет: <b>{s.get('preset', 'normal')}</b>\n"
             f"Антиссылки: <b>{'Вкл' if s.get('links_restricted') else 'Выкл'}</b>\n"
             f"Капча: <b>{'Вкл' if s.get('captcha_enabled') else 'Выкл'}</b>\n"
-            f"Антиспам: <b>{'Вкл' if s.get('antispam_enabled') else 'Выкл'}</b>\n"
+            f"Антиспам: <b>{'Вкл' if s.get('antispam_enabled') else 'Выкл'}</b> — лимит <b>{antispam_max}</b> сообщ. за <b>{antispam_window}</b> сек.\n"
+            f"Антифлуд «пауза»: <b>{antiflood_str}</b>\n"
             f"Антимат: <b>{'Вкл' if s.get('badwords_enabled') else 'Выкл'}</b>\n"
             f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required') else 'Выкл'}</b>\n"
             f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n"
@@ -979,11 +989,15 @@ async def handle_antiflood_pause(message: types.Message, bot: Bot):
             await message.reply("🛑 Анти-флуд «пауза» выключен.")
             return
         if len(parts) >= 3:
-            try:
-                dur = parse_duration_string(" ".join(parts[2:]))
-                seconds = int(dur.total_seconds())
-            except Exception:
-                seconds = int(parts[2]) if parts[2].isdigit() else 0
+            # Голое число трактуется как секунды: «антифлуд пауза 5» = 5 секунд.
+            if parts[2].isdigit():
+                seconds = int(parts[2])
+            else:
+                try:
+                    dur = parse_duration_string(" ".join(parts[2:]))
+                    seconds = int(dur.total_seconds())
+                except Exception:
+                    seconds = 0
             settings["antiflood_pause_seconds"] = max(0, seconds)
             chat.settings = settings
             await session.flush()

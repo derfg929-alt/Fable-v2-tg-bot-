@@ -5,15 +5,39 @@ NUMERIC for exchange prices; floating point is intentionally avoided.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
     JSON, BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index,
-    Integer, Numeric, String, Text, UniqueConstraint, func,
+    Integer, Numeric, String, Text, TypeDecorator, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class TZDateTime(TypeDecorator):
+    """DateTime, который всегда возвращает время с зоной UTC.
+
+    SQLite и некоторые драйверы теряют tzinfo при чтении, из-за чего любое
+    вычитание из ``datetime.now(timezone.utc)`` падает с
+    ``TypeError: can't subtract offset-naive and offset-aware datetimes``
+    (ломались кулдауны работы, рыбалки, охоты, бонуса, шахты и т. д.).
+    Тип донашивает UTC при чтении и приводит наивные значения к UTC при записи.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class Base(DeclarativeBase):
@@ -22,10 +46,10 @@ class Base(DeclarativeBase):
 
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(),
+        TZDateTime, server_default=func.now(),
         onupdate=func.now(), nullable=False
     )
 
@@ -36,7 +60,6 @@ class Player(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("wallet >= 0", name="ck_players_wallet_nonnegative"),
         CheckConstraint("bank_balance >= 0", name="ck_players_bank_nonnegative"),
-        CheckConstraint("experience >= 0", name="ck_players_experience_nonnegative"),
         CheckConstraint("reputation >= 0", name="ck_players_reputation_nonnegative"),
         CheckConstraint("shares >= 0", name="ck_players_shares_nonnegative"),
     )
@@ -47,7 +70,6 @@ class Player(Base, TimestampMixin):
     username: Mapped[str | None] = mapped_column(String(64), index=True)
     wallet: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     bank_balance: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    experience: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     reputation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     shares: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     custom_nickname: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -55,11 +77,11 @@ class Player(Base, TimestampMixin):
     married_to: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     registered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
     is_globally_banned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     global_ban_reason: Mapped[str | None] = mapped_column(Text)
-    global_ban_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    global_ban_until: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class Chat(Base, TimestampMixin):
@@ -70,7 +92,7 @@ class Chat(Base, TimestampMixin):
     chat_type: Mapped[str] = mapped_column(String(32), nullable=False, default="supergroup")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     connected_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
     log_chat_id: Mapped[int | None] = mapped_column(BigInteger)
     settings: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
@@ -119,7 +141,7 @@ class ChatLinkWhitelist(Base):
     domain: Mapped[str] = mapped_column(String(253), nullable=False)
     added_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -134,7 +156,7 @@ class ChatBadWord(Base):
     )
     word: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -145,7 +167,7 @@ class RuleAcceptance(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.telegram_id", ondelete="CASCADE"))
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"))
-    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    accepted_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class ActivityRecord(Base):
@@ -162,7 +184,7 @@ class ActivityRecord(Base):
     points: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     message_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reward_coins: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class EconomyTransaction(Base):
@@ -186,7 +208,7 @@ class EconomyTransaction(Base):
     reference: Mapped[str | None] = mapped_column(String(128), index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
     metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class BankInterestRun(Base):
@@ -195,11 +217,11 @@ class BankInterestRun(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"))
-    period_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_date: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
     principal: Mapped[int] = mapped_column(BigInteger, nullable=False)
     rate: Mapped[Decimal] = mapped_column(Numeric(8, 5), nullable=False)
     interest: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class ReputationAction(Base):
@@ -214,7 +236,7 @@ class ReputationAction(Base):
     target_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"))
     delta: Mapped[int] = mapped_column(Integer, nullable=False)
     chat_id: Mapped[int | None] = mapped_column(BigInteger)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class Achievement(Base, TimestampMixin):
@@ -234,7 +256,7 @@ class PlayerAchievement(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"))
     achievement_id: Mapped[int] = mapped_column(Integer, ForeignKey("achievements.id", ondelete="CASCADE"))
-    unlocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    unlocked_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class MarketOrder(Base, TimestampMixin):
@@ -277,7 +299,7 @@ class MarketTrade(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     buyer_fee: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     seller_fee: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class MarketQuote(Base):
@@ -291,7 +313,7 @@ class MarketQuote(Base):
     trade_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     demand: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     supply: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now(), index=True)
 
 
 class MarketMakerState(Base, TimestampMixin):
@@ -321,8 +343,8 @@ class GameSession(Base):
     result: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class Clan(Base, TimestampMixin):
@@ -335,7 +357,7 @@ class Clan(Base, TimestampMixin):
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     rating: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     is_open: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class ClanMember(Base):
@@ -346,7 +368,7 @@ class ClanMember(Base):
     clan_id: Mapped[int] = mapped_column(Integer, ForeignKey("clans.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="member")
-    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    joined_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class ClanMessage(Base):
@@ -358,7 +380,7 @@ class ClanMessage(Base):
     sender_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"))
     sender_name: Mapped[str] = mapped_column(String(256), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class ClanAudit(Base):
@@ -370,7 +392,7 @@ class ClanAudit(Base):
     actor_id: Mapped[int | None] = mapped_column(BigInteger)
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class ModerationCase(Base):
@@ -383,11 +405,11 @@ class ModerationCase(Base):
     moderator_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="RESTRICT"))
     action: Mapped[str] = mapped_column(String(16), nullable=False)  # warn/mute/ban/kick/unmute/unban
     reason: Mapped[str | None] = mapped_column(Text)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     revoked_by: Mapped[int | None] = mapped_column(BigInteger)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    revoked_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class ModerationReport(Base):
@@ -404,8 +426,8 @@ class ModerationReport(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     handled_by: Mapped[int | None] = mapped_column(BigInteger)
     resolution: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
+    closed_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class ChatActivityStats(Base):
@@ -418,7 +440,7 @@ class ChatActivityStats(Base):
     period: Mapped[str] = mapped_column(String(16), nullable=False)
     message_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     activity_points: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now(), onupdate=func.now())
 
 
 class CaptchaChallenge(Base):
@@ -431,8 +453,8 @@ class CaptchaChallenge(Base):
     challenge_token: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
     expected_answer: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class AdminActionLog(Base):
@@ -446,7 +468,7 @@ class AdminActionLog(Base):
     action: Mapped[str] = mapped_column(String(48), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class PlayerBusiness(Base, TimestampMixin):
@@ -460,7 +482,7 @@ class PlayerBusiness(Base, TimestampMixin):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
     business_id: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 to 10
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    last_collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_collected_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now(), nullable=False)
 
 
 class PlayerMining(Base, TimestampMixin):
@@ -476,7 +498,7 @@ class PlayerMining(Base, TimestampMixin):
     farm_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     active_coin: Mapped[str] = mapped_column(String(16), nullable=False, default="BTC")
     rigs_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    last_mined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_mined_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now(), nullable=False)
 
 
 class PlayerAsset(Base, TimestampMixin):
@@ -500,7 +522,7 @@ class DailyBonus(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
     streak: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    last_claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_claimed_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now(), nullable=False)
 
 
 class GlobalSetting(Base, TimestampMixin):
@@ -520,7 +542,7 @@ class OwnerBroadcast(Base):
     sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     results: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class PlayerMine(Base, TimestampMixin):
@@ -536,7 +558,7 @@ class PlayerMine(Base, TimestampMixin):
     silver: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     gold: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     processed_metals: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    last_mined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_mined_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class PlayerInventory(Base, TimestampMixin):
@@ -577,8 +599,8 @@ class PlayerJob(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), unique=True, index=True)
     current_job: Mapped[str] = mapped_column(String(64), nullable=False, default="Стажёр")
-    last_worked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_side_job_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_worked_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    last_side_job_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class PlayerCosmodrome(Base, TimestampMixin):
@@ -593,7 +615,7 @@ class PlayerCosmodrome(Base, TimestampMixin):
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     rockets_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     total_launches: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_collected_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now(), nullable=False)
 
 
 class PlayerGear(Base, TimestampMixin):
@@ -623,7 +645,7 @@ class PromoCode(Base, TimestampMixin):
     per_user_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     activations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     created_by: Mapped[int | None] = mapped_column(BigInteger)
     description: Mapped[str | None] = mapped_column(Text)
 
@@ -637,7 +659,7 @@ class PromoCodeActivation(Base):
     promo_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("promo_codes.id", ondelete="CASCADE"), index=True)
     code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.telegram_id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 
 class AIConversation(Base, TimestampMixin):
@@ -682,8 +704,8 @@ class Contest(Base, TimestampMixin):
     # Статусы: draft, scheduled, active, finished, cancelled, archived
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft", index=True)
     winners_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    starts_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    ends_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     extra_conditions: Mapped[str | None] = mapped_column(Text)
     post_text: Mapped[str | None] = mapped_column(Text)
     allow_leave: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -750,15 +772,15 @@ class ContestEntry(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
     bonus_weight: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # базисные пункты бонуса
     joined_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
-    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    left_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     # Число билетов участника в этом конкурсе (1 базовый + бонусы за рефералов,
     # кодовые слова и задания спонсоров). Источник истины — ticket_logs.
     tickets: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # Условия пройдены (для зачёта реферала пригласившему): подписка + задания.
     conditions_met: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    conditions_met_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    conditions_met_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
 
 class TicketLog(Base):
@@ -784,7 +806,7 @@ class TicketLog(Base):
     reason: Mapped[str] = mapped_column(String(32), nullable=False, default="base")
     reason_key: Mapped[str] = mapped_column(String(160), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -811,7 +833,7 @@ class ContestReferral(Base):
     )
     tickets_awarded: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     credited_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -834,7 +856,7 @@ class ContestLeaderboard(Base):
     )
     invited_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -851,7 +873,7 @@ class Referral(Base, TimestampMixin):
     )
     bonus_units: Mapped[int] = mapped_column(Integer, nullable=False, default=1)  # 1 = 0.01%
     invited_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -874,9 +896,9 @@ class Winner(Base, TimestampMixin):
     is_reserve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # pending | confirmed | transferred | declined
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
-    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notified_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     drawn_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -916,7 +938,7 @@ class Notification(Base, TimestampMixin):
     event_key: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(48), nullable=False, default="info")
     sent_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        TZDateTime, server_default=func.now(), nullable=False
     )
 
 

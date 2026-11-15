@@ -1,12 +1,13 @@
 """Награды за активность в чатах без автоматических санкций.
 
-Баланс и опыт глобальные; лимиты и кулдаун учитываются отдельно по каждому чату.
+Баланс глобальный; лимиты и кулдаун учитываются отдельно по каждому чату.
 Повторная обработка одного Telegram message_id безопасна благодаря
 уникальному idempotency_key в журнале экономики.
 """
 from __future__ import annotations
 
 import hashlib
+import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -24,19 +25,18 @@ class ActivityRewardResult:
     awarded: bool
     reason: str
     coins: int = 0
-    experience: int = 0
 
 
 DEFAULTS = {
     "enabled": True,
-    "coins_per_message": 2,
-    "experience_per_message": 1,
+    # Максимальная награда за одно сообщение; фактическая награда — случайная 1..N.
+    "coins_per_message": 50,
     "cooldown_seconds": 60,
     "daily_message_limit": 40,
     "minimum_length": 12,
     "duplicate_text_window_minutes": 10,
+    # Дневной потолок монет за активность: держит монеты ценными.
     "daily_coin_limit": 100,
-    "experience_per_level": 100,
 }
 
 
@@ -49,10 +49,8 @@ async def get_activity_settings(session: AsyncSession) -> dict:
     row = await session.get(GlobalSetting, "activity_rewards")
     settings = {**DEFAULTS, **(row.value if row else {})}
     for key in (
-        "coins_per_message", "experience_per_message", "cooldown_seconds",
-        "daily_message_limit", "minimum_length",
-        "duplicate_text_window_minutes", "daily_coin_limit",
-        "experience_per_level",
+        "coins_per_message", "cooldown_seconds", "daily_message_limit",
+        "minimum_length", "duplicate_text_window_minutes", "daily_coin_limit",
     ):
         if not isinstance(settings[key], int) or settings[key] < 0:
             raise ValueError(f"Некорректная настройка активности: {key}")
@@ -90,7 +88,7 @@ async def reward_chat_message(
     is_bot: bool = False,
     now: datetime | None = None,
 ) -> ActivityRewardResult:
-    """Проверяет требования и выдаёт монеты/опыт за одно сообщение участника."""
+    """Проверяет требования и выдаёт монеты за одно сообщение участника."""
     if chat_id == 0 or user_id <= 0 or message_id <= 0:
         raise ValueError("Некорректные идентификаторы сообщения")
     if is_bot:
@@ -101,7 +99,7 @@ async def reward_chat_message(
         return ActivityRewardResult(False, "disabled")
     if len(body) < settings["minimum_length"]:
         return ActivityRewardResult(False, "message_too_short")
-    if settings["coins_per_message"] == 0 and settings["experience_per_message"] == 0:
+    if settings["coins_per_message"] == 0:
         return ActivityRewardResult(False, "no_reward_configured")
 
     moment = now or datetime.now(timezone.utc)
@@ -159,7 +157,8 @@ async def reward_chat_message(
     if any((row or {}).get("text_hash") == fingerprint for row in recent.scalars()):
         return ActivityRewardResult(False, "repeated_text")
 
-    coins = settings["coins_per_message"]
+    # Награда за сообщение — случайная величина 1..coins_per_message.
+    coins = random.randint(1, settings["coins_per_message"]) if settings["coins_per_message"] > 0 else 0
     if settings["daily_coin_limit"]:
         earned_today = await session.scalar(
             select(func.coalesce(func.sum(ActivityRecord.reward_coins), 0)).where(
@@ -169,43 +168,29 @@ async def reward_chat_message(
             )
         )
         coins = min(coins, max(0, settings["daily_coin_limit"] - int(earned_today or 0)))
-    xp = settings["experience_per_message"]
-    if coins <= 0 and xp <= 0:
+    if coins <= 0:
         return ActivityRewardResult(False, "daily_reward_limit")
 
-    if coins:
-        await credit_coins(
-            session,
-            user_id=user_id,
-            amount=coins,
-            reason=f"Активность в чате {chat_id}",
-            actor_id=None,
-            operation_type="activity_reward",
-            reference=f"{chat_id}:{message_id}",
-            idempotency_key=key,
-            metadata={"chat_id": chat_id, "message_id": message_id, "text_hash": fingerprint},
-        )
-    else:
-        # Even an XP-only reward must reserve the message idempotency key.
-        stmt = insert(EconomyTransaction).values(
-            operation_type="activity_reward", amount=0, actor_id=None,
-            recipient_id=user_id, actor_balance_delta=0,
-            recipient_balance_delta=0, reason="Опыт за активность",
-            reference=f"{chat_id}:{message_id}", idempotency_key=key,
-            metadata_json={"chat_id": chat_id, "message_id": message_id, "text_hash": fingerprint},
-        ).on_conflict_do_nothing(index_elements=[EconomyTransaction.idempotency_key])
-        inserted = (await session.execute(stmt.returning(EconomyTransaction.id))).scalar_one_or_none()
-        if inserted is None:
-            return ActivityRewardResult(False, "already_processed")
+    await credit_coins(
+        session,
+        user_id=user_id,
+        amount=coins,
+        reason=f"Активность в чате {chat_id}",
+        actor_id=None,
+        operation_type="activity_reward",
+        reference=f"{chat_id}:{message_id}",
+        idempotency_key=key,
+        metadata={"chat_id": chat_id, "message_id": message_id, "text_hash": fingerprint},
+    )
 
-    player.experience += xp
     session.add(ActivityRecord(
         chat_id=chat_id, user_id=user_id, points=1,
         message_length=len(body), reward_coins=coins,
     ))
-    return ActivityRewardResult(
-        True, "awarded", coins=coins, experience=xp
-    )
+    # Сессия использует autoflush=False, поэтому фиксируем запись активности явно:
+    # иначе кулдаун и дневные лимиты не увидят её в рамках той же сессии.
+    await session.flush()
+    return ActivityRewardResult(True, "awarded", coins=coins)
 
 async def get_chat_activity_breakdown(
     session: AsyncSession,

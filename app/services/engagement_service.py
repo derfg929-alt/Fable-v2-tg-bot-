@@ -95,7 +95,7 @@ async def process_dm_baits(session: AsyncSession, bot: Bot) -> int:
         try:
             await bot.send_message(
                 chat_id=user_id,
-                text="🎁 <b>Ежедневный бонус готов к получению!</b>\n\nНе потеряйте серию входов! Напишите <code>бонус</code>, чтобы забрать монеты и опыт!",
+                text="🎁 <b>Ежедневный бонус готов к получению!</b>\n\nНе потеряйте серию входов! Напишите <code>бонус</code>, чтобы забрать монеты!",
                 parse_mode="HTML",
             )
             sent_count += 1

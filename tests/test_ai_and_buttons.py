@@ -92,6 +92,7 @@ async def test_bait_claim_no_name_error():
     user_mock = types.User(id=987222, is_bot=False, first_name="BaitHunter", username="baithunter")
     message_mock = AsyncMock(spec=types.Message)
     message_mock.chat = chat_mock
+    message_mock.message_id = 4242
     message_mock.edit_text = AsyncMock()
 
     callback_mock = AsyncMock(spec=types.CallbackQuery)
@@ -108,7 +109,8 @@ async def test_bait_claim_no_name_error():
     async with session_scope() as session:
         player = await get_player(session, telegram_id=987222)
         assert player is not None
-        assert player.wallet >= 25
+        # Дроп выдаёт случайную награду 1..50 монет.
+        assert 1 <= player.wallet <= 50
 
 
 @pytest.mark.asyncio

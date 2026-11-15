@@ -61,8 +61,8 @@ async def get_or_create_player(
 
     PostgreSQL INSERT ... ON CONFLICT DO NOTHING защищает регистрацию от
     гонки, когда два обновления одного Telegram-пользователя обрабатываются
-    одновременно. Баланс, банк, опыт, уровень и репутация существующего
-    профиля никогда не перезаписываются этой операцией.
+    одновременно. Баланс, банк и репутация существующего профиля никогда не
+    перезаписываются этой операцией.
 
     Важно: вызывающий код должен завершить транзакцию через commit/rollback.
     """
@@ -84,7 +84,6 @@ async def get_or_create_player(
             username=normalized_username,
             wallet=0,
             bank_balance=0,
-            experience=0,
             reputation=0,
             is_globally_banned=False,
         )

@@ -398,7 +398,7 @@ async def handle_work_cmd(message: types.Message):
     async with session_scope() as session:
         await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
         try:
-            reward, exp, msg = await perform_main_job(session, user_id=message.from_user.id)
+            reward, msg = await perform_main_job(session, user_id=message.from_user.id)
             await message.reply(msg, parse_mode="HTML")
         except Exception as e:
             await message.reply(f"❌ {e}")
@@ -415,7 +415,7 @@ async def handle_side_job_cmd(message: types.Message):
             "Вы можете подработать в свободное время (раз в 10 минут):\n",
         ]
         for code, cfg in SIDE_JOBS.items():
-            lines.append(f"{cfg.icon} <b>{cfg.title}</b> — оплата <b>{cfg.min_reward}..{cfg.max_reward}</b> монет | +{cfg.exp_reward} XP\n   └ Команда: <code>подработка {code}</code>")
+            lines.append(f"{cfg.icon} <b>{cfg.title}</b> — оплата <b>{cfg.min_reward}..{cfg.max_reward}</b> монет\n   └ Команда: <code>подработка {code}</code>")
         await message.reply("\n".join(lines), parse_mode="HTML")
         return
 
@@ -423,7 +423,7 @@ async def handle_side_job_cmd(message: types.Message):
     async with session_scope() as session:
         await get_or_create_player(session, telegram_id=message.from_user.id, first_name=message.from_user.first_name)
         try:
-            reward, exp, msg = await perform_side_job(session, user_id=message.from_user.id, profession=prof)
+            reward, msg = await perform_side_job(session, user_id=message.from_user.id, profession=prof)
             await message.reply(msg, parse_mode="HTML")
         except Exception as e:
             await message.reply(f"❌ {e}")
@@ -1425,8 +1425,7 @@ async def handle_cosmodrome(message: types.Message):
                 await message.reply(
                     f"🚀 <b>УСПЕШНЫЙ ЗАПУСК РАКЕТЫ {res.rocket_name.upper()}!</b>\n\n"
                     f"{res.story}\n\n"
-                    f"💰 Награда за полет: <b>+{res.reward_coins:,}</b> монет\n"
-                    f"✨ Космический опыт: <b>+{res.reward_exp}</b> XP".replace(",", " "),
+                    f"💰 Награда за полет: <b>+{res.reward_coins:,}</b> монет".replace(",", " "),
                     parse_mode="HTML",
                 )
             except Exception as e:

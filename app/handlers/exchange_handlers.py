@@ -172,7 +172,8 @@ async def handle_exchange(message: types.Message):
                 action_idx = i
                 break
 
-        if action_idx != -1 and len(parts) >= action_idx + 2:
+        # "заявка ..." — лимитный ордер, обрабатывается ниже отдельной веткой
+        if cmd != "заявка" and action_idx != -1 and len(parts) >= action_idx + 2:
             trade_action = parts[action_idx].casefold()
             second_arg = parts[action_idx + 1].upper()
             if second_arg in MARKET_ASSETS:
