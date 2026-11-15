@@ -13,6 +13,7 @@ import hmac
 import json
 import logging
 import time
+from datetime import datetime
 from urllib.parse import parse_qsl
 
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -24,8 +25,12 @@ from app.config import get_settings
 from app.db.session import session_scope
 from app.db.models import Player
 from app.services import contest_service as cs
+from app.services import contest_settings as cset
+from app.services import contest_referral_service as crefs
+from app.services import leaderboard_service as lb
 from app.services import referral_service as ds_ref
 from app.services import draw_service as ds
+from app.services import ticket_service as tickets
 from app.services import randomizer_settings as rset
 from app.services.player_service import get_or_create_player
 
@@ -199,6 +204,10 @@ async def contest_detail(contest_id: int, x_init_data: str | None = Header(defau
         channels = await cs.get_contest_channels(session, contest_id)
         entry = await cs.get_entry(session, contest_id, user_id)
         winners = await ds.get_latest_winners(session, contest_id)
+        reserves = await ds.get_latest_reserves(session, contest_id)
+        settings = cset.read_settings(contest)
+        my_tickets = int(entry.tickets) if entry else 0
+        invited = await lb.get_invited_count(session, contest_id, user_id)
         return {
             "id": contest.id,
             "title": contest.title,
@@ -213,14 +222,21 @@ async def contest_detail(contest_id: int, x_init_data: str | None = Header(defau
             "ends_at": contest.ends_at.isoformat() if contest.ends_at else None,
             "extra_conditions": contest.extra_conditions,
             "allow_leave": contest.allow_leave,
+            "settings": settings,
             "channels": [
                 {"title": ch.title, "username": ch.username, "chat_id": ch.chat_id, "invite_link": ch.invite_link}
                 for ch in channels
             ],
             "is_participant": bool(entry and entry.status == "active"),
+            "my_tickets": my_tickets,
+            "my_invited": invited,
             "winners": [
                 {"place": w.place, "name": (p.custom_nickname or p.first_name) if p else f"ID {w.user_id}", "prize": w.prize}
                 for w, p in winners
+            ],
+            "reserves": [
+                {"place": w.place, "name": (p.custom_nickname or p.first_name) if p else f"ID {w.user_id}"}
+                for w, p in reserves
             ],
         }
 
@@ -391,6 +407,230 @@ async def contest_stats(contest_id: int, x_init_data: str | None = Header(defaul
         for lg in logs
     ]
     return stats
+
+
+# ===================== СОЗДАНИЕ КОНКУРСА (Mini App) =====================
+
+class ContestCreateRequest(BaseModel):
+    title: str
+    description: str = ""
+    prize: str | None = None
+    image_url: str | None = None
+    winners_count: int = 1
+    ends_at: str | None = None
+    settings: dict | None = None
+
+
+class CodeWordRequest(BaseModel):
+    contest_id: int
+    word: str
+
+
+@app.post("/api/contests/create")
+async def create_contest(payload: ContestCreateRequest, x_init_data: str | None = Header(default=None)):
+    """Создаёт конкурс без обязательного канала (участвовать смогут все)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    if not payload.title.strip():
+        raise HTTPException(status_code=400, detail="Укажите название конкурса")
+
+    ends_at = None
+    if payload.ends_at:
+        try:
+            ends_at = datetime.fromisoformat(payload.ends_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Некорректная дата окончания")
+
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session,
+            title=payload.title,
+            description=payload.description,
+            image_url=payload.image_url,
+            prize=payload.prize,
+            winners_count=max(1, int(payload.winners_count)),
+            ends_at=ends_at,
+            status=cs.STATUS_ACTIVE,
+            created_by=user_id,
+            owner_id=user_id,
+            settings=payload.settings,
+        )
+        contest_id = contest.id
+        title = contest.title
+    return {"ok": True, "contest_id": contest_id, "title": title}
+
+
+@app.post("/api/contests/code-word")
+async def submit_code_word(payload: CodeWordRequest, x_init_data: str | None = Header(default=None)):
+    """Принимает кодовое слово и начисляет билеты."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        result = await tickets.redeem_code_word(
+            session, contest_id=payload.contest_id, user_id=user_id, text=payload.word
+        )
+        if result.status == "ok":
+            await crefs.mark_conditions_met(session, contest_id=payload.contest_id, user_id=user_id)
+            await crefs.credit_referral_for_user(session, contest_id=payload.contest_id, user_id=user_id)
+    messages = {
+        "ok": f"Кодовое слово принято! +{result.tickets} билет(ов)",
+        "already": "Ты уже вводил это кодовое слово",
+        "disabled": "В этом конкурсе кодовые слова не предусмотрены",
+        "no_entry": "Сначала нужно участвовать в конкурсе",
+        "not_found": "Такое кодовое слово не найдено",
+    }
+    return {"ok": result.status == "ok", "status": result.status, "message": messages.get(result.status, "")}
+
+
+@app.post("/api/contests/sponsor-task")
+async def sponsor_task(payload: JoinRequest, x_init_data: str | None = Header(default=None)):
+    """Зачитывает задание спонсора и начисляет билеты."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        awarded = await tickets.submit_sponsor_task(
+            session, contest_id=payload.contest_id, user_id=user_id
+        )
+        if awarded:
+            await crefs.mark_conditions_met(session, contest_id=payload.contest_id, user_id=user_id)
+            await crefs.credit_referral_for_user(session, contest_id=payload.contest_id, user_id=user_id)
+    return {"ok": awarded, "message": "Задание зачтено!" if awarded else "Ты уже выполнил это задание"}
+
+
+@app.get("/api/contests/{contest_id}/participants")
+async def contest_participants(
+    contest_id: int,
+    page: int = Query(default=1, ge=1),
+    q: str | None = Query(default=None),
+    x_init_data: str | None = Header(default=None),
+):
+    """Постраничный список участников (по 50) с поиском по username."""
+    await _resolve_user(_require_init_data(x_init_data))
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            raise HTTPException(status_code=404, detail="Конкурс не найден")
+        settings = cset.read_settings(contest)
+        if not settings.get("show_participants"):
+            raise HTTPException(status_code=403, detail="Список участников скрыт организатором")
+        offset = (page - 1) * 50
+        rows = await cs.list_participants_public(session, contest_id, limit=50, offset=offset)
+        total = await cs.participants_count(session, contest_id)
+        items = []
+        for entry, player, invited in rows:
+            name = (player.custom_nickname or player.first_name) if player else f"ID {entry.user_id}"
+            username = player.username if player else None
+            if q and q.lstrip("@").lower() not in (username or "").lower() and q.lower() not in name.lower():
+                continue
+            item = {"name": name, "username": username, "invited": invited}
+            if settings.get("show_tickets"):
+                item["tickets"] = int(entry.tickets)
+            items.append(item)
+    return {"participants": items, "total": total, "page": page, "per_page": 50}
+
+
+@app.get("/api/contests/{contest_id}/leaderboard")
+async def contest_leaderboard(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Публичный топ приглашающих конкурса (если включён)."""
+    await _resolve_user(_require_init_data(x_init_data))
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            raise HTTPException(status_code=404, detail="Конкурс не найден")
+        settings = cset.read_settings(contest)
+        if not settings.get("leaderboard"):
+            raise HTTPException(status_code=403, detail="Рейтинг в этом конкурсе не ведётся")
+        top = await lb.get_top(session, contest_id, limit=int(settings.get("leaderboard_size", 10)))
+    return {
+        "leaderboard": [
+            {
+                "place": i,
+                "name": (p.custom_nickname or p.first_name) if p else f"ID {uid}",
+                "username": p.username if p else None,
+                "invited": count,
+            }
+            for i, (uid, count, p) in enumerate(top, start=1)
+        ]
+    }
+
+
+@app.get("/api/contests/{contest_id}/sources")
+async def contest_sources(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Отчёт по источникам приглашений (владелец конкурса или админ)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            raise HTTPException(status_code=404, detail="Конкурс не найден")
+        is_admin = await rset.is_admin(session, user_id)
+        if contest.owner_id != user_id and not is_admin:
+            raise HTTPException(status_code=403, detail="Отчёт доступен только организатору")
+        report = await cs.sources_report(session, contest_id)
+    return {"sources": report}
+
+
+@app.get("/api/contests/{contest_id}/export")
+async def contest_export(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """CSV-экспорт участников (владелец конкурса или админ)."""
+    user = await _resolve_user(_require_init_data(x_init_data))
+    user_id = user["id"]
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if not contest:
+            raise HTTPException(status_code=404, detail="Конкурс не найден")
+        is_admin = await rset.is_admin(session, user_id)
+        if contest.owner_id != user_id and not is_admin:
+            raise HTTPException(status_code=403, detail="Экспорт доступен только организатору")
+        rows = await cs.list_entries(session, contest_id, active_only=False)
+        lines = ["user_id,username,name,tickets,status,invited_by,conditions_met"]
+        for entry in rows:
+            player = await session.get(Player, entry.user_id)
+            inviter = await crefs.get_inviter(session, entry.user_id)
+            username = (player.username if player else "") or ""
+            name = (player.custom_nickname or player.first_name) if player else ""
+            name = (name or "").replace(",", " ")
+            lines.append(
+                f"{entry.user_id},{username},{name},{int(entry.tickets or 0)},"
+                f"{entry.status},{inviter or ''},{'yes' if entry.conditions_met else 'no'}"
+            )
+        csv_text = "\n".join(lines)
+    return JSONResponse(content={"csv": csv_text, "filename": f"contest_{contest_id}.csv"})
+
+
+@app.get("/api/contests/{contest_id}/verify")
+async def contest_verify(contest_id: int, x_init_data: str | None = Header(default=None)):
+    """Данные для проверки честности: участники, веса, seed, соль, хэш."""
+    await _resolve_user(_require_init_data(x_init_data))
+    async with session_scope() as session:
+        logs = await ds.get_draw_history(session, contest_id)
+    if not logs:
+        return {"rounds": []}
+    rounds = []
+    for log in logs:
+        weights = {str(k): int(v) for k, v in (log.weights or {}).items()}
+        rounds.append({
+            "round": log.round,
+            "algorithm_version": log.algorithm_version,
+            "seed": log.seed,
+            "salt": log.salt,
+            "participants_hash": log.participants_hash,
+            "participants": [int(x) for x in (log.participants or [])],
+            "weights": weights,
+            "winners": [int(x) for x in (log.winners or [])],
+        })
+    return {"rounds": rounds}
+
+
+@app.get("/verifier")
+async def verifier_page():
+    """Простая веб-страница для независимой проверки честности розыгрыша."""
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "verifier.html")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    return JSONResponse({"detail": "verifier.html не найден"}, status_code=404)
 
 
 @app.get("/")

@@ -17,11 +17,26 @@ from urllib.parse import urlencode
 import pytest
 from fastapi import HTTPException
 
-from app.api import me, list_contests, contest_detail, join_contest, leave_contest, history, winners, JoinRequest
+from app.api import (
+    me,
+    list_contests,
+    contest_detail,
+    join_contest,
+    leave_contest,
+    history,
+    winners,
+    JoinRequest,
+    CodeWordRequest,
+    submit_code_word,
+    contest_participants,
+    contest_leaderboard,
+    contest_verify,
+)
 from app.config import get_settings
 from app.db.session import session_scope
-from app.db.models import Channel
+from app.db.models import Channel, Referral
 from app.services import contest_service as cs
+from app.services import draw_service as ds
 
 
 def _init_data(user_id: int, *, token: str | None = None) -> str:
@@ -143,3 +158,108 @@ async def test_api_history_and_winners():
     assert "history" in h
     w = await winners(x_init_data=init)
     assert "contests" in w
+
+
+@pytest.mark.asyncio
+async def test_api_contest_detail_exposes_settings_and_tickets(monkeypatch):
+    import aiogram
+
+    class FakeBot:
+        def __init__(self, *a, **k):
+            self.session = AsyncMock()
+
+        async def get_chat_member(self, chat_id, user_id):
+            m = MagicMock()
+            m.status = "member"
+            m.is_member = True
+            return m
+
+    monkeypatch.setattr(aiogram, "Bot", FakeBot)
+
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="Detail", status=cs.STATUS_ACTIVE,
+            settings={"tickets_per_ref": 7, "code_words": True,
+                      "code_words_list": [{"word": "W", "tickets": 2}]},
+        )
+        cid = contest.id
+
+    await join_contest(JoinRequest(contest_id=cid), x_init_data=_init_data(900060))
+    detail = await contest_detail(cid, x_init_data=_init_data(900060))
+    assert detail["settings"]["tickets_per_ref"] == 7
+    assert detail["is_participant"] is True
+    assert detail["my_tickets"] == 1
+
+
+@pytest.mark.asyncio
+async def test_api_code_word_and_participants(monkeypatch):
+    import aiogram
+
+    class FakeBot:
+        def __init__(self, *a, **k):
+            self.session = AsyncMock()
+
+        async def get_chat_member(self, chat_id, user_id):
+            m = MagicMock()
+            m.status = "member"
+            m.is_member = True
+            return m
+
+    monkeypatch.setattr(aiogram, "Bot", FakeBot)
+
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="CW", status=cs.STATUS_ACTIVE,
+            settings={"code_words": True, "code_words_list": [{"word": "FABLE", "tickets": 3}]},
+        )
+        cid = contest.id
+
+    init = _init_data(900070)
+    await join_contest(JoinRequest(contest_id=cid), x_init_data=init)
+    res = await submit_code_word(CodeWordRequest(contest_id=cid, word="fable"), x_init_data=init)
+    assert res["ok"] is True
+    # Повтор — уже введено.
+    res2 = await submit_code_word(CodeWordRequest(contest_id=cid, word="FABLE"), x_init_data=init)
+    assert res2["status"] == "already"
+
+    parts = await contest_participants(cid, page=1, q=None, x_init_data=init)
+    assert parts["total"] >= 1
+    assert any(p["name"] for p in parts["participants"])
+
+
+@pytest.mark.asyncio
+async def test_api_leaderboard_and_verify(monkeypatch):
+    import aiogram
+
+    class FakeBot:
+        def __init__(self, *a, **k):
+            self.session = AsyncMock()
+
+        async def get_chat_member(self, chat_id, user_id):
+            m = MagicMock()
+            m.status = "member"
+            m.is_member = True
+            return m
+
+    monkeypatch.setattr(aiogram, "Bot", FakeBot)
+
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="LB", status=cs.STATUS_ACTIVE, winners_count=1,
+            settings={"leaderboard": True, "leaderboard_size": 5, "tickets_per_ref": 1},
+        )
+        cid = contest.id
+        session.add(Referral(inviter_id=900081, invited_id=900082))
+        await session.flush()
+
+    for uid in (900081, 900082):
+        await join_contest(JoinRequest(contest_id=cid), x_init_data=_init_data(uid))
+
+    lb_data = await contest_leaderboard(cid, x_init_data=_init_data(900081))
+    assert lb_data["leaderboard"][0]["invited"] == 1
+
+    async with session_scope() as session:
+        await ds.run_draw(session, contest_id=cid)
+    ver = await contest_verify(cid, x_init_data=_init_data(900081))
+    assert ver["rounds"] and ver["rounds"][0]["salt"]
+    assert ver["rounds"][0]["participants_hash"]

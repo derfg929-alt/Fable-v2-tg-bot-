@@ -142,14 +142,18 @@ async def notify_new_contest(session: AsyncSession, bot: Bot, *, contest_id: int
 async def notify_winners_selected(
     session: AsyncSession, bot: Bot, *, contest_id: int, title: str, winner_ids: list[int], prize: str | None
 ) -> int:
-    """Уведомляет победителей о выигрыше."""
+    """Уведомляет победителей о выигрыше и предлагает подтвердить связь."""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
     sent = 0
     prize_line = f"\n🎁 Твой приз: <b>{prize}</b>" if prize else ""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Подтвердить получение", callback_data=f"rz_confirm_{contest_id}")
     for uid in winner_ids:
         text = (
             f"🏆 <b>Поздравляем!</b>\n\n"
             f"Ты выиграл в конкурсе «{title}»!{prize_line}\n\n"
-            f"Следи за новостями Fable Randomizer!"
+            f"Нажми «Подтвердить», чтобы организатор знал, что ты на связи."
         )
         if await notify_user(
             session,
@@ -159,6 +163,57 @@ async def notify_winners_selected(
             event_key=f"winners_selected:{contest_id}",
             text=text,
             contest_id=contest_id,
+            reply_markup=kb.as_markup(),
         ):
             sent += 1
     return sent
+
+
+async def notify_reserve_winners(
+    session: AsyncSession, bot: Bot, *, contest_id: int, title: str, reserve_ids: list[int], prize: str | None
+) -> int:
+    """Уведомляет запасных победителей о том, что они в резерве."""
+    sent = 0
+    for uid in reserve_ids:
+        text = (
+            f"🔄 <b>Ты в списке запасных</b>\n\n"
+            f"В конкурсе «{title}» ты запасной победитель. "
+            f"Если основной победитель не выйдет на связь, приз перейдёт к тебе."
+        )
+        if await notify_user(
+            session,
+            bot,
+            user_id=uid,
+            event_type="winners_selected",
+            event_key=f"reserve_selected:{contest_id}",
+            text=text,
+            contest_id=contest_id,
+        ):
+            sent += 1
+    return sent
+
+
+async def notify_prize_transferred(
+    session: AsyncSession, bot: Bot, *, contest_id: int, title: str, winner_id: int, prize: str | None
+) -> bool:
+    """Сообщает запасному, что приз перешёл к нему."""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    prize_line = f"\n🎁 Твой приз: <b>{prize}</b>" if prize else ""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Подтвердить получение", callback_data=f"rz_confirm_{contest_id}")
+    text = (
+        f"🎉 <b>Приз перешёл к тебе!</b>\n\n"
+        f"В конкурсе «{title}» основной победитель не вышел на связь, "
+        f"и приз передаётся тебе как запасному.{prize_line}"
+    )
+    return await notify_user(
+        session,
+        bot,
+        user_id=winner_id,
+        event_type="winners_selected",
+        event_key=f"prize_transferred:{contest_id}",
+        text=text,
+        contest_id=contest_id,
+        reply_markup=kb.as_markup(),
+    )

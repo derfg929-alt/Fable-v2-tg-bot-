@@ -10,15 +10,19 @@ import logging
 from aiogram import Router, types, F, Bot
 from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandStart, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from app.db.session import session_scope
 from app.services.player_service import get_or_create_player
 from app.services import contest_service as cs
+from app.services import contest_settings as cset
 from app.services import referral_service as ref
 from app.services import draw_service as ds
 from app.services import notifications_service as notify
 from app.services import randomizer_settings as rset
+from app.services import ticket_service as tickets
 from app.services.randomizer_settings import get_bot_username
 
 logger = logging.getLogger("fable.randomizer.handlers")
@@ -262,6 +266,7 @@ async def _contest_page_text(session, contest) -> str:
     channels = await cs.get_contest_channels(session, contest.id)
     participants = await cs.participants_count(session, contest.id)
     winners_total = await cs.winners_count(session, contest.id)
+    settings = cset.read_settings(contest)
     status = cs.compute_status(contest)
     status_label = cs.STATUS_LABELS.get(status, contest.status)
     starts = contest.starts_at.strftime("%d.%m.%Y %H:%M") if contest.starts_at else "—"
@@ -282,6 +287,10 @@ async def _contest_page_text(session, contest) -> str:
         f"👥 Участников: {participants}",
         f"🥇 Выбрано победителей: {winners_total}",
     ]
+    mechanics = cset.public_summary(settings)
+    if mechanics:
+        lines.append("\n<b>Как повысить шансы:</b>")
+        lines += [f"• {m}" for m in mechanics]
     if channels:
         lines.append("\n📢 <b>Обязательные каналы:</b>")
         for ch in channels:
@@ -291,6 +300,7 @@ async def _contest_page_text(session, contest) -> str:
         lines.append(f"\n📌 <b>Условия участия:</b>\n{contest.extra_conditions}")
     if status in (cs.STATUS_FINISHED, cs.STATUS_CANCELLED):
         winners = await ds.get_latest_winners(session, contest.id)
+        reserves = await ds.get_latest_reserves(session, contest.id)
         if winners:
             lines.append("\n🏆 <b>Победители:</b>")
             for w, player in winners:
@@ -298,12 +308,18 @@ async def _contest_page_text(session, contest) -> str:
                 uname = f" (@{player.username})" if player and player.username else ""
                 prize = f" — 🎁 {w.prize}" if w.prize else ""
                 lines.append(f"   {w.place}. {name}{uname}{prize}")
+            if reserves:
+                lines.append("\n🔄 <b>Запасные:</b>")
+                for w, player in reserves:
+                    name = (player.custom_nickname or player.first_name) if player else f"ID {w.user_id}"
+                    lines.append(f"   {w.place}. {name}")
         elif status == cs.STATUS_FINISHED:
             lines.append("\n🏆 Победители ещё не определены — следи за обновлениями!")
     return "\n".join(lines)
 
 
-def _contest_page_keyboard(contest, channels, *, is_participant: bool):
+def _contest_page_keyboard(contest, channels, *, is_participant: bool, settings: dict | None = None):
+    settings = cset.normalize_settings(settings if settings is not None else getattr(contest, "settings_json", None))
     kb = InlineKeyboardBuilder()
     status = cs.compute_status(contest)
     for ch in channels:
@@ -318,8 +334,18 @@ def _contest_page_keyboard(contest, channels, *, is_participant: bool):
         if is_participant:
             if contest.allow_leave:
                 kb.button(text="🚪 Отменить участие", callback_data=f"rz_leave_{contest.id}")
+            if settings.get("code_words"):
+                kb.button(text="🔑 Ввести кодовое слово", callback_data=f"rz_codeword_{contest.id}")
+            if settings.get("sponsor_tasks"):
+                kb.button(text="🎯 Задание спонсора", callback_data=f"rz_task_{contest.id}")
+            if settings.get("share_button"):
+                kb.button(text="📤 Поделиться", callback_data=f"rz_share_{contest.id}")
         else:
             kb.button(text="🎉 Участвовать", callback_data=f"rz_join_{contest.id}")
+    if settings.get("show_participants"):
+        kb.button(text="👥 Участники", callback_data=f"rz_parts_{contest.id}")
+    if settings.get("leaderboard"):
+        kb.button(text="🏅 Рейтинг", callback_data=f"rz_top_{contest.id}")
     kb.button(text="◀️ К конкурсам", callback_data="rz_list_active")
     kb.adjust(1)
     return kb.as_markup()
@@ -381,6 +407,8 @@ async def cmd_join(message: types.Message, command: CommandObject, bot: Bot):
 async def _attempt_join(event, bot: Bot, contest_id: int, is_message: bool = False):
     user = event.from_user
     missing_channels = None
+    join_text = "Ты успешно зарегистрирован в конкурсе! 🎉\n\nЖелаем удачи! Следи за результатами Fable Randomizer"
+    join_kb = None
     async with session_scope() as session:
         try:
             bonus = await ref.get_referral_bonus_units(session, user.id)
@@ -416,6 +444,35 @@ async def _attempt_join(event, bot: Bot, contest_id: int, is_message: bool = Fal
             await _reply(event, "❌ Не удалось зарегистрироваться. Попробуйте позже.", is_message)
             return
 
+        contest = await cs.get_contest(session, contest_id)
+        settings = cset.read_settings(contest) if contest else cset.default_settings()
+        entry = await tickets.get_entry(session, contest_id, user.id)
+        ticket_count = int(entry.tickets) if entry else 1
+        lines = [
+            f"Ты успешно зарегистрирован в конкурсе! 🎉",
+            "",
+            f"🎟 Твоих билетов: <b>{ticket_count}</b>. Чем больше билетов — тем выше шанс победы!",
+        ]
+        if settings.get("code_words"):
+            lines.append("🔑 Введи кодовое слово (кнопка ниже), чтобы получить ещё билеты.")
+        if settings.get("sponsor_tasks") and settings.get("sponsor_task_text"):
+            lines.append(f"🎯 Задание спонсора: {settings['sponsor_task_text']}")
+        if settings.get("tickets_per_ref", 1) > 1:
+            lines.append(f"👥 За каждого друга, выполнившего условия: +{settings['tickets_per_ref']} билет(ов).")
+        join_text = "\n".join(lines)
+
+        # Кнопки дополнительных действий сразу после участия.
+        kb = InlineKeyboardBuilder()
+        if settings.get("code_words"):
+            kb.button(text="🔑 Ввести кодовое слово", callback_data=f"rz_codeword_{contest_id}")
+        if settings.get("sponsor_tasks"):
+            kb.button(text="🎯 Я выполнил задание", callback_data=f"rz_task_{contest_id}")
+        if settings.get("share_button"):
+            kb.button(text="📤 Поделиться", callback_data=f"rz_share_{contest_id}")
+        kb.button(text="👤 Мои билеты", callback_data="rz_my_tickets")
+        kb.adjust(1)
+        join_kb = kb.as_markup()
+
         # Уведомление об успешной регистрации.
         try:
             await notify.notify_user(
@@ -424,10 +481,7 @@ async def _attempt_join(event, bot: Bot, contest_id: int, is_message: bool = Fal
                 user_id=user.id,
                 event_type="registration_success",
                 event_key=f"registration_success:{contest_id}",
-                text=(
-                    "Ты успешно зарегистрирован в конкурсе! 🎉\n\n"
-                    "Желаем удачи! Следи за результатами Fable Randomizer"
-                ),
+                text="Ты успешно зарегистрирован в конкурсе! 🎉",
                 contest_id=contest_id,
             )
         except Exception:
@@ -453,19 +507,15 @@ async def _attempt_join(event, bot: Bot, contest_id: int, is_message: bool = Fal
                 )
         return
 
-    await _reply(
-        event,
-        "Ты успешно зарегистрирован в конкурсе! 🎉\n\nЖелаем удачи! Следи за результатами Fable Randomizer",
-        is_message,
-    )
+    await _reply(event, join_text, is_message, reply_markup=join_kb)
 
 
-async def _reply(event, text: str, is_message: bool):
+async def _reply(event, text: str, is_message: bool, reply_markup=None):
     if is_message:
-        await event.answer(text, parse_mode="HTML")
+        await event.answer(text, parse_mode="HTML", reply_markup=reply_markup)
     else:
         try:
-            await event.message.answer(text, parse_mode="HTML")
+            await event.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception:
             pass
 
@@ -517,6 +567,241 @@ async def on_leave_contest(callback: types.CallbackQuery):
         await callback.message.answer("✅ Ты вышел из конкурса. История участия сохранена.")
     else:
         await callback.message.answer("❌ Ты не участвуешь в этом конкурсе.")
+
+
+# ===================== БИЛЕТЫ, КОДОВЫЕ СЛОВА, ЗАДАНИЯ, ПОДЕЛИТЬСЯ =====================
+
+class CodeWordWizard(StatesGroup):
+    waiting = State()
+
+
+@router.callback_query(F.data == "rz_my_tickets")
+async def on_my_tickets(callback: types.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    async with session_scope() as session:
+        entries = await cs.get_user_entries(session, callback.from_user.id, filter_="active")
+        rows = []
+        for entry, contest in entries[:15]:
+            breakdown = await tickets.get_ticket_breakdown(session, contest.id, callback.from_user.id)
+            rows.append((contest, int(entry.tickets), breakdown))
+    if not rows:
+        await callback.message.answer(
+            "🎟 У тебя пока нет активных участий. Загляни в «🎁 Конкурсы»!"
+        )
+        return
+    lines = ["🎟 <b>Мои билеты</b>\n"]
+    for contest, count, breakdown in rows:
+        parts = []
+        if breakdown.get(tickets.REASON_BASE):
+            parts.append(f"базовый {breakdown[tickets.REASON_BASE]}")
+        if breakdown.get(tickets.REASON_REFERRAL):
+            parts.append(f"за друзей {breakdown[tickets.REASON_REFERRAL]}")
+        if breakdown.get(tickets.REASON_CODE_WORD):
+            parts.append(f"за слова {breakdown[tickets.REASON_CODE_WORD]}")
+        if breakdown.get(tickets.REASON_SPONSOR_TASK):
+            parts.append(f"за задание {breakdown[tickets.REASON_SPONSOR_TASK]}")
+        detail = f" ({', '.join(parts)})" if parts else ""
+        lines.append(f"• <b>{contest.title}</b> — 🎟 {count}{detail}")
+    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("rz_codeword_"))
+async def on_code_word_prompt(callback: types.CallbackQuery, state: FSMContext):
+    contest_id = int(callback.data.replace("rz_codeword_", ""))
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    await state.set_state(CodeWordWizard.waiting)
+    await state.update_data(contest_id=contest_id)
+    await callback.message.answer(
+        "🔑 Введи кодовое слово, которое ты нашёл в посте конкурса.\n\n"
+        "Отправь его следующим сообщением.",
+    )
+
+
+@router.message(CodeWordWizard.waiting)
+async def on_code_word_input(message: types.Message, state: FSMContext):
+    if not message.from_user:
+        return
+    data = await state.get_data()
+    contest_id = data.get("contest_id")
+    if not contest_id:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    async with session_scope() as session:
+        result = await tickets.redeem_code_word(
+            session, contest_id=contest_id, user_id=message.from_user.id, text=text
+        )
+        if result.status == "ok":
+            from app.services import contest_referral_service as crefs
+
+            await crefs.mark_conditions_met(session, contest_id=contest_id, user_id=message.from_user.id)
+            await crefs.credit_referral_for_user(session, contest_id=contest_id, user_id=message.from_user.id)
+    await state.clear()
+
+    if result.status == "ok":
+        await message.answer(
+            f"✅ Кодовое слово принято! Ты получил <b>{result.tickets}</b> билет(ов). 🎟",
+            parse_mode="HTML",
+        )
+    elif result.status == "already":
+        await message.answer("Ты уже вводил это кодовое слово. Билеты начисляются один раз.")
+    elif result.status == "disabled":
+        await message.answer("В этом конкурсе кодовые слова не предусмотрены.")
+    elif result.status == "no_entry":
+        await message.answer("Сначала нужно участвовать в конкурсе — нажми «🎉 Участвовать».")
+    else:
+        await message.answer("❌ Такое кодовое слово не найдено. Проверь написание и попробуй снова.")
+
+
+@router.callback_query(F.data.startswith("rz_task_"))
+async def on_sponsor_task(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("rz_task_", ""))
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if contest is None:
+            await callback.answer("Конкурс не найден", show_alert=True)
+            return
+        settings = cset.read_settings(contest)
+        if not settings.get("sponsor_tasks"):
+            await callback.answer("Заданий в этом конкурсе нет", show_alert=True)
+            return
+        awarded = await tickets.submit_sponsor_task(
+            session, contest_id=contest_id, user_id=callback.from_user.id
+        )
+        if awarded:
+            from app.services import contest_referral_service as crefs
+
+            await crefs.mark_conditions_met(session, contest_id=contest_id, user_id=callback.from_user.id)
+            await crefs.credit_referral_for_user(session, contest_id=contest_id, user_id=callback.from_user.id)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    if awarded:
+        await callback.message.answer(
+            f"✅ Задание зачтено! Ты получил <b>{settings.get('sponsor_task_tickets', 1)}</b> билет(ов). 🎟",
+            parse_mode="HTML",
+        )
+    else:
+        await callback.message.answer("Ты уже выполнил это задание. Билеты начисляются один раз.")
+
+
+@router.callback_query(F.data.startswith("rz_share_"))
+async def on_share(callback: types.CallbackQuery, bot: Bot):
+    contest_id = int(callback.data.replace("rz_share_", ""))
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        settings = cset.read_settings(contest) if contest else cset.default_settings()
+        username = await _resolve_bot_username(bot, session)
+        prize = contest.prize if contest else None
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    if not username:
+        await callback.message.answer("✉️ Ссылка временно недоступна.")
+        return
+    link = ref.build_referral_link(username, callback.from_user.id)
+    share_text = settings.get("share_text") or cset.default_share_text(prize, link)
+    if "{link}" in share_text:
+        share_text = share_text.replace("{link}", link)
+    elif link not in share_text:
+        share_text = f"{share_text} {link}"
+    kb = InlineKeyboardBuilder()
+    from urllib.parse import quote
+    kb.button(text="📤 Отправить друзьям", url=f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}")
+    kb.adjust(1)
+    await callback.message.answer(
+        "📤 <b>Поделись конкурсом</b>\n\n"
+        f"Готовый текст:\n<i>{share_text}</i>\n\n"
+        f"🔗 Твоя ссылка:\n<code>{link}</code>",
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("rz_parts_"))
+async def on_public_participants(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("rz_parts_", ""))
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if contest is None:
+            await callback.message.answer("❌ Конкурс не найден.")
+            return
+        settings = cset.read_settings(contest)
+        if not settings.get("show_participants"):
+            await callback.message.answer("Организатор скрыл список участников.")
+            return
+        rows = await cs.list_participants_public(session, contest_id, limit=50)
+        total = await cs.participants_count(session, contest_id)
+    lines = [f"👥 <b>Участники «{contest.title}»</b> ({total})\n"]
+    for i, (entry, player, invited) in enumerate(rows, start=1):
+        name = (player.custom_nickname or player.first_name) if player else f"ID {entry.user_id}"
+        uname = f" (@{player.username})" if player and player.username else ""
+        extra = ""
+        if settings.get("show_tickets"):
+            extra = f" — 🎟 {int(entry.tickets)}"
+        elif invited:
+            extra = f" — 👥 {invited}"
+        lines.append(f"{i}. {name}{uname}{extra}")
+    if total > len(rows):
+        lines.append(f"\n…и ещё {total - len(rows)}. Полный список — в Mini App.")
+    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("rz_top_"))
+async def on_public_leaderboard(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("rz_top_", ""))
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    async with session_scope() as session:
+        contest = await cs.get_contest(session, contest_id)
+        if contest is None:
+            await callback.message.answer("❌ Конкурс не найден.")
+            return
+        settings = cset.read_settings(contest)
+        if not settings.get("leaderboard"):
+            await callback.message.answer("Рейтинг в этом конкурсе не ведётся.")
+            return
+        from app.services import leaderboard_service as lb
+        top = await lb.get_top(session, contest_id, limit=int(settings.get("leaderboard_size", 10)))
+    if not top:
+        await callback.message.answer("🏅 Рейтинг пока пуст — приглашай друзей и выходи в лидеры!")
+        return
+    lines = [f"🏅 <b>Топ приглашающих «{contest.title}»</b>\n"]
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for place, (uid, count, player) in enumerate(top, start=1):
+        name = (player.custom_nickname or player.first_name) if player else f"ID {uid}"
+        uname = f" (@{player.username})" if player and player.username else ""
+        mark = medals.get(place, f"{place}.")
+        lines.append(f"{mark} {name}{uname} — 👥 {count}")
+    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("rz_confirm_"))
+async def on_confirm_prize(callback: types.CallbackQuery):
+    contest_id = int(callback.data.replace("rz_confirm_", ""))
+    async with session_scope() as session:
+        ok = await ds.confirm_winner(session, contest_id=contest_id, user_id=callback.from_user.id)
+    try:
+        await callback.answer("Спасибо! Организатор увидит, что ты на связи." if ok else "Нечего подтверждать.", show_alert=not ok)
+    except Exception:
+        pass
+    if ok:
+        await callback.message.answer("✅ Ты подтвердил получение приза. Организатор свяжется с тобой!")
+
 
 
 # ===================== ПРОФИЛЬ =====================

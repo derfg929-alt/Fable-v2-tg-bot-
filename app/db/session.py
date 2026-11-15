@@ -258,6 +258,33 @@ async def _migrate_legacy_schema(conn) -> None:
     except Exception:
         pass
 
+    # 3. Гибкие настройки конкурса, билеты, рефералы конкурса и прозрачность
+    #    розыгрыша (SQLite-совместимая синхронизация существующих баз).
+    async def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
+        try:
+            exists = await conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"),
+                {"t": table},
+            )
+            if not exists.scalar_one_or_none():
+                return
+            cols_res = await conn.execute(text(f"PRAGMA table_info({table})"))
+            cols = [row[1] for row in cols_res.fetchall()]
+            if column not in cols:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+        except Exception:
+            pass
+
+    await _add_column_if_missing("contests", "settings_json", "settings_json JSON")
+    await _add_column_if_missing("entries", "tickets", "tickets INTEGER NOT NULL DEFAULT 1")
+    await _add_column_if_missing("entries", "conditions_met", "conditions_met BOOLEAN NOT NULL DEFAULT 0")
+    await _add_column_if_missing("entries", "conditions_met_at", "conditions_met_at DATETIME")
+    await _add_column_if_missing("winners", "is_reserve", "is_reserve BOOLEAN NOT NULL DEFAULT 0")
+    await _add_column_if_missing("winners", "status", "status VARCHAR(16) NOT NULL DEFAULT 'pending'")
+    await _add_column_if_missing("winners", "notified_at", "notified_at DATETIME")
+    await _add_column_if_missing("draw_logs", "salt", "salt VARCHAR(64)")
+    await _add_column_if_missing("draw_logs", "participants_hash", "participants_hash VARCHAR(64)")
+
 
 async def init_database() -> None:
     """Инициализирует таблицы и схему базы данных при старте."""

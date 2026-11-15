@@ -230,6 +230,7 @@ async function renderContests() {
 
 async function openContest(id) {
   const c = await api("/api/contests/" + id);
+  const s = c.settings || {};
   let channels = "";
   if (c.channels && c.channels.length) {
     channels = "<h3 style='margin-top:12px'>📢 Обязательные каналы</h3>" +
@@ -243,17 +244,28 @@ async function openContest(id) {
     winners = "<h3 style='margin-top:12px'>🏆 Победители</h3>" +
       c.winners.map(w => `<p>${w.place}. <b>${esc(w.name)}</b>${w.prize?" — 🎁 "+esc(w.prize):""}</p>`).join("");
   }
+  if (c.reserves && c.reserves.length) {
+    winners += "<h3 style='margin-top:12px'>🔄 Запасные</h3>" +
+      c.reserves.map(w => `<p>${w.place}. ${esc(w.name)}</p>`).join("");
+  }
   const canJoin = ["active","scheduled"].includes(c.status);
   let action = "";
   if (canJoin) {
     if (c.is_participant) {
-      action = c.allow_leave
-        ? `<button class="btn secondary" onclick="leaveContest(${c.id})">🚪 Отменить участие</button>`
-        : `<button class="btn ghost" disabled>Ты участвуешь</button>`;
+      action = `<div class="card"><h3>🎟 Твои билеты: ${c.my_tickets||0}</h3>
+        <p>👥 Приглашено друзей: ${c.my_invited||0}</p>`;
+      if (s.code_words) action += `<button class="btn secondary" onclick="submitCodeWord(${c.id})">🔑 Ввести кодовое слово</button>`;
+      if (s.sponsor_tasks && s.sponsor_task_text) action += `<p>🎯 ${esc(s.sponsor_task_text)}</p><button class="btn secondary" onclick="submitTask(${c.id})">🎯 Я выполнил задание</button>`;
+      if (s.share_button) action += `<button class="btn secondary" onclick="shareContest(${c.id})">📤 Поделиться</button>`;
+      if (c.allow_leave) action += `<button class="btn ghost" onclick="leaveContest(${c.id})">🚪 Отменить участие</button>`;
+      action += `</div>`;
     } else {
       action = `<button class="btn" onclick="joinContest(${c.id})">🎉 Участвовать</button>`;
     }
   }
+  let extras = "";
+  if (s.show_participants) extras += `<button class="btn secondary" onclick="openParticipants(${c.id})">👥 Участники</button>`;
+  if (s.leaderboard) extras += `<button class="btn secondary" onclick="openLeaderboard(${c.id})">🏅 Рейтинг приглашающих</button>`;
   const img = c.image_url ? `<img class="img" src="${esc(c.image_url)}" alt="" onerror="this.style.display='none'">` : "";
   app.innerHTML = `
     <button class="btn ghost" onclick="go('contests')">◀️ К конкурсам</button>
@@ -268,7 +280,55 @@ async function openContest(id) {
       ${channels}
       ${winners}
       ${action}
+      ${extras}
     </div>`;
+}
+
+async function submitCodeWord(id) {
+  const word = prompt("Введи кодовое слово:");
+  if (!word) return;
+  const res = await api("/api/contests/code-word", { method: "POST", body: JSON.stringify({ contest_id: id, word }) });
+  toast(res.message || "Готово");
+  setTimeout(() => openContest(id), 800);
+}
+
+async function submitTask(id) {
+  const res = await api("/api/contests/sponsor-task", { method: "POST", body: JSON.stringify({ contest_id: id }) });
+  toast(res.message || "Готово");
+  setTimeout(() => openContest(id), 800);
+}
+
+async function shareContest(id) {
+  const me = await api("/api/me");
+  const link = me.referral_link || "";
+  const text = "Участвуй в конкурсе Fable Randomizer! " + link;
+  const shareUrl = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(text);
+  if (tg?.openTelegramLink) tg.openTelegramLink(shareUrl);
+  else window.open(shareUrl, "_blank");
+}
+
+async function openParticipants(id) {
+  const data = await api("/api/contests/" + id + "/participants");
+  const rows = data.participants.map((p, i) => {
+    const uname = p.username ? ` (@${esc(p.username)})` : "";
+    const extra = p.tickets != null ? ` — 🎟 ${p.tickets}` : (p.invited ? ` — 👥 ${p.invited}` : "");
+    return `<p>${i+1}. ${esc(p.name)}${uname}${extra}</p>`;
+  }).join("");
+  app.innerHTML = `
+    <button class="btn ghost" onclick="openContest(${id})">◀️ К конкурсу</button>
+    <div class="card"><h3>👥 Участники (${data.total})</h3>${rows || "<p>Пока никого.</p>"}</div>`;
+}
+
+async function openLeaderboard(id) {
+  const data = await api("/api/contests/" + id + "/leaderboard");
+  const medals = {1:"🥇",2:"🥈",3:"🥉"};
+  const rows = data.leaderboard.map(e => {
+    const uname = e.username ? ` (@${esc(e.username)})` : "";
+    return `<p>${medals[e.place]||e.place+"."} ${esc(e.name)}${uname} — 👥 ${e.invited}</p>`;
+  }).join("");
+  app.innerHTML = `
+    <button class="btn ghost" onclick="openContest(${id})">◀️ К конкурсу</button>
+    <div class="card"><h3>🏅 Топ приглашающих</h3>${rows || "<p>Пока пусто.</p>"}</div>`;
 }
 
 async function joinContest(id) {
@@ -325,21 +385,100 @@ async function renderMyContests() {
 }
 
 async function openBotCreate() {
-  let username = window.__botUsername;
-  if (!username) {
-    try {
-      const me = await api("/api/me");
-      const m = (me.referral_link || "").match(/t\.me\/([^?]+)/);
-      if (m) username = m[1];
-    } catch (e) { /* ignore */ }
+  renderCreateForm();
+}
+
+async function renderCreateForm() {
+  app.innerHTML = `
+    <button class="btn ghost" onclick="go('mycontests')">◀️ Назад</button>
+    <div class="card">
+      <h3>➕ Создать конкурс</h3>
+      <label>Название</label>
+      <input id="cf_title" placeholder="Например: Розыгрыш iPhone" />
+      <label>Описание</label>
+      <textarea id="cf_desc" rows="3" placeholder="Опиши конкурс"></textarea>
+      <label>Приз</label>
+      <input id="cf_prize" placeholder="Что разыгрываем" />
+      <label>Победителей</label>
+      <input id="cf_winners" type="number" min="1" value="1" />
+      <label>Дата окончания (ДД.ММ.ГГГГ ЧЧ:ММ)</label>
+      <input id="cf_ends" placeholder="31.12.2026 20:00" />
+    </div>
+    <div class="card">
+      <h3>⚙️ Настройки</h3>
+      <label><input type="checkbox" id="cf_code_words" style="width:auto"> 🔑 Кодовые слова</label>
+      <label>Кодовые слова (слово:билеты через запятую)</label>
+      <input id="cf_code_list" placeholder="FABLE:3, ПРИЗ:5" />
+      <label><input type="checkbox" id="cf_sponsor_tasks" style="width:auto"> 🎯 Задания спонсоров</label>
+      <label>Текст задания (|билеты)</label>
+      <input id="cf_task" placeholder="Пришли промокод|5" />
+      <label>Билетов за 1 реферала</label>
+      <input id="cf_tickets_per_ref" type="number" min="1" value="1" />
+      <label>Запасных победителей</label>
+      <input id="cf_reserve" type="number" min="0" value="0" />
+      <label><input type="checkbox" id="cf_show_participants" checked style="width:auto"> 👥 Показывать участников</label>
+      <label><input type="checkbox" id="cf_show_tickets" style="width:auto"> 🎟 Показывать счётчик билетов</label>
+      <label><input type="checkbox" id="cf_share" checked style="width:auto"> 📤 Кнопка «Поделиться»</label>
+      <label><input type="checkbox" id="cf_leaderboard" style="width:auto"> 🏅 Рейтинг приглашающих</label>
+      <button class="btn" onclick="submitCreateForm()">🚀 Создать конкурс</button>
+    </div>`;
+}
+
+function parseCodeWords(raw) {
+  const out = [];
+  (raw || "").split(/[,\n]+/).forEach(part => {
+    part = part.trim();
+    if (!part) return;
+    const [w, t] = part.split(":");
+    if (w && w.trim()) out.push({ word: w.trim(), tickets: Math.max(1, parseInt(t || "1", 10) || 1) });
+  });
+  return out;
+}
+
+function parseEnds(raw) {
+  raw = (raw || "").trim();
+  const m = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}):(\d{2}))?$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[3], +m[2]-1, +m[1], +(m[4]||23), +(m[5]||59)));
+  return isNaN(d) ? null : d.toISOString();
+}
+
+async function submitCreateForm() {
+  const title = document.getElementById("cf_title").value.trim();
+  if (!title) { toast("Укажи название"); return; }
+  const sponsorRaw = document.getElementById("cf_task").value.trim();
+  let taskText = "", taskTickets = 1;
+  if (sponsorRaw) {
+    const [t, tt] = sponsorRaw.split("|");
+    taskText = (t || "").trim();
+    taskTickets = Math.max(1, parseInt(tt || "1", 10) || 1);
   }
-  if (username && tg?.openTelegramLink) {
-    tg.openTelegramLink("https://t.me/" + username);
-  } else if (username) {
-    window.open("https://t.me/" + username, "_blank");
-  } else {
-    toast("Открой бота и нажми «➕ Создать конкурс»");
-  }
+  const settings = {
+    code_words: document.getElementById("cf_code_words").checked,
+    code_words_list: parseCodeWords(document.getElementById("cf_code_list").value),
+    sponsor_tasks: document.getElementById("cf_sponsor_tasks").checked,
+    sponsor_task_text: taskText,
+    sponsor_task_tickets: taskTickets,
+    tickets_per_ref: Math.max(1, parseInt(document.getElementById("cf_tickets_per_ref").value || "1", 10)),
+    reserve_winners: Math.max(0, parseInt(document.getElementById("cf_reserve").value || "0", 10)),
+    show_participants: document.getElementById("cf_show_participants").checked,
+    show_tickets: document.getElementById("cf_show_tickets").checked,
+    share_button: document.getElementById("cf_share").checked,
+    leaderboard: document.getElementById("cf_leaderboard").checked,
+  };
+  const payload = {
+    title,
+    description: document.getElementById("cf_desc").value.trim(),
+    prize: document.getElementById("cf_prize").value.trim() || null,
+    winners_count: Math.max(1, parseInt(document.getElementById("cf_winners").value || "1", 10)),
+    ends_at: parseEnds(document.getElementById("cf_ends").value),
+    settings,
+  };
+  try {
+    const res = await api("/api/contests/create", { method: "POST", body: JSON.stringify(payload) });
+    toast("Конкурс создан!");
+    setTimeout(() => go("mycontests"), 700);
+  } catch (e) { toast(e.message); }
 }
 
 async function openStats(id) {
@@ -384,7 +523,32 @@ async function openStats(id) {
       <h3>📅 По дням недели</h3>
       <p>${wdText}</p>
     </div>
-    ${draws ? `<div class="card"><h3>🎲 Розыгрыши</h3>${draws}</div>` : ""}`;
+    ${draws ? `<div class="card"><h3>🎲 Розыгрыши</h3>${draws}</div>` : ""}
+    <button class="btn secondary" onclick="loadSources(${id})">📈 Источники приглашений</button>
+    <button class="btn secondary" onclick="exportContest(${id})">📤 Экспорт CSV</button>
+    <div id="sourcesBox"></div>`;
+}
+
+async function loadSources(id) {
+  try {
+    const data = await api("/api/contests/" + id + "/sources");
+    const rows = data.sources.map((s, i) =>
+      `<p>${i+1}. <b>${esc(s.name)}</b>${s.username?" (@"+esc(s.username)+")":""} — 👥 ${s.invited} (🎟 ${s.tickets_awarded})</p>`
+    ).join("");
+    document.getElementById("sourcesBox").innerHTML =
+      `<div class="card"><h3>📈 Источники приглашений</h3>${rows || "<p>Пока никого.</p>"}</div>`;
+  } catch (e) { toast(e.message); }
+}
+
+async function exportContest(id) {
+  try {
+    const data = await api("/api/contests/" + id + "/export");
+    const blob = new Blob([data.csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = data.filename || "contest.csv"; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { toast(e.message); }
 }
 
 async function renderProfile() {
