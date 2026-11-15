@@ -93,7 +93,7 @@ async def test_bonus_and_minigames():
 
         # Daily bonus
         bon = await claim_daily_bonus(session, user_id=uid)
-        assert bon.reward_coins == 50
+        assert bon.reward_coins == 25
         assert bon.streak == 1
 
         # Dice

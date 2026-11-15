@@ -101,9 +101,8 @@ async def test_gear_and_side_job_boost():
         assert get_gear_bonus_percent(2) == 15
 
         # Выполнение подработки таксистом
-        reward, exp, msg = await perform_side_job(session, user_id=uid, profession="таксист")
+        reward, msg = await perform_side_job(session, user_id=uid, profession="таксист")
         assert reward > 0
-        assert exp > 0
         assert "Бонус от снаряжения" in msg
 
 

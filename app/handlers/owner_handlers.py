@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from aiogram import Router, types, F
+from aiogram.enums import ChatType
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.config import get_settings
@@ -187,7 +188,7 @@ async def handle_admin_panel(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
         return
     # Если в группе, панель владельца не должна перехватывать групповую админку
-    if message.chat and message.chat.type != types.ChatType.PRIVATE:
+    if message.chat and message.chat.type != ChatType.PRIVATE:
         return
     text, markup = await _build_admin_panel_payload(message.from_user.id)
     await message.reply(text, reply_markup=markup, parse_mode="HTML")
@@ -341,8 +342,7 @@ async def handle_owner_player_info(message: types.Message):
             f"💵 В кошельке: <b>{p.wallet:,}</b> монет\n"
             f"🏦 В банке: <b>{p.bank_balance:,}</b> монет\n"
             f"💰 Общее состояние: <b>{total_wealth:,}</b> монет\n"
-            f"📈 Акций: <b>{p.shares:,}</b> шт.\n"
-            f"⭐ Опыт: <b>{p.experience:,}</b> XP"
+            f"📈 Акций: <b>{p.shares:,}</b> шт."
         ).replace(",", " ")
         await message.reply(text, parse_mode="HTML")
 

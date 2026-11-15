@@ -33,7 +33,6 @@ from app.services.economy_service import (
 @dataclass(frozen=True, slots=True)
 class DailyBonusResult:
     reward_coins: int
-    reward_exp: int
     streak: int
     message: str
 
@@ -62,9 +61,8 @@ async def claim_daily_bonus(session: AsyncSession, *, user_id: int) -> DailyBonu
         bonus_row = DailyBonus(user_id=user_id, streak=1, last_claimed_at=now)
         session.add(bonus_row)
 
-    # Базовая награда 50 монет + 10 за каждый день стрика (макс 150)
-    coins = min(150, 50 + (streak - 1) * 10)
-    exp = 5 * streak
+    # Базовая награда 25 монет + 5 за каждый день стрика (макс 75)
+    coins = min(75, 25 + (streak - 1) * 5)
 
     await credit_coins(
         session,
@@ -74,20 +72,15 @@ async def claim_daily_bonus(session: AsyncSession, *, user_id: int) -> DailyBonu
         operation_type="daily_bonus",
     )
 
-    player = await session.get(Player, user_id)
-    if player:
-        player.experience += exp
-
     msg = (
         f"🎁 <b>ЕЖЕДНЕВНЫЙ БОНУС ПОЛУЧЕН!</b>\n\n"
         f"🔥 Серия входов: <b>{streak} день подряд!</b>\n"
-        f"💰 Награда: <b>+{coins:,}</b> монет\n"
-        f"✨ Опыт: <b>+{exp}</b> XP\n\n"
+        f"💰 Награда: <b>+{coins:,}</b> монет\n\n"
         f"<i>Возвращайтесь завтра, чтобы увеличить награду!</i>"
     ).replace(",", " ")
 
     await session.flush()
-    return DailyBonusResult(reward_coins=coins, reward_exp=exp, streak=streak, message=msg)
+    return DailyBonusResult(reward_coins=coins, streak=streak, message=msg)
 
 
 # ===================== МИНИ-ИГРЫ =====================
@@ -227,33 +220,33 @@ from app.db.models import PlayerInventory
 from app.services.gear_service import get_or_create_gear
 
 HUNTING_PRICES: dict[str, int] = {
-    "заяц": 75,
-    "олень": 320,
-    "медведь": 1_500,
-    "дракон": 7_500,
+    "заяц": 50,
+    "олень": 200,
+    "медведь": 1_000,
+    "дракон": 5_000,
 }
 
 FISHING_PRICES: dict[str, int] = {
-    "карась": 60,
-    "щука": 250,
-    "золотая рыбка": 1_200,
-    "сундук с сокровищами": 6_000,
+    "карась": 40,
+    "щука": 160,
+    "золотая рыбка": 800,
+    "сундук с сокровищами": 4_000,
 }
 
 FISHING_LOOT = [
     ("empty", "Ничего не поймано", 0, 0.30, None),
-    ("common", "Карась", 60, 0.55, "карась"),
-    ("rare", "Щука", 250, 0.12, "щука"),
-    ("epic", "Золотая рыбка", 1200, 0.025, "золотая рыбка"),
-    ("legendary", "Древний сундук с сокровищами", 6000, 0.005, "сундук с сокровищами"),
+    ("common", "Карась", 40, 0.55, "карась"),
+    ("rare", "Щука", 160, 0.12, "щука"),
+    ("epic", "Золотая рыбка", 800, 0.025, "золотая рыбка"),
+    ("legendary", "Древний сундук с сокровищами", 4000, 0.005, "сундук с сокровищами"),
 ]
 
 HUNTING_LOOT = [
     ("failure", "Зверь убежал", 0, 0.35, None),
-    ("common", "Заяц", 75, 0.50, "заяц"),
-    ("rare", "Олень", 320, 0.12, "олень"),
-    ("epic", "Медведь", 1500, 0.025, "медведь"),
-    ("legendary", "Мифический дракон", 7500, 0.005, "дракон"),
+    ("common", "Заяц", 50, 0.50, "заяц"),
+    ("rare", "Олень", 200, 0.12, "олень"),
+    ("epic", "Медведь", 1000, 0.025, "медведь"),
+    ("legendary", "Мифический дракон", 5000, 0.005, "дракон"),
 ]
 
 # Реальные символы Telegram-слотов (4 символа, закодированные по 2 бита)
@@ -339,8 +332,6 @@ async def play_fishing(session: AsyncSession, *, user_id: int) -> FishingResult:
             session.add(inv)
         else:
             inv.quantity += 1
-
-        player.experience += 10 + rod_lvl * 2
 
     game_session = GameSession(
         game_type="fishing",
@@ -434,8 +425,6 @@ async def play_hunting(session: AsyncSession, *, user_id: int) -> HuntingResult:
             session.add(inv)
         else:
             inv.quantity += 1
-
-        player.experience += 15 + rifle_lvl * 3
 
     game_session = GameSession(
         game_type="hunting",

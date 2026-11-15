@@ -100,8 +100,11 @@ class JsonDatabaseManager:
                 if not rows:
                     continue
 
+                valid_columns = {col.name for col in table.columns}
                 for row in rows:
-                    row_data = dict(row)
+                    row_data = {
+                        k: v for k, v in dict(row).items() if k in valid_columns
+                    }
                     # Convert isoformat datetimes and Decimal if needed
                     for col in table.columns:
                         col_name = col.name

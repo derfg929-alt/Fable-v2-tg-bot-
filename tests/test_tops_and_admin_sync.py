@@ -11,7 +11,6 @@ from app.services.moderation_service import (
 )
 from app.services.top_service import (
     get_top_rich,
-    get_top_level,
     get_top_rating,
     get_top_mine,
     get_top_businesses,
@@ -83,11 +82,9 @@ async def test_all_top_categories():
         p2 = reg2.player
 
         p1.wallet = 1_000_000
-        p1.experience = 500
         p1.rating = 250
 
         p2.wallet = 500_000
-        p2.experience = 100
         p2.rating = 50
 
         # Шахта
@@ -109,12 +106,6 @@ async def test_all_top_categories():
         top_rich = await get_top_rich(session, limit=5)
         assert len(top_rich) >= 2
         assert top_rich[0].user_id == u1
-
-        # 2. Топ уровней / опыта
-        top_lvl = await get_top_level(session, limit=5)
-        assert len(top_lvl) >= 2
-        assert top_lvl[0].user_id == u1
-        assert top_lvl[0].experience == 500
 
         # 3. Топ рейтинга
         top_r = await get_top_rating(session, limit=5)
@@ -175,9 +166,7 @@ async def test_profile_displays_admin_level():
     chat_id = -100998877
     async with session_scope() as session:
         await get_or_create_chat(session, chat_id=chat_id, title="Test Group")
-        reg = await get_or_create_player(session, telegram_id=u, first_name="AdminTestUser")
-        p = reg.player
-        p.experience = 350
+        await get_or_create_player(session, telegram_id=u, first_name="AdminTestUser")
         session.add(ChatAdmin(chat_id=chat_id, user_id=u, level=3, assigned_by=u, is_active=True))
 
     msg = MagicMock()

@@ -247,7 +247,6 @@ async def collect_cosmodrome_profits(session: AsyncSession, *, user_id: int) -> 
 class LaunchMissionResult:
     rocket_name: str
     reward_coins: int
-    reward_exp: int
     is_success: bool
     story: str
 
@@ -268,9 +267,8 @@ async def launch_rocket_mission(session: AsyncSession, *, user_id: int, rocket_c
         code_norm = list(rockets.keys())[-1]
 
     cfg = ROCKETS[code_norm]
-    # Награда за экспедицию зависит от стоимости ракеты
-    base_launch_reward = int(cfg.hourly_income * random.uniform(1.2, 2.5))
-    exp = 25 * cfg.min_cosmodrome_level
+    # Награда за экспедицию зависит от стоимости ракеты (умеренно, чтобы монеты оставались ценными)
+    base_launch_reward = int(cfg.hourly_income * random.uniform(0.5, 1.2))
 
     stories = [
         f"Ракета <b>{cfg.name}</b> успешно вывела спутниковую группировку на орбиту!",
@@ -287,17 +285,12 @@ async def launch_rocket_mission(session: AsyncSession, *, user_id: int, rocket_c
         operation_type="cosmodrome_mission",
     )
 
-    player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
-    if player:
-        player.experience += exp
-
     cosmo.total_launches += 1
     await session.flush()
 
     return LaunchMissionResult(
         rocket_name=cfg.name,
         reward_coins=base_launch_reward,
-        reward_exp=exp,
         is_success=True,
         story=story,
     )

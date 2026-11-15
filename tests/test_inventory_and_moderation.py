@@ -67,7 +67,8 @@ async def test_sell_piece_by_piece_and_full():
         res_hunt = await sell_inventory_item(session, user_id=uid, item_query="заяц", quantity=2)
         assert res_hunt.quantity == 2
         assert res_hunt.remaining_quantity == 2
-        assert res_hunt.total_earned == 2 * 75
+        from app.services.games_service import HUNTING_PRICES
+        assert res_hunt.total_earned == 2 * HUNTING_PRICES["заяц"]
 
         # 3. Продажа поштучно: 4 угля
         res_coal = await sell_inventory_item(session, user_id=uid, item_query="уголь", quantity=4)

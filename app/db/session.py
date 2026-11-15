@@ -183,6 +183,16 @@ async def _migrate_legacy_schema(conn) -> None:
                         EXCEPTION WHEN OTHERS THEN NULL;
                         END;
                     END IF;
+
+                    -- Опыт (XP) полностью убран из игры — удаляем устаревшую колонку.
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns WHERE table_name = 'players' AND column_name = 'experience'
+                    ) THEN
+                        BEGIN
+                            ALTER TABLE players DROP COLUMN IF EXISTS experience;
+                        EXCEPTION WHEN OTHERS THEN NULL;
+                        END;
+                    END IF;
                 END IF;
             END $$;
         """))
@@ -196,6 +206,11 @@ async def _migrate_legacy_schema(conn) -> None:
                 if "level" in cols:
                     try:
                         await conn.execute(text("ALTER TABLE players DROP COLUMN level"))
+                    except Exception:
+                        pass
+                if "experience" in cols:
+                    try:
+                        await conn.execute(text("ALTER TABLE players DROP COLUMN experience"))
                     except Exception:
                         pass
                 if "shares" not in cols:

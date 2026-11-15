@@ -27,7 +27,6 @@ from app.services.top_service import (
     get_top_rich,
     get_top_active,
     get_top_clans,
-    get_top_level,
     get_top_rating,
     get_top_mine,
     get_top_businesses,
@@ -539,6 +538,67 @@ async def handle_rules(message: types.Message):
         builder = InlineKeyboardBuilder()
         builder.button(text="✅ Принять правила", callback_data="rules_accept")
         await message.reply("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.message(F.text.casefold().startswith("правило "))
+async def handle_rules_manage(message: types.Message):
+    """Управление правилами чата: добавление, удаление, изменение (ур. 3+)."""
+    if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        return
+    raw = (message.text or "").strip()
+    parts = raw.split(maxsplit=2)
+    if len(parts) < 2:
+        return
+    action = parts[1].casefold()
+    payload = parts[2].strip() if len(parts) > 2 else ""
+
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(
+            session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot
+        )
+        if lvl < 3:
+            await message.reply("Управлять правилами может Админ (ур. 3+)")
+            return
+
+        if action in ("добавить", "add", "добавь"):
+            if not payload:
+                await message.reply("Использование: <code>правило добавить текст правила</code>", parse_mode="HTML")
+                return
+            try:
+                rule = await add_chat_rule(
+                    session, chat_id=message.chat.id, admin_id=message.from_user.id, text=payload
+                )
+                await message.reply(
+                    f"✅ Правило <b>№{rule.position}</b> добавлено:\n<i>{rule.text}</i>",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        if action in ("удалить", "delete", "удали", "remove"):
+            if not payload.isdigit():
+                await message.reply("Использование: <code>правило удалить 2</code> (номер правила)", parse_mode="HTML")
+                return
+            try:
+                ok = await remove_chat_rule(
+                    session, chat_id=message.chat.id, admin_id=message.from_user.id, position=int(payload)
+                )
+                if ok:
+                    await message.reply(f"🗑 Правило <b>№{payload}</b> удалено.", parse_mode="HTML")
+                else:
+                    await message.reply(f"❌ Правило с номером <b>{payload}</b> не найдено.", parse_mode="HTML")
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+            return
+
+        await message.reply(
+            "📜 <b>Управление правилами:</b>\n"
+            "• <code>правило добавить текст</code> — добавить правило\n"
+            "• <code>правило удалить 2</code> — удалить правило по номеру\n"
+            "• <code>правила</code> — показать список правил",
+            parse_mode="HTML",
+        )
 
 
 @router.callback_query(F.data == "rules_accept")

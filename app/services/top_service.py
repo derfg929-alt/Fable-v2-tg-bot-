@@ -56,15 +56,6 @@ class TopClanEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class TopLevelEntry:
-    rank: int
-    user_id: int
-    name: str
-    level: int
-    experience: int
-
-
-@dataclass(frozen=True, slots=True)
 class TopRatingEntry:
     rank: int
     user_id: int
@@ -148,50 +139,6 @@ async def get_top_rich(
                 total_wealth=int(wealth),
                 wallet=player.wallet,
                 bank=player.bank_balance,
-            )
-        )
-    return entries
-
-
-async def get_top_level(
-    session: AsyncSession,
-    *,
-    chat_id: int | None = None,
-    limit: int = 50,
-) -> list[TopLevelEntry]:
-    """Возвращает топ игроков по уровню и опыту."""
-    if chat_id is None:
-        stmt = (
-            select(Player)
-            .where(Player.is_globally_banned.is_(False))
-            .order_by(desc(Player.experience))
-            .limit(limit)
-        )
-    else:
-        subq = (
-            select(ActivityRecord.user_id)
-            .where(ActivityRecord.chat_id == chat_id)
-            .distinct()
-            .subquery()
-        )
-        stmt = (
-            select(Player)
-            .join(subq, subq.c.user_id == Player.telegram_id)
-            .where(Player.is_globally_banned.is_(False))
-            .order_by(desc(Player.experience))
-            .limit(limit)
-        )
-
-    res = (await session.scalars(stmt)).all()
-    entries = []
-    for rank, player in enumerate(res, start=1):
-        entries.append(
-            TopLevelEntry(
-                rank=rank,
-                user_id=player.telegram_id,
-                name=player.first_name,
-                level=1,
-                experience=player.experience,
             )
         )
     return entries

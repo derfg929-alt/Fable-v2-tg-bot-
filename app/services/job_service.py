@@ -1,10 +1,9 @@
 """Сервис работы и подработки для Fable.
 
 Механики:
-- Основная государственная работа: доступна раз в 20 минут, доход зависит от уровня игрока (базово 150 + level * 50).
+- Основная государственная работа: доступна раз в 20 минут, приносит умеренную прибыль.
 - Подработка (таксист, курьер, уборщик, бариста, грузчик):
-  доступна раз в 10 минут, приносит умеренную сбалансированную прибыль (50 - 250 монет),
-  а также опыт персонажа.
+  доступна раз в 10 минут, приносит умеренную сбалансированную прибыль (50 - 250 монет).
 """
 from __future__ import annotations
 
@@ -33,13 +32,12 @@ class SideJobConfig:
     icon: str
     min_reward: int
     max_reward: int
-    exp_reward: int
     action_texts: tuple[str, ...]
 
 
 SIDE_JOBS: dict[str, SideJobConfig] = {
     "таксист": SideJobConfig(
-        "таксист", "Таксист", "🚖", 80, 220, 15,
+        "таксист", "Таксист", "🚖", 80, 220,
         (
             "Вы довезли пассажира до центра города без пробок!",
             "Успешный ночной заказ из аэропорта!",
@@ -47,7 +45,7 @@ SIDE_JOBS: dict[str, SideJobConfig] = {
         ),
     ),
     "курьер": SideJobConfig(
-        "курьер", "Курьер", "🚴", 60, 180, 12,
+        "курьер", "Курьер", "🚴", 60, 180,
         (
             "Вы быстро доставили горячую пиццу клиенту!",
             "Срочная доставка важных документов завершена вовремя!",
@@ -55,7 +53,7 @@ SIDE_JOBS: dict[str, SideJobConfig] = {
         ),
     ),
     "уборщик": SideJobConfig(
-        "уборщик", "Уборщик", "🧹", 50, 140, 10,
+        "уборщик", "Уборщик", "🧹", 50, 140,
         (
             "Вы навели идеальный порядок в торговом зале!",
             "Офис бизнес-центра сияет чистотой!",
@@ -63,7 +61,7 @@ SIDE_JOBS: dict[str, SideJobConfig] = {
         ),
     ),
     "бариста": SideJobConfig(
-        "бариста", "Бариста", "☕️", 70, 190, 14,
+        "бариста", "Бариста", "☕️", 70, 190,
         (
             "Вы сварили нежнейший авторский латте с карамелью!",
             "Клиенты выстроились в очередь за вашим капучино!",
@@ -71,7 +69,7 @@ SIDE_JOBS: dict[str, SideJobConfig] = {
         ),
     ),
     "грузчик": SideJobConfig(
-        "грузчик", "Грузчик", "📦", 90, 240, 16,
+        "грузчик", "Грузчик", "📦", 90, 240,
         (
             "Вы успешно разгрузили фуру со строительными материалами!",
             "Партия техники бережно перенесена на склад!",
@@ -95,8 +93,8 @@ async def get_or_create_player_job(session: AsyncSession, *, user_id: int) -> Pl
     return job
 
 
-async def perform_main_job(session: AsyncSession, *, user_id: int) -> tuple[int, int, str]:
-    """Выполняет основную работу. Возвращает (награда_монеты, опыт, сообщение)."""
+async def perform_main_job(session: AsyncSession, *, user_id: int) -> tuple[int, str]:
+    """Выполняет основную работу. Возвращает (награда_монеты, сообщение)."""
     player = await session.scalar(select(Player).where(Player.telegram_id == user_id).with_for_update())
     if not player:
         raise PlayerNotFoundError(f"Игрок {user_id} не найден")
@@ -113,8 +111,7 @@ async def perform_main_job(session: AsyncSession, *, user_id: int) -> tuple[int,
             raise JobCooldownError(f"Вы устали после смены! Следующая работа доступна через {mins} мин. {secs} сек.")
 
     # Баланс дохода основной работы
-    reward = 200
-    exp = 25
+    reward = 120
 
     await credit_coins(
         session,
@@ -124,23 +121,21 @@ async def perform_main_job(session: AsyncSession, *, user_id: int) -> tuple[int,
         operation_type="job_salary",
     )
 
-    player.experience += exp
     job.last_worked_at = now
     await session.flush()
 
     msg = (
         f"💼 <b>РАБОЧАЯ СМЕНА ЗАВЕРШЕНА!</b>\n\n"
         f"Вы добросовестно отработали смену в должности <b>{job.current_job}</b>!\n"
-        f"💰 Заработано: <b>+{reward:,}</b> монет\n"
-        f"✨ Опыт: <b>+{exp}</b> XP".replace(",", " ")
+        f"💰 Заработано: <b>+{reward:,}</b> монет".replace(",", " ")
     )
-    return reward, exp, msg
+    return reward, msg
 
 
 from app.services.gear_service import get_or_create_gear, get_gear_bonus_percent
 
 
-async def perform_side_job(session: AsyncSession, *, user_id: int, profession: str) -> tuple[int, int, str]:
+async def perform_side_job(session: AsyncSession, *, user_id: int, profession: str) -> tuple[int, str]:
     """Выполняет подработку.
 
     Награда рассчитывается случайно (случайный разброс) и увеличивается
@@ -195,7 +190,6 @@ async def perform_side_job(session: AsyncSession, *, user_id: int, profession: s
     gear_bonus = int(base_reward * (bonus_pct / 100.0))
     total_reward = base_reward + gear_bonus
 
-    exp = cfg.exp_reward + (gear_lvl - 1) * 2
     story = random.choice(cfg.action_texts)
 
     await credit_coins(
@@ -206,7 +200,6 @@ async def perform_side_job(session: AsyncSession, *, user_id: int, profession: s
         operation_type="job_side_reward",
     )
 
-    player.experience += exp
     job.last_side_job_at = now
     await session.flush()
 
@@ -216,7 +209,6 @@ async def perform_side_job(session: AsyncSession, *, user_id: int, profession: s
         f"{cfg.icon} <b>ПОДРАБОТКА: {cfg.title.upper()}</b>\n\n"
         f"{story}\n\n"
         f"💰 Оплата за заказ: <b>+{total_reward:,}</b> монет (база: {base_reward})\n"
-        f"{bonus_line}"
-        f"✨ Получено опыта: <b>+{exp}</b> XP".replace(",", " ")
+        f"{bonus_line}".replace(",", " ")
     )
-    return total_reward, exp, msg
+    return total_reward, msg

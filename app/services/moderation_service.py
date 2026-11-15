@@ -463,7 +463,6 @@ async def ensure_player_and_chat_exist(
             username=username,
             wallet=0,
             bank_balance=0,
-            experience=0,
             reputation=0,
         ).on_conflict_do_nothing(index_elements=[Player.telegram_id])
         await session.execute(p_stmt)

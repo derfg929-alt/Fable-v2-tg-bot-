@@ -76,13 +76,12 @@ async def test_jobs_and_side_jobs():
     async with session_scope() as session:
         await get_or_create_player(session, telegram_id=uid, first_name="Worker")
         # Основная работа
-        salary, exp, msg = await perform_main_job(session, user_id=uid)
+        salary, msg = await perform_main_job(session, user_id=uid)
         assert salary > 0
-        assert exp > 0
         assert "РАБОЧАЯ СМЕНА ЗАВЕРШЕНА" in msg
 
         # Подработка таксистом
-        reward, s_exp, s_msg = await perform_side_job(session, user_id=uid, profession="таксист")
+        reward, s_msg = await perform_side_job(session, user_id=uid, profession="таксист")
         assert reward >= SIDE_JOBS["таксист"].min_reward
         assert "ТАКСИСТ" in s_msg
 
