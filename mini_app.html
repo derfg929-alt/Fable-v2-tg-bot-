@@ -289,19 +289,57 @@ async function renderMyContests() {
     app.innerHTML = `<div class="card">
       <h3>📣 Мои конкурсы</h3>
       <p>У тебя пока нет конкурсов.</p>
-      <p>Создавать конкурсы можно для канала, где ты <b>владелец</b> или <b>администратор</b>.
-      Открой бота и нажми «➕ Создать конкурс» — там же доступна статистика по твоим конкурсам.</p>
+      <p>Создавать конкурсы можно для канала, где ты <b>владелец</b> или <b>администратор</b>,
+      а можно и вообще без канала — тогда участвовать смогут все.</p>
+      <button class="btn" onclick="openBotCreate()">➕ Создать конкурс в боте</button>
     </div>`;
     return;
   }
-  app.innerHTML = data.contests.map(c => `
+  const active = data.contests.filter(c => c.status === "active").length;
+  const totalParts = data.contests.reduce((s, c) => s + (c.participants || 0), 0);
+  const totalWins = data.contests.reduce((s, c) => s + (c.winners || 0), 0);
+  const cards = data.contests.map(c => {
+    const goal = Math.max(1, c.winners_count || 1);
+    const pct = Math.min(100, Math.round((c.winners || 0) / goal * 100));
+    return `
     <div class="card">
       <div class="row"><h3>${esc(c.title)}</h3><span class="pill">${esc(c.status_label)}</span></div>
       ${c.prize ? `<p>🎁 ${esc(c.prize)}</p>` : ""}
-      <p>👥 ${c.participants} участников · 🏆 ${c.winners}/${c.winners_count} победителей</p>
+      <p>👥 ${c.participants} участников · 🏆 ${c.winners}/${goal} победителей</p>
+      <div style="background:var(--card2);border-radius:6px;height:8px;margin:6px 0">
+        <div style="width:${pct}%;height:8px;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div>
+      </div>
       <p>🏁 ${fmtDate(c.ends_at)}${c.peak_hour != null ? " · ⏰ пик " + String(c.peak_hour).padStart(2,"0") + ":00" : ""}</p>
       <button class="btn secondary" onclick="openStats(${c.id})">📊 Статистика</button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
+  app.innerHTML = `
+    <div class="grid">
+      <div class="stat"><b>${data.contests.length}</b><span>Всего</span></div>
+      <div class="stat"><b>${active}</b><span>Активных</span></div>
+      <div class="stat"><b>${totalParts}</b><span>Участников</span></div>
+      <div class="stat"><b>${totalWins}</b><span>Победителей</span></div>
+    </div>
+    ${cards}
+    <button class="btn" onclick="openBotCreate()">➕ Создать ещё конкурс</button>`;
+}
+
+async function openBotCreate() {
+  let username = window.__botUsername;
+  if (!username) {
+    try {
+      const me = await api("/api/me");
+      const m = (me.referral_link || "").match(/t\.me\/([^?]+)/);
+      if (m) username = m[1];
+    } catch (e) { /* ignore */ }
+  }
+  if (username && tg?.openTelegramLink) {
+    tg.openTelegramLink("https://t.me/" + username);
+  } else if (username) {
+    window.open("https://t.me/" + username, "_blank");
+  } else {
+    toast("Открой бота и нажми «➕ Создать конкурс»");
+  }
 }
 
 async function openStats(id) {
@@ -322,11 +360,14 @@ async function openStats(id) {
   const wd = s.timeline?.by_weekday || {};
   const wlabels = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
   const wdText = wlabels.map((l,i) => `${l}:${wd[i]||0}`).join("  ");
+  const draws = (s.draws || []).map(d =>
+    `<p>• Раунд ${d.round}: ${d.winners_count} победителей (алг. ${esc(d.algorithm_version)})</p>`).join("");
   app.innerHTML = `
     <button class="btn ghost" onclick="go('mycontests')">◀️ Назад</button>
     <div class="card">
       <h3>📊 ${esc(s.title)}</h3>
       <p>Статус: ${esc(s.status_label)}</p>
+      ${s.duration_days != null ? `<p>⏳ Длительность: ${Number(s.duration_days).toFixed(1)} дн.</p>` : ""}
     </div>
     <div class="grid">
       <div class="stat"><b>${s.participants_active}</b><span>Активных</span></div>
@@ -342,7 +383,8 @@ async function openStats(id) {
     <div class="card">
       <h3>📅 По дням недели</h3>
       <p>${wdText}</p>
-    </div>`;
+    </div>
+    ${draws ? `<div class="card"><h3>🎲 Розыгрыши</h3>${draws}</div>` : ""}`;
 }
 
 async function renderProfile() {
