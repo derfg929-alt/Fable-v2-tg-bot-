@@ -202,6 +202,8 @@ async function renderHome() {
     <h3 style="margin:18px 0 8px">🔥 Активные конкурсы</h3>
     ${cards}
     <button class="btn" onclick="go('contests')">🎁 Все конкурсы</button>
+    <button class="btn secondary" onclick="renderCreateForm()">➕ Создать конкурс</button>
+    <button class="btn secondary" onclick="go('mycontests')">📣 Мои конкурсы</button>
     <button class="btn secondary" onclick="go('invite')">👥 Пригласить друзей</button>
   `;
 }
@@ -351,7 +353,7 @@ async function renderMyContests() {
       <p>У тебя пока нет конкурсов.</p>
       <p>Создавать конкурсы можно для канала, где ты <b>владелец</b> или <b>администратор</b>,
       а можно и вообще без канала — тогда участвовать смогут все.</p>
-      <button class="btn" onclick="openBotCreate()">➕ Создать конкурс в боте</button>
+      <button class="btn" onclick="renderCreateForm()">➕ Создать конкурс</button>
     </div>`;
     return;
   }
@@ -370,6 +372,7 @@ async function renderMyContests() {
         <div style="width:${pct}%;height:8px;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div>
       </div>
       <p>🏁 ${fmtDate(c.ends_at)}${c.peak_hour != null ? " · ⏰ пик " + String(c.peak_hour).padStart(2,"0") + ":00" : ""}</p>
+      <button class="btn" onclick="openManage(${c.id})">🛠 Управление</button>
       <button class="btn secondary" onclick="openStats(${c.id})">📊 Статистика</button>
     </div>`;
   }).join("");
@@ -381,11 +384,183 @@ async function renderMyContests() {
       <div class="stat"><b>${totalWins}</b><span>Победителей</span></div>
     </div>
     ${cards}
-    <button class="btn" onclick="openBotCreate()">➕ Создать ещё конкурс</button>`;
+    <button class="btn" onclick="renderCreateForm()">➕ Создать ещё конкурс</button>`;
 }
 
-async function openBotCreate() {
-  renderCreateForm();
+async function openManage(id) {
+  try {
+    const c = await api("/api/contests/" + id);
+    const s = c.settings || {};
+    const canDraw = ["active", "finished", "scheduled"].includes(c.status);
+    const toggles = [
+      ["code_words", "🔑 Кодовые слова"],
+      ["sponsor_tasks", "🎯 Задания спонсоров"],
+      ["show_participants", "👥 Показывать участников"],
+      ["show_tickets", "🎟 Счётчик билетов"],
+      ["share_button", "📤 Кнопка «Поделиться»"],
+      ["leaderboard", "🏅 Рейтинг приглашающих"],
+    ].map(([k, label]) =>
+      `<button class="btn ${s[k] ? "" : "secondary"}" onclick="toggleSetting(${id},'${k}')">${s[k] ? "✅" : "⬜️"} ${label}</button>`
+    ).join("");
+    app.innerHTML = `
+      <button class="btn ghost" onclick="go('mycontests')">◀️ К моим конкурсам</button>
+      <div class="card">
+        <div class="row"><h3>🛠 ${esc(c.title)}</h3><span class="pill">${esc(c.status_label)}</span></div>
+        <p>👥 ${c.participants} участников · 🏆 ${c.winners_count} победителей</p>
+        <button class="btn" onclick="openStats(${id})">📊 Статистика</button>
+        <button class="btn secondary" onclick="openContest(${id})">👁 Открыть как участник</button>
+      </div>
+      <div class="card">
+        <h3>⚙️ Настройки конкурса</h3>
+        ${toggles}
+      </div>
+      <div class="card">
+        <h3>📝 Редактирование</h3>
+        <button class="btn secondary" onclick="editContest(${id})">✏️ Изменить описание и приз</button>
+      </div>
+      <div class="card">
+        <h3>🎲 Розыгрыш</h3>
+        ${canDraw
+          ? `<button class="btn" onclick="runDraw(${id}, false)">🎲 Провести розыгрыш</button>
+             <button class="btn secondary" onclick="runDraw(${id}, true)">🔄 Повторный (без прошлых победителей)</button>`
+          : `<p>Розыгрыш доступен для активных и завершённых конкурсов.</p>`}
+        <button class="btn secondary" onclick="openResults(${id})">🏆 Итоги и победители</button>
+      </div>
+      <div class="card">
+        <h3>🧾 Данные</h3>
+        <button class="btn secondary" onclick="loadSources(${id})">📈 Источники приглашений</button>
+        <button class="btn secondary" onclick="exportContest(${id})">📤 Экспорт CSV</button>
+        <button class="btn secondary" onclick="openVerify(${id})">🔒 Проверка честности</button>
+        <div id="sourcesBox"></div>
+      </div>
+      <div class="card">
+        <h3>⚠️ Статус конкурса</h3>
+        <button class="btn secondary" onclick="finishContest(${id})">🏁 Завершить конкурс</button>
+        <button class="btn secondary" onclick="cancelContest(${id})">❌ Отменить конкурс</button>
+        <button class="btn secondary" onclick="archiveContest(${id})">📦 В архив</button>
+        <button class="btn ghost" onclick="deleteContest(${id})">🗑 Удалить конкурс</button>
+      </div>`;
+  } catch (e) { toast(e.message); }
+}
+
+async function toggleSetting(id, key) {
+  try {
+    const c = await api("/api/contests/" + id);
+    const settings = Object.assign({}, c.settings || {});
+    settings[key] = !settings[key];
+    await api("/api/contests/" + id + "/settings", { method: "PUT", body: JSON.stringify({ settings }) });
+    toast("Настройка обновлена");
+    openManage(id);
+  } catch (e) { toast(e.message); }
+}
+
+async function editContest(id) {
+  try {
+    const c = await api("/api/contests/" + id);
+    const title = prompt("Название конкурса:", c.title || "");
+    if (title === null) return;
+    const prize = prompt("Приз:", c.prize || "");
+    if (prize === null) return;
+    const desc = prompt("Описание:", c.description || "");
+    if (desc === null) return;
+    const winnersRaw = prompt("Сколько победителей:", String(c.winners_count || 1));
+    if (winnersRaw === null) return;
+    const payload = {
+      title: title.trim(),
+      prize: prize.trim(),
+      description: desc,
+      winners_count: Math.max(1, parseInt(winnersRaw || "1", 10) || 1),
+    };
+    await api("/api/contests/" + id, { method: "PATCH", body: JSON.stringify(payload) });
+    toast("Конкурс обновлён");
+    openManage(id);
+  } catch (e) { toast(e.message); }
+}
+
+async function runDraw(id, excludePrev) {
+  try {
+    const res = await api("/api/contests/" + id + "/draw", {
+      method: "POST",
+      body: JSON.stringify({ exclude_previous_winners: !!excludePrev }),
+    });
+    toast(res.message || "Розыгрыш проведён");
+    openResults(id);
+  } catch (e) { toast(e.message); }
+}
+
+async function openResults(id) {
+  try {
+    const r = await api("/api/contests/" + id + "/results");
+    const winners = (r.winners || []).map(w => {
+      const uname = w.username ? ` (@${esc(w.username)})` : "";
+      return `<p>${w.place}. <b>${esc(w.name)}</b>${uname}${w.prize ? " — 🎁 " + esc(w.prize) : ""}</p>`;
+    }).join("");
+    const reserves = (r.reserves || []).map(w => `<p>${w.place}. ${esc(w.name)}</p>`).join("");
+    app.innerHTML = `
+      <button class="btn ghost" onclick="openManage(${id})">◀️ К управлению</button>
+      <div class="card">
+        <h3>🏆 Итоги «${esc(r.title)}»</h3>
+        <p>👥 Участвовало: ${r.participants} · 🏆 Победителей: ${(r.winners||[]).length}</p>
+        ${winners || "<p>Победители ещё не определены.</p>"}
+      </div>
+      ${reserves ? `<div class="card"><h3>🔄 Запасные</h3>${reserves}</div>` : ""}`;
+  } catch (e) { toast(e.message); }
+}
+
+async function finishContest(id) {
+  if (!confirm("Завершить конкурс?")) return;
+  try {
+    const res = await api("/api/contests/" + id + "/finish", { method: "POST" });
+    toast(res.message || "Готово");
+    openManage(id);
+  } catch (e) { toast(e.message); }
+}
+
+async function cancelContest(id) {
+  if (!confirm("Отменить конкурс?")) return;
+  try {
+    const res = await api("/api/contests/" + id + "/cancel", { method: "POST" });
+    toast(res.message || "Готово");
+    openManage(id);
+  } catch (e) { toast(e.message); }
+}
+
+async function archiveContest(id) {
+  if (!confirm("Переместить конкурс в архив?")) return;
+  try {
+    const res = await api("/api/contests/" + id + "/archive", { method: "POST" });
+    toast(res.message || "Готово");
+    go("mycontests");
+  } catch (e) { toast(e.message); }
+}
+
+async function deleteContest(id) {
+  if (!confirm("Удалить конкурс вместе с участниками? Действие необратимо.")) return;
+  try {
+    const res = await api("/api/contests/" + id + "/delete", { method: "POST" });
+    toast(res.message || "Удалено");
+    go("mycontests");
+  } catch (e) { toast(e.message); }
+}
+
+async function openVerify(id) {
+  try {
+    const v = await api("/api/contests/" + id + "/verify");
+    if (!v.rounds || !v.rounds.length) {
+      toast("Розыгрышей ещё не было");
+      return;
+    }
+    const rows = v.rounds.map(r =>
+      `<p>Раунд ${r.round} (алг. ${esc(r.algorithm_version)})<br>
+        seed: <code>${esc(r.seed)}</code><br>
+        соль: <code>${esc(r.salt || "—")}</code><br>
+        SHA-256: <code>${esc(r.participants_hash || "—")}</code><br>
+        победители: ${(r.winners||[]).join(", ") || "—"}</p>`
+    ).join("");
+    app.innerHTML = `
+      <button class="btn ghost" onclick="openManage(${id})">◀️ К управлению</button>
+      <div class="card"><h3>🔒 Проверка честности</h3>${rows}</div>`;
+  } catch (e) { toast(e.message); }
 }
 
 async function renderCreateForm() {

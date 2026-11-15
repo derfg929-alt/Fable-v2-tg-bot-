@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import os
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -45,8 +48,14 @@ class Settings(BaseSettings):
     # Fable Randomizer: Mini App и API.
     bot_username: str = Field(default="", alias="BOT_USERNAME")
     mini_app_url: str = Field(default="", alias="MINI_APP_URL")
+    # Публичный адрес, который задаёт хостинг (Heroku/Replit/Amvera/Railway…).
+    public_url: str = Field(default="", alias="PUBLIC_URL")
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
     api_port: int = Field(default=8080, alias="API_PORT")
+    # Порт, назначенный хостингом (Heroku/Replit/Amvera/Railway отдают $PORT).
+    # Если он задан, он имеет приоритет над API_PORT — иначе проверка порта
+    # платформы не проходит и контейнер убивают по SIGTERM.
+    port: int | None = Field(default=None, alias="PORT", ge=1, le=65535)
     # Срок жизни подписи Telegram initData (секунды).
     initdata_ttl_seconds: int = Field(default=86400, alias="INITDATA_TTL_SECONDS", ge=0)
 
@@ -145,6 +154,19 @@ class Settings(BaseSettings):
         return model_str
 
     @property
+    def effective_api_port(self) -> int:
+        """Порт HTTP-сервера: сначала $PORT хостинга, затем API_PORT."""
+        return int(self.port) if self.port else int(self.api_port)
+
+    @property
+    def effective_mini_app_url(self) -> str:
+        """Публичный адрес Mini App: MINI_APP_URL, иначе PUBLIC_URL/RENDER_EXTERNAL_URL."""
+        url = (self.mini_app_url or self.public_url or os.environ.get("RENDER_EXTERNAL_URL", "")).strip()
+        if url and not url.startswith("http"):
+            url = "https://" + url
+        return url
+
+    @property
     def bot_token_value(self) -> str:
         """Токен в открытом виде только для передачи Telegram-клиенту."""
         return self.bot_token.get_secret_value()
@@ -197,8 +219,6 @@ class Settings(BaseSettings):
             return self.grok_model
         return self.groq_model
 
-
-import os
 
 _LAST_ENV_MTIME: float | None = None
 

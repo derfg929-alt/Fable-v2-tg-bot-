@@ -85,8 +85,7 @@ async def _resolve_bot_username(bot: Bot, session) -> str | None:
 async def _mini_app_url(session) -> str | None:
     from app.config import get_settings
 
-    url = (get_settings().mini_app_url or "").strip()
-    return url or None
+    return get_settings().effective_mini_app_url or None
 
 
 async def _is_admin(session, user_id: int) -> bool:
