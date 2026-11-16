@@ -1540,7 +1540,7 @@ async def handle_gear_upgrade(message: types.Message):
             await message.reply(f"❌ {e}")
 
 
-@router.message(F.text.casefold().startswith("реп"))
+@router.message(F.text.casefold().startswith("реп") & ~F.text.casefold().startswith("репорт"))
 async def handle_reputation(message: types.Message):
     if not message.from_user:
         return

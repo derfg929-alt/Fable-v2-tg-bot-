@@ -40,7 +40,11 @@ from app.handlers.promo_handlers import router as promo_router
 from app.handlers.randomizer_handlers import router as randomizer_router
 from app.handlers.randomizer_admin_handlers import router as randomizer_admin_router
 from app.handlers.user_contest_handlers import router as user_contest_router
-from app.middlewares import MessageActivityAndSecurityMiddleware, CallbackAnswerMiddleware
+from app.middlewares import (
+    MessageActivityAndSecurityMiddleware,
+    CallbackAnswerMiddleware,
+    CommandEscapeMiddleware,
+)
 from app.handlers.owner_handlers import router as owner_router
 from app.tasks.background import (
     background_bank_interest_worker,
@@ -91,6 +95,9 @@ def create_dispatcher() -> Dispatcher:
 
     dp.include_router(fallback_router)
 
+    # Outer-мидлварь: команды и кнопки меню должны работать даже во время
+    # пошагового мастера (иначе StateFilter-хэндлеры «съедают» ввод).
+    dp.message.outer_middleware(CommandEscapeMiddleware())
     dp.message.middleware(MessageActivityAndSecurityMiddleware())
     dp.callback_query.middleware(CallbackAnswerMiddleware())
 
