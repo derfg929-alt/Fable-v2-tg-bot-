@@ -1,12 +1,16 @@
-"""Общие утилиты: имя бота, реферальные ссылки, проверка подписок."""
+"""Общие утилиты: имя бота, реферальные ссылки, проверка подписок, жеребьёвка."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
+
+from . import database
+from .draw import build_pool
 
 logger = logging.getLogger("fable_random_bot")
 
@@ -112,3 +116,21 @@ async def missing_subscriptions(
         *(checker.is_subscribed(channel, user_id) for channel in channels)
     )
     return [channel for channel, ok in zip(channels, results) if not ok]
+
+
+async def draw_winner(contest_id: str | int) -> str | None:
+    """Выбрать одного победителя конкурса взвешенно по числу билетов.
+
+    Пул — это список ID участников, где каждый повторяется столько раз, сколько
+    у него билетов в этом конкурсе (минимум один). Победитель выбирается через
+    ``secrets.choice`` (криптографический рандом). Возвращает ID победителя или
+    ``None``, если конкурса нет или в нём нет участников.
+    """
+    data = await database.load_data()
+    contest = data["contests"].get(str(contest_id))
+    if not contest:
+        return None
+    pool = build_pool(contest, data["users"])
+    if not pool:
+        return None
+    return secrets.choice(pool)

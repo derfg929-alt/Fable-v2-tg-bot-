@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fable_random_bot import admin_flow, database, draw, keyboards
+from fable_random_bot import admin_flow, database, draw, keyboards, utils
 from fable_random_bot.handlers import draw as draw_handlers
 from fable_random_bot.handlers import user as user_handlers
 
@@ -249,6 +249,62 @@ def test_draw_empty_pool():
     contest, users = _contest([], {}, 1, 0)
     result = draw.draw_winners(contest, users, 1, 0)
     assert result["winners"] == []
+
+
+# --- Реферальный диплинк /start ref_<id> ----------------------------------
+
+async def test_start_ref_link_stores_pending_referral(isolated_db):
+    from aiogram.filters import CommandObject
+    from fable_random_bot.handlers import start as start_handlers
+
+    message = FakeMessage(FakeBot())
+    message.from_user = SimpleNamespace(id=20, username="u")
+    command = CommandObject(prefix="/", command="start", args="ref_10")
+    await start_handlers.cmd_start(message, command)
+    assert await database.pop_pending_referral(20) == 10
+
+
+async def test_start_ignores_self_referral(isolated_db):
+    from aiogram.filters import CommandObject
+    from fable_random_bot.handlers import start as start_handlers
+
+    message = FakeMessage(FakeBot())
+    message.from_user = SimpleNamespace(id=20, username="u")
+    command = CommandObject(prefix="/", command="start", args="ref_20")
+    await start_handlers.cmd_start(message, command)
+    assert await database.pop_pending_referral(20) is None
+
+
+# --- draw_winner (один победитель по конкурсу) ----------------------------
+
+async def test_draw_winner_returns_participant(isolated_db):
+    await _make_contest()
+    for uid in (10, 20, 30):
+        await database.add_participant("1", uid)
+    winner = await utils.draw_winner("1")
+    assert winner in {"10", "20", "30"}
+
+
+async def test_draw_winner_unknown_contest(isolated_db):
+    assert await utils.draw_winner("999") is None
+
+
+async def test_draw_winner_no_participants(isolated_db):
+    await _make_contest()
+    assert await utils.draw_winner("1") is None
+
+
+async def test_draw_winner_favours_more_tickets(isolated_db):
+    await _make_contest()
+    await database.add_participant("1", 10)
+    await database.add_participant("1", 20)
+    # Участнику 20 даём большое преимущество в билетах.
+    await database.add_contest_tickets(20, "1", 1000)
+    wins = 0
+    for _ in range(60):
+        if await utils.draw_winner("1") == "20":
+            wins += 1
+    assert wins > 50
 
 
 # --- Рейтинг приглашающих -------------------------------------------------
