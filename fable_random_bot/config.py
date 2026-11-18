@@ -11,8 +11,9 @@ from pathlib import Path
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
-# Telegram ID администраторов, которым доступно создание конкурсов.
-# Задаётся строкой через запятую: ADMIN_IDS="111,222,333".
+# Telegram ID администраторов бота. Задаётся строкой через запятую:
+# ADMIN_IDS="111,222,333". На создание конкурсов не влияет — их может создавать
+# любой пользователь; оставлено для служебных проверок.
 def _parse_admin_ids(raw: str) -> list[int]:
     ids: list[int] = []
     for chunk in raw.replace(";", ",").split(","):

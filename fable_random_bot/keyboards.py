@@ -10,18 +10,23 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from . import config
-
 BTN_ACTIVE = "🎁 Активные розыгрыши"
 BTN_MY = "🎟 Мои билеты и рефералы"
 BTN_CREATE = "👑 Создать конкурс"
 
 
 def main_menu(user_id: int) -> ReplyKeyboardMarkup:
-    """Reply-клавиатура главного меню. Кнопка создания — только для админов."""
-    rows = [[KeyboardButton(text=BTN_ACTIVE)], [KeyboardButton(text=BTN_MY)]]
-    if config.is_admin(user_id):
-        rows.append([KeyboardButton(text=BTN_CREATE)])
+    """Reply-клавиатура главного меню.
+
+    Создавать конкурсы может любой пользователь, поэтому кнопка создания видна
+    всегда. Для публикации конкурса в канале пользователь должен быть
+    владельцем/администратором канала, а бот — администратором канала.
+    """
+    rows = [
+        [KeyboardButton(text=BTN_ACTIVE)],
+        [KeyboardButton(text=BTN_MY)],
+        [KeyboardButton(text=BTN_CREATE)],
+    ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
