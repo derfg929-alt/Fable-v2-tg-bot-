@@ -18,9 +18,8 @@ from sqlalchemy.ext.asyncio import (
 
 from app.config import get_settings
 from app.db.models import Base
-from app.db.json_db import json_db_manager
 
-# Адаптируем первичные ключи моделей для совместимости с SQLite / JSON
+# Адаптируем первичные ключи моделей для совместимости с SQLite
 for table in Base.metadata.sorted_tables:
     for col in table.columns:
         if col.name == "id" and col.primary_key:
@@ -309,16 +308,7 @@ async def init_database() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_legacy_schema(conn)
-
-    # Если работает SQLite (тестовая среда), восстанавливаем сохраненные данные при наличии
-    if _is_sqlite_backend():
-        async with SessionFactory() as session:
-            await json_db_manager.restore_to_session(session)
     _initialized_db = True
-
-
-# Для обратной совместимости
-init_json_database = init_database
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -351,7 +341,6 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
                 try:
                     async with session.begin():
                         yield session
-                    await json_db_manager.dump_from_session(session)
                 except BaseException:
                     await session.rollback()
                     raise
@@ -378,7 +367,4 @@ async def check_database_connection() -> bool:
 
 async def dispose_engine() -> None:
     """Закрывает соединения пула."""
-    if _is_sqlite_backend():
-        async with SessionFactory() as session:
-            await json_db_manager.dump_from_session(session)
     await engine.dispose()

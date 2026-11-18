@@ -13,7 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.config import get_settings
-from app.db.session import check_database_connection, dispose_engine, engine, init_json_database
+from app.db.session import check_database_connection, dispose_engine
 
 # --- УМНЫЙ ПОИСК BASE ---
 try:
@@ -113,7 +113,7 @@ async def main() -> None:
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
-    logger.info("Проверка и инициализация JSON-базы данных...")
+    logger.info("Проверка и инициализация базы данных SQLite...")
     if not await check_database_connection():
         logger.critical("Не удалось инициализировать базу данных!")
         sys.exit(1)

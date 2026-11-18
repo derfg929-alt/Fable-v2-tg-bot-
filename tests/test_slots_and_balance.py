@@ -1,25 +1,23 @@
 import pytest
-import os
-import json
+
 from app.db.session import session_scope
-from app.db.json_db import json_db_manager
 from app.services.player_service import get_or_create_player
 from app.services.games_service import play_slots, InvalidAmountError
 
+
 @pytest.mark.asyncio
-async def test_json_database_persistence():
+async def test_sqlite_database_persistence():
+    """Данные сохраняются между сессиями в едином SQLite-хранилище."""
     uid = 55667788
     async with session_scope() as session:
-        reg = await get_or_create_player(session, telegram_id=uid, first_name="JsonTester")
+        reg = await get_or_create_player(session, telegram_id=uid, first_name="SqliteTester")
         reg.player.wallet = 7777
 
-    # Verify that data exists in json_db_manager
-    json_data = json_db_manager.load_json()
-    assert "players" in json_data
-    players = json_data["players"]
-    found = [p for p in players if p.get("telegram_id") == uid]
-    assert len(found) == 1
-    assert found[0]["wallet"] == 7777
+    # Новая сессия видит те же данные (долговременное хранилище — SQLite).
+    async with session_scope() as session:
+        reg = await get_or_create_player(session, telegram_id=uid, first_name="SqliteTester")
+        assert reg.player.wallet == 7777
+
 
 @pytest.mark.asyncio
 async def test_slots_rebalance_and_limit():

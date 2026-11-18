@@ -19,15 +19,10 @@ class Settings(BaseSettings):
 
     bot_token: SecretStr = Field(default=SecretStr("123456:dummy_token_default"), alias="BOT_TOKEN")
     owner_id: int = Field(default=8039111975, alias="OWNER_ID", gt=0)
-    # По умолчанию — локальный SQLite-файл, а долговременное хранилище — JSON
-    # (data/bot_database.json). PostgreSQL опционален: задайте DATABASE_URL.
+    # Хранилище — единый SQLite-файл. PostgreSQL опционален: задайте DATABASE_URL.
     database_url: SecretStr = Field(
         default=SecretStr("sqlite+aiosqlite:///data/bot_database.db"),
         alias="DATABASE_URL",
-    )
-    json_database_path: str = Field(
-        default="data/bot_database.json",
-        alias="JSON_DATABASE_PATH",
     )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", alias="LOG_LEVEL"

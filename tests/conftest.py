@@ -1,21 +1,17 @@
 import os
-import tempfile
 import pytest
-import asyncio
 
-# Для тестов в песочнице изолируем БД в памяти SQLite, а JSON-файл уводим во
-# временную папку, чтобы тесты не трогали реальную базу data/bot_database.json.
+# Для тестов в песочнице изолируем БД в памяти SQLite, чтобы тесты не трогали
+# реальную базу data/bot_database.db.
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-os.environ.setdefault(
-    "JSON_DATABASE_PATH", os.path.join(tempfile.gettempdir(), "fable_test_db.json")
-)
 
-from app.db.session import session_scope, engine
-from app.db.json_db import json_db_manager
+from app.db.session import session_scope
+from app.db.models import Base
 
 @pytest.fixture(autouse=True)
 async def cleanup_db():
     yield
     async with session_scope() as session:
-        # Очищаем данные между тестами в SQLite и JSON
-        await json_db_manager.clear_database(session)
+        # Очищаем данные между тестами в SQLite.
+        for table in reversed(Base.metadata.sorted_tables):
+            await session.execute(table.delete())
