@@ -49,6 +49,33 @@ def _write(path: str, data: dict[str, Any]) -> None:
     os.replace(tmp_path, path)
 
 
+async def create_contest(contest: dict[str, Any]) -> dict[str, Any]:
+    """Сохранить конкурс в JSON-базе.
+
+    Если у конкурса нет ``id``, присваивается следующий свободный числовой id.
+    Возвращает сохранённую запись конкурса.
+    """
+    async with _lock:
+        db = _load_unlocked()
+        contests = db["contests"]
+        if not contest.get("id"):
+            contest = {**contest, "id": _next_contest_id(contests)}
+        contests[str(contest["id"])] = contest
+        _write(DB_PATH, db)
+        return contest
+
+
+def _next_contest_id(contests: dict[str, Any]) -> str:
+    """Следующий свободный числовой id конкурса."""
+    max_id = 0
+    for key in contests:
+        try:
+            max_id = max(max_id, int(key))
+        except (TypeError, ValueError):
+            continue
+    return str(max_id + 1)
+
+
 async def get_user(user_id: int) -> dict[str, Any]:
     """Вернуть пользователя, создав его при необходимости."""
     async with _lock:
