@@ -88,7 +88,7 @@ async def test_api_server_binds_platform_port(monkeypatch):
 
 
 def test_mini_app_has_owner_management_buttons():
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mini_app.html")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "index.html")
     html = open(path, encoding="utf-8").read()
     for needle in (
         "openManage(",
@@ -106,9 +106,18 @@ def test_mini_app_has_owner_management_buttons():
 
 
 def test_mini_app_has_create_button_on_home():
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mini_app.html")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "index.html")
     html = open(path, encoding="utf-8").read()
     assert re.search(r'onclick="renderCreateForm\(\)"', html), "Нет кнопки создания конкурса"
+
+
+def test_index_route_serves_index_html():
+    """Эндпойнт `/` отдаёт index.html, а не устаревший mini_app.html."""
+    import app.api as api
+
+    response = api._serve_static_html("index.html", "mini_app.html")
+    assert response.status_code == 200
+    assert str(response.path).endswith("index.html")
 
 
 @pytest.mark.asyncio

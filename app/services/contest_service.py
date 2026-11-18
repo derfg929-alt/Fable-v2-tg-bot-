@@ -226,16 +226,23 @@ async def list_contests(session: AsyncSession, *, category: str = "all", include
     return contests
 
 
-async def participants_count(session: AsyncSession, contest_id: int) -> int:
-    return int(
-        await session.scalar(
-            select(func.count(ContestEntry.id)).where(
-                ContestEntry.contest_id == contest_id,
-                ContestEntry.status == "active",
-            )
-        )
-        or 0
+async def participants_count(
+    session: AsyncSession, contest_id: int, *, q: str | None = None
+) -> int:
+    """Число активных участников (с учётом фильтра поиска `q`)."""
+    stmt = select(func.count(ContestEntry.id)).where(
+        ContestEntry.contest_id == contest_id,
+        ContestEntry.status == "active",
     )
+    if q:
+        needle = q.lstrip("@").strip().lower()
+        if needle:
+            like = f"%{needle}%"
+            stmt = stmt.outerjoin(Player, Player.telegram_id == ContestEntry.user_id).where(
+                func.lower(func.coalesce(Player.username, "")).like(like)
+                | func.lower(func.coalesce(Player.custom_nickname, Player.first_name)).like(like)
+            )
+    return int(await session.scalar(stmt) or 0)
 
 
 async def winners_count(session: AsyncSession, contest_id: int) -> int:
@@ -578,23 +585,32 @@ def weekday_labels() -> list[str]:
 
 
 async def list_participants_public(
-    session: AsyncSession, contest_id: int, *, limit: int = 50, offset: int = 0
+    session: AsyncSession, contest_id: int, *, limit: int = 50, offset: int = 0, q: str | None = None
 ) -> list[tuple[ContestEntry, Player | None, int]]:
     """Постраничный список участников для публичного показа.
 
     Возвращает (entry, player, invited_count) с числом зачтённых рефералов.
+    Поиск `q` (имя или @username) применяется до пагинации, поэтому находит
+    участника на любой странице, а не только на первой.
     """
     from app.db.models import ContestReferral
 
-    entries = (
-        await session.scalars(
-            select(ContestEntry)
-            .where(ContestEntry.contest_id == contest_id, ContestEntry.status == "active")
-            .order_by(ContestEntry.joined_at.asc())
-            .limit(limit)
-            .offset(offset)
-        )
-    ).all()
+    stmt = (
+        select(ContestEntry)
+        .outerjoin(Player, Player.telegram_id == ContestEntry.user_id)
+        .where(ContestEntry.contest_id == contest_id, ContestEntry.status == "active")
+        .order_by(ContestEntry.joined_at.asc())
+    )
+    if q:
+        needle = q.lstrip("@").strip().lower()
+        if needle:
+            like = f"%{needle}%"
+            stmt = stmt.where(
+                func.lower(func.coalesce(Player.username, "")).like(like)
+                | func.lower(func.coalesce(Player.custom_nickname, Player.first_name)).like(like)
+            )
+    entries = (await session.scalars(stmt.limit(limit).offset(offset))).all()
+
     result: list[tuple[ContestEntry, Player | None, int]] = []
     for entry in entries:
         player = await session.get(Player, entry.user_id)
