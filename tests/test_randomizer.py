@@ -304,29 +304,14 @@ async def test_draw_is_verifiable_and_redraw_excludes_previous():
 
 
 @pytest.mark.asyncio
-async def test_json_database_file_roundtrip(tmp_path):
-    """JSON-файл действительно хранит данные (основное хранилище)."""
-    from app.db.json_db import JsonDatabaseManager
-
-    json_path = tmp_path / "db.json"
-    manager = JsonDatabaseManager(str(json_path))
-
+async def test_sqlite_database_persistence():
+    """Конкурс сохраняется в SQLite и виден в новой сессии (долговременное хранилище)."""
     async with session_scope() as session:
-        await cs.create_contest(session, title="JsonPersist", status=cs.STATUS_ACTIVE, prize="P")
-        await manager.dump_from_session(session)
+        await cs.create_contest(session, title="SqlitePersist", status=cs.STATUS_ACTIVE, prize="P")
 
-    data = manager.load_json()
-    assert any(c["title"] == "JsonPersist" for c in data.get("contests", []))
-
-    # Восстановление в чистую сессию из JSON.
-    async with session_scope() as session:
-        for tbl in reversed(__import__("app.db.models", fromlist=["Base"]).Base.metadata.sorted_tables):
-            await session.execute(tbl.delete())
-    async with session_scope() as session:
-        await manager.restore_to_session(session)
     async with session_scope() as session:
         titles = [c.title for c in await cs.list_contests(session)]
-        assert "JsonPersist" in titles
+        assert "SqlitePersist" in titles
 
 
 # ===================== УВЕДОМЛЕНИЯ =====================
