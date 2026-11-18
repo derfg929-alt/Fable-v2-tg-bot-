@@ -449,3 +449,31 @@ async def test_api_draw_requires_owner(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await draw_contest(cid, DrawRequest(), x_init_data=_init_data(910041))
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_api_participants_search_finds_any_page(monkeypatch):
+    """Поиск участников должен находить игрока не только на первой странице."""
+    from app.api import contest_participants, join_contest, JoinRequest
+
+    _fake_bot(monkeypatch)
+
+    async with session_scope() as session:
+        contest = await cs.create_contest(
+            session, title="Search", status=cs.STATUS_ACTIVE,
+            settings={"show_participants": True},
+        )
+        cid = contest.id
+
+    # 60 участников: цель поиска — последняя (ушла бы на 2-ю страницу).
+    target = 920060
+    for uid in range(920001, 920061):
+        await join_contest(JoinRequest(contest_id=cid), x_init_data=_init_data(uid))
+
+    page1 = await contest_participants(cid, page=1, q=None, x_init_data=_init_data(920001))
+    assert page1["total"] == 60
+    assert len(page1["participants"]) == 50
+
+    found = await contest_participants(cid, page=1, q=str(target), x_init_data=_init_data(920001))
+    assert found["total"] == 1
+    assert found["participants"][0]["name"] == f"User{target}"

@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from urllib.parse import parse_qsl
@@ -819,14 +820,12 @@ async def contest_participants(
         if not settings.get("show_participants"):
             raise HTTPException(status_code=403, detail="Список участников скрыт организатором")
         offset = (page - 1) * 50
-        rows = await cs.list_participants_public(session, contest_id, limit=50, offset=offset)
-        total = await cs.participants_count(session, contest_id)
+        rows = await cs.list_participants_public(session, contest_id, limit=50, offset=offset, q=q)
+        total = await cs.participants_count(session, contest_id, q=q)
         items = []
         for entry, player, invited in rows:
             name = (player.custom_nickname or player.first_name) if player else f"ID {entry.user_id}"
             username = player.username if player else None
-            if q and q.lstrip("@").lower() not in (username or "").lower() and q.lower() not in name.lower():
-                continue
             item = {"name": name, "username": username, "invited": invited}
             if settings.get("show_tickets"):
                 item["tickets"] = int(entry.tickets)
@@ -927,23 +926,27 @@ async def contest_verify(contest_id: int, x_init_data: str | None = Header(defau
     return {"rounds": rounds}
 
 
+def _serve_static_html(*names: str) -> FileResponse | JSONResponse:
+    """Отдаёт первую существующую HTML-страницу из списка кандидатов.
+
+    `index.html` — основной интерфейс Mini App; `mini_app.html` оставлен как
+    запасное имя для совместимости со старыми развёртываниями.
+    """
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in names:
+        path = os.path.join(base, name)
+        if os.path.exists(path):
+            return FileResponse(path, media_type="text/html")
+    return JSONResponse({"detail": f"{names[0]} не найден"}, status_code=404)
+
+
 @app.get("/verifier")
 async def verifier_page():
     """Простая веб-страница для независимой проверки честности розыгрыша."""
-    import os
-
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "verifier.html")
-    if os.path.exists(path):
-        return FileResponse(path, media_type="text/html")
-    return JSONResponse({"detail": "verifier.html не найден"}, status_code=404)
+    return _serve_static_html("verifier.html")
 
 
 @app.get("/")
 async def index():
     """Отдаёт интерфейс Mini App."""
-    import os
-
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mini_app.html")
-    if os.path.exists(path):
-        return FileResponse(path, media_type="text/html")
-    return JSONResponse({"detail": "mini_app.html не найден"}, status_code=404)
+    return _serve_static_html("index.html", "mini_app.html")

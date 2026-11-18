@@ -91,6 +91,32 @@
   }
   .toast.show { display: block; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  label { display: block; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  input, textarea, select {
+    width: 100%; background: var(--card2); color: var(--text);
+    border: 1px solid #2e3765; border-radius: 12px; padding: 12px;
+    margin-top: 6px; font-size: 15px; font-family: inherit;
+  }
+  input[type="checkbox"] { width: auto; margin: 0 6px 0 0; vertical-align: middle; }
+  textarea { resize: vertical; }
+  code {
+    color: #8ab4ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+  }
+  a.btn { text-decoration: none; }
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 20;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .modal {
+    background: var(--card); border: 1px solid #2e3765; border-radius: 16px;
+    padding: 18px; width: 100%; max-width: 380px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+  }
+  .modal h3 { margin: 0 0 8px; font-size: 16px; }
+  .modal p { color: var(--text); font-size: 14px; margin: 0 0 6px; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .modal-actions .btn { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -126,7 +152,7 @@ const initData = tg?.initData || "";
 
 const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
-let state = { view: "home", category: "active", historyFilter: "all" };
+let state = { view: "home", category: "active", historyFilter: "all", referralLink: "" };
 
 function toast(msg) {
   toastEl.textContent = msg;
@@ -134,20 +160,64 @@ function toast(msg) {
   setTimeout(() => toastEl.classList.remove("show"), 2600);
 }
 
+// Telegram Mini App не поддерживает нативные alert/confirm/prompt, поэтому
+// рисуем собственные диалоги — они работают и в Telegram, и в обычном браузере.
+function _modal({ message, fields, confirmText, cancelText, danger }) {
+  return new Promise(resolve => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    const fieldsHtml = (fields || []).map((f, i) => `
+      <label>${esc(f.label || "")}</label>
+      <input data-i="${i}" type="${esc(f.type || "text")}" value="${esc(f.value ?? "")}"
+             placeholder="${esc(f.placeholder || "")}" ${f.min != null ? `min="${f.min}"` : ""} />`).join("");
+    backdrop.innerHTML = `
+      <div class="modal">
+        <p>${esc(message || "")}</p>
+        ${fieldsHtml}
+        <div class="modal-actions">
+          <button class="btn secondary" data-act="cancel">${esc(cancelText || "Отмена")}</button>
+          <button class="btn" data-act="ok" ${danger ? 'style="background:var(--err)"' : ""}>${esc(confirmText || "OK")}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const done = value => { backdrop.remove(); resolve(value); };
+    backdrop.querySelector('[data-act="cancel"]').onclick = () => done(null);
+    backdrop.querySelector('[data-act="ok"]').onclick = () => {
+      if (!fields || !fields.length) return done(true);
+      const values = fields.map((f, i) => backdrop.querySelector(`input[data-i="${i}"]`).value);
+      done(values.length === 1 ? values[0] : values);
+    };
+    const first = backdrop.querySelector("input");
+    if (first) setTimeout(() => first.focus(), 50);
+  });
+}
+function uiConfirm(message) {
+  return _modal({ message, confirmText: "Да", cancelText: "Отмена" }).then(v => v === true);
+}
+function uiPrompt(message, def = "") {
+  return _modal({ message, fields: [{ value: def }], confirmText: "Сохранить" }).then(v => v);
+}
+
 async function api(path, options = {}) {
   const headers = Object.assign({ "X-Init-Data": initData }, options.headers || {});
   if (options.body) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, Object.assign({}, options, { headers }));
+  let res;
+  try {
+    res = await fetch(path, Object.assign({}, options, { headers }));
+  } catch (e) {
+    throw new Error("Нет соединения с сервером. Проверь интернет и попробуй снова.");
+  }
   let data = null;
   try { data = await res.json(); } catch (e) { data = null; }
-  if (!res.ok) {
-    if (res.status === 401) {
-      throw new Error(data?.detail || "Ошибка авторизации Telegram");
-    }
-    if (data && data.message) return data;
-    throw new Error(data?.detail || ("Ошибка " + res.status));
+  if (res.ok) return data;
+  // Действия (участие, отмена, кодовое слово, задание) сообщают об отказе
+  // телом {ok:false, message} — отдаём его вызывающему коду, чтобы показать
+  // понятное объяснение, а не считать это сетевой ошибкой.
+  if (data && data.ok === false && typeof data.message === "string") return data;
+  if (res.status === 401) {
+    throw new Error(data?.detail || "Ошибка авторизации Telegram. Открой Mini App заново.");
   }
-  return data;
+  throw new Error(data?.detail || data?.message || ("Ошибка " + res.status));
 }
 
 function esc(s) {
@@ -155,6 +225,10 @@ function esc(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[c]));
 }
+
+// Ответ API может прийти без ожидаемого массива (пустой/неполный ответ) —
+// тогда рендерим пустое состояние вместо падения на .map()/.length.
+function arr(x) { return Array.isArray(x) ? x : []; }
 
 function fmtDate(iso) {
   if (!iso) return "—";
@@ -184,7 +258,7 @@ async function renderHome() {
     "Привет, " + (me.user.first_name || "друг") + "! ✨";
   const contests = await api("/api/contests?category=active");
   let cards = "";
-  for (const c of contests.contests.slice(0, 4)) {
+  for (const c of arr(contests.contests).slice(0, 4)) {
     cards += contestCard(c);
   }
   if (!cards) cards = `<div class="card"><p>Пока нет активных конкурсов. Загляни позже! 🎁</p></div>`;
@@ -225,7 +299,7 @@ async function renderContests() {
   const tabs = cats.map(([k,l]) =>
     `<button class="${state.category===k?"active":""}" onclick="setCategory('${k}')">${l}</button>`).join("");
   const data = await api("/api/contests?category=" + state.category);
-  let cards = data.contests.map(contestCard).join("");
+  let cards = arr(data.contests).map(contestCard).join("");
   if (!cards) cards = `<div class="card"><p>Пока нет конкурсов в этой категории. Загляни позже! 🎁</p></div>`;
   app.innerHTML = `<div class="tabs">${tabs}</div>${cards}`;
 }
@@ -234,21 +308,21 @@ async function openContest(id) {
   const c = await api("/api/contests/" + id);
   const s = c.settings || {};
   let channels = "";
-  if (c.channels && c.channels.length) {
+  if (arr(c.channels).length) {
     channels = "<h3 style='margin-top:12px'>📢 Обязательные каналы</h3>" +
-      c.channels.map(ch => {
+      arr(c.channels).map(ch => {
         const url = ch.username ? `https://t.me/${ch.username.replace('@','')}` : ch.invite_link;
         return url ? `<a class="btn secondary" style="display:block;margin-top:6px" href="${esc(url)}" target="_blank">📢 ${esc(ch.title||ch.username)}</a>` : `<p>• ${esc(ch.title||ch.chat_id)}</p>`;
       }).join("");
   }
   let winners = "";
-  if (c.winners && c.winners.length) {
+  if (arr(c.winners).length) {
     winners = "<h3 style='margin-top:12px'>🏆 Победители</h3>" +
-      c.winners.map(w => `<p>${w.place}. <b>${esc(w.name)}</b>${w.prize?" — 🎁 "+esc(w.prize):""}</p>`).join("");
+      arr(c.winners).map(w => `<p>${w.place}. <b>${esc(w.name)}</b>${w.prize?" — 🎁 "+esc(w.prize):""}</p>`).join("");
   }
-  if (c.reserves && c.reserves.length) {
+  if (arr(c.reserves).length) {
     winners += "<h3 style='margin-top:12px'>🔄 Запасные</h3>" +
-      c.reserves.map(w => `<p>${w.place}. ${esc(w.name)}</p>`).join("");
+      arr(c.reserves).map(w => `<p>${w.place}. ${esc(w.name)}</p>`).join("");
   }
   const canJoin = ["active","scheduled"].includes(c.status);
   let action = "";
@@ -287,9 +361,9 @@ async function openContest(id) {
 }
 
 async function submitCodeWord(id) {
-  const word = prompt("Введи кодовое слово:");
-  if (!word) return;
-  const res = await api("/api/contests/code-word", { method: "POST", body: JSON.stringify({ contest_id: id, word }) });
+  const word = await uiPrompt("Введи кодовое слово:");
+  if (!word || !word.trim()) return;
+  const res = await api("/api/contests/code-word", { method: "POST", body: JSON.stringify({ contest_id: id, word: word.trim() }) });
   toast(res.message || "Готово");
   setTimeout(() => openContest(id), 800);
 }
@@ -309,22 +383,37 @@ async function shareContest(id) {
   else window.open(shareUrl, "_blank");
 }
 
-async function openParticipants(id) {
-  const data = await api("/api/contests/" + id + "/participants");
-  const rows = data.participants.map((p, i) => {
+async function openParticipants(id, page = 1, q = "") {
+  const query = "?page=" + page + (q ? "&q=" + encodeURIComponent(q) : "");
+  const data = await api("/api/contests/" + id + "/participants" + query);
+  const rows = arr(data.participants).map((p, i) => {
     const uname = p.username ? ` (@${esc(p.username)})` : "";
     const extra = p.tickets != null ? ` — 🎟 ${p.tickets}` : (p.invited ? ` — 👥 ${p.invited}` : "");
-    return `<p>${i+1}. ${esc(p.name)}${uname}${extra}</p>`;
+    return `<p>${(page - 1) * 50 + i + 1}. ${esc(p.name)}${uname}${extra}</p>`;
   }).join("");
+  const total = data.total || 0;
+  const pages = Math.max(1, Math.ceil(total / 50));
+  const pager = pages > 1
+    ? `<div class="row" style="margin-top:10px">
+         <button class="btn ghost" style="width:auto" onclick="openParticipants(${id},${page - 1},${esc(JSON.stringify(q))})" ${page <= 1 ? "disabled" : ""}>◀️</button>
+         <span style="color:var(--muted);font-size:13px">Стр. ${page} из ${pages}</span>
+         <button class="btn ghost" style="width:auto" onclick="openParticipants(${id},${page + 1},${esc(JSON.stringify(q))})" ${page >= pages ? "disabled" : ""}>▶️</button>
+       </div>` : "";
   app.innerHTML = `
     <button class="btn ghost" onclick="openContest(${id})">◀️ К конкурсу</button>
-    <div class="card"><h3>👥 Участники (${data.total})</h3>${rows || "<p>Пока никого.</p>"}</div>`;
+    <div class="card">
+      <h3>👥 Участники (${total})</h3>
+      <input id="partsQ" placeholder="🔍 Поиск по имени или @username" value="${esc(q)}"
+             onkeydown="if(event.key==='Enter') openParticipants(${id},1,this.value)" />
+      ${rows || "<p>Пока никого.</p>"}
+      ${pager}
+    </div>`;
 }
 
 async function openLeaderboard(id) {
   const data = await api("/api/contests/" + id + "/leaderboard");
   const medals = {1:"🥇",2:"🥈",3:"🥉"};
-  const rows = data.leaderboard.map(e => {
+  const rows = arr(data.leaderboard).map(e => {
     const uname = e.username ? ` (@${esc(e.username)})` : "";
     return `<p>${medals[e.place]||e.place+"."} ${esc(e.name)}${uname} — 👥 ${e.invited}</p>`;
   }).join("");
@@ -347,7 +436,7 @@ async function leaveContest(id) {
 
 async function renderMyContests() {
   const data = await api("/api/my-contests");
-  if (!data.contests.length) {
+  if (!arr(data.contests).length) {
     app.innerHTML = `<div class="card">
       <h3>📣 Мои конкурсы</h3>
       <p>У тебя пока нет конкурсов.</p>
@@ -357,10 +446,10 @@ async function renderMyContests() {
     </div>`;
     return;
   }
-  const active = data.contests.filter(c => c.status === "active").length;
-  const totalParts = data.contests.reduce((s, c) => s + (c.participants || 0), 0);
-  const totalWins = data.contests.reduce((s, c) => s + (c.winners || 0), 0);
-  const cards = data.contests.map(c => {
+  const active = arr(data.contests).filter(c => c.status === "active").length;
+  const totalParts = arr(data.contests).reduce((s, c) => s + (c.participants || 0), 0);
+  const totalWins = arr(data.contests).reduce((s, c) => s + (c.winners || 0), 0);
+  const cards = arr(data.contests).map(c => {
     const goal = Math.max(1, c.winners_count || 1);
     const pct = Math.min(100, Math.round((c.winners || 0) / goal * 100));
     return `
@@ -378,7 +467,7 @@ async function renderMyContests() {
   }).join("");
   app.innerHTML = `
     <div class="grid">
-      <div class="stat"><b>${data.contests.length}</b><span>Всего</span></div>
+      <div class="stat"><b>${arr(data.contests).length}</b><span>Всего</span></div>
       <div class="stat"><b>${active}</b><span>Активных</span></div>
       <div class="stat"><b>${totalParts}</b><span>Участников</span></div>
       <div class="stat"><b>${totalWins}</b><span>Победителей</span></div>
@@ -457,13 +546,13 @@ async function toggleSetting(id, key) {
 async function editContest(id) {
   try {
     const c = await api("/api/contests/" + id);
-    const title = prompt("Название конкурса:", c.title || "");
+    const title = await uiPrompt("Название конкурса:", c.title || "");
     if (title === null) return;
-    const prize = prompt("Приз:", c.prize || "");
+    const prize = await uiPrompt("Приз:", c.prize || "");
     if (prize === null) return;
-    const desc = prompt("Описание:", c.description || "");
+    const desc = await uiPrompt("Описание:", c.description || "");
     if (desc === null) return;
-    const winnersRaw = prompt("Сколько победителей:", String(c.winners_count || 1));
+    const winnersRaw = await uiPrompt("Сколько победителей:", String(c.winners_count || 1));
     if (winnersRaw === null) return;
     const payload = {
       title: title.trim(),
@@ -491,16 +580,16 @@ async function runDraw(id, excludePrev) {
 async function openResults(id) {
   try {
     const r = await api("/api/contests/" + id + "/results");
-    const winners = (r.winners || []).map(w => {
+    const winners = arr(r.winners).map(w => {
       const uname = w.username ? ` (@${esc(w.username)})` : "";
       return `<p>${w.place}. <b>${esc(w.name)}</b>${uname}${w.prize ? " — 🎁 " + esc(w.prize) : ""}</p>`;
     }).join("");
-    const reserves = (r.reserves || []).map(w => `<p>${w.place}. ${esc(w.name)}</p>`).join("");
+    const reserves = arr(r.reserves).map(w => `<p>${w.place}. ${esc(w.name)}</p>`).join("");
     app.innerHTML = `
       <button class="btn ghost" onclick="openManage(${id})">◀️ К управлению</button>
       <div class="card">
         <h3>🏆 Итоги «${esc(r.title)}»</h3>
-        <p>👥 Участвовало: ${r.participants} · 🏆 Победителей: ${(r.winners||[]).length}</p>
+        <p>👥 Участвовало: ${r.participants ?? 0} · 🏆 Победителей: ${arr(r.winners).length}</p>
         ${winners || "<p>Победители ещё не определены.</p>"}
       </div>
       ${reserves ? `<div class="card"><h3>🔄 Запасные</h3>${reserves}</div>` : ""}`;
@@ -508,7 +597,7 @@ async function openResults(id) {
 }
 
 async function finishContest(id) {
-  if (!confirm("Завершить конкурс?")) return;
+  if (!(await uiConfirm("Завершить конкурс?"))) return;
   try {
     const res = await api("/api/contests/" + id + "/finish", { method: "POST" });
     toast(res.message || "Готово");
@@ -517,7 +606,7 @@ async function finishContest(id) {
 }
 
 async function cancelContest(id) {
-  if (!confirm("Отменить конкурс?")) return;
+  if (!(await uiConfirm("Отменить конкурс?"))) return;
   try {
     const res = await api("/api/contests/" + id + "/cancel", { method: "POST" });
     toast(res.message || "Готово");
@@ -526,7 +615,7 @@ async function cancelContest(id) {
 }
 
 async function archiveContest(id) {
-  if (!confirm("Переместить конкурс в архив?")) return;
+  if (!(await uiConfirm("Переместить конкурс в архив?"))) return;
   try {
     const res = await api("/api/contests/" + id + "/archive", { method: "POST" });
     toast(res.message || "Готово");
@@ -535,7 +624,7 @@ async function archiveContest(id) {
 }
 
 async function deleteContest(id) {
-  if (!confirm("Удалить конкурс вместе с участниками? Действие необратимо.")) return;
+  if (!(await uiConfirm("Удалить конкурс вместе с участниками? Действие необратимо."))) return;
   try {
     const res = await api("/api/contests/" + id + "/delete", { method: "POST" });
     toast(res.message || "Удалено");
@@ -546,11 +635,11 @@ async function deleteContest(id) {
 async function openVerify(id) {
   try {
     const v = await api("/api/contests/" + id + "/verify");
-    if (!v.rounds || !v.rounds.length) {
+    if (!arr(v.rounds).length) {
       toast("Розыгрышей ещё не было");
       return;
     }
-    const rows = v.rounds.map(r =>
+    const rows = arr(v.rounds).map(r =>
       `<p>Раунд ${r.round} (алг. ${esc(r.algorithm_version)})<br>
         seed: <code>${esc(r.seed)}</code><br>
         соль: <code>${esc(r.salt || "—")}</code><br>
@@ -621,6 +710,12 @@ function parseEnds(raw) {
 async function submitCreateForm() {
   const title = document.getElementById("cf_title").value.trim();
   if (!title) { toast("Укажи название"); return; }
+  const endsRaw = document.getElementById("cf_ends").value.trim();
+  const ends_at = parseEnds(endsRaw);
+  if (endsRaw && !ends_at) {
+    toast("Неверный формат даты. Пример: 31.12.2026 20:00");
+    return;
+  }
   const sponsorRaw = document.getElementById("cf_task").value.trim();
   let taskText = "", taskTickets = 1;
   if (sponsorRaw) {
@@ -646,11 +741,11 @@ async function submitCreateForm() {
     description: document.getElementById("cf_desc").value.trim(),
     prize: document.getElementById("cf_prize").value.trim() || null,
     winners_count: Math.max(1, parseInt(document.getElementById("cf_winners").value || "1", 10)),
-    ends_at: parseEnds(document.getElementById("cf_ends").value),
+    ends_at,
     settings,
   };
   try {
-    const res = await api("/api/contests/create", { method: "POST", body: JSON.stringify(payload) });
+    await api("/api/contests/create", { method: "POST", body: JSON.stringify(payload) });
     toast("Конкурс создан!");
     setTimeout(() => go("mycontests"), 700);
   } catch (e) { toast(e.message); }
@@ -674,7 +769,7 @@ async function openStats(id) {
   const wd = s.timeline?.by_weekday || {};
   const wlabels = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
   const wdText = wlabels.map((l,i) => `${l}:${wd[i]||0}`).join("  ");
-  const draws = (s.draws || []).map(d =>
+  const draws = arr(s.draws).map(d =>
     `<p>• Раунд ${d.round}: ${d.winners_count} победителей (алг. ${esc(d.algorithm_version)})</p>`).join("");
   app.innerHTML = `
     <button class="btn ghost" onclick="go('mycontests')">◀️ Назад</button>
@@ -707,7 +802,7 @@ async function openStats(id) {
 async function loadSources(id) {
   try {
     const data = await api("/api/contests/" + id + "/sources");
-    const rows = data.sources.map((s, i) =>
+    const rows = arr(data.sources).map((s, i) =>
       `<p>${i+1}. <b>${esc(s.name)}</b>${s.username?" (@"+esc(s.username)+")":""} — 👥 ${s.invited} (🎟 ${s.tickets_awarded})</p>`
     ).join("");
     document.getElementById("sourcesBox").innerHTML =
@@ -749,20 +844,43 @@ async function renderProfile() {
 async function renderInvite() {
   const me = await api("/api/me");
   const link = me.referral_link || "";
+  state.referralLink = link;
   app.innerHTML = `
     <div class="card">
       <h3>👥 Приглашай друзей!</h3>
       <p>Делись своей персональной ссылкой. Приглашения помогают увеличить твои шансы на победу в конкурсах!</p>
       <p style="word-break:break-all"><code>${esc(link || "ссылка недоступна")}</code></p>
       <p>👥 Приглашено: <b>${me.invited}</b></p>
-      <button class="btn" onclick="copyLink('${esc(link)}')">📋 Скопировать ссылку</button>
-      <button class="btn secondary" onclick="shareLink('${esc(link)}')">📤 Поделиться ссылкой</button>
+      <button class="btn" onclick="copyLink(state.referralLink)">📋 Скопировать ссылку</button>
+      <button class="btn secondary" onclick="shareLink(state.referralLink)">📤 Поделиться ссылкой</button>
     </div>`;
 }
 
-function copyLink(link) {
-  if (!link) return toast("Ссылка недоступна");
-  navigator.clipboard?.writeText(link).then(() => toast("Ссылка скопирована!")).catch(() => toast(link));
+async function copyLink(link) {
+  if (!link) { toast("Ссылка недоступна"); return; }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(link);
+      toast("Ссылка скопирована!");
+      return;
+    }
+  } catch (e) { /* падаём на запасной вариант ниже */ }
+  // Telegram WebView часто не даёт доступ к clipboard API — используем
+  // скрытое поле ввода и document.execCommand как запасной путь.
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = link;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    toast(ok ? "Ссылка скопирована!" : link);
+  } catch (e) {
+    toast(link);
+  }
 }
 function shareLink(link) {
   if (!link) return toast("Ссылка недоступна");
@@ -772,16 +890,16 @@ function shareLink(link) {
 
 async function renderWinners() {
   const data = await api("/api/winners");
-  if (!data.contests.length) {
+  if (!arr(data.contests).length) {
     app.innerHTML = `<div class="card"><p>Пока нет завершённых конкурсов с результатами. Следи за обновлениями! 🏆</p></div>`;
     return;
   }
-  app.innerHTML = data.contests.map(c => `
+  app.innerHTML = arr(data.contests).map(c => `
     <div class="card">
       <h3>🎁 ${esc(c.title)}</h3>
       ${c.prize ? `<p>🎁 ${esc(c.prize)}</p>` : ""}
       <p>📅 Розыгрыш: ${fmtDate(c.drawn_at)} · 👥 ${c.participants ?? 0} участников</p>
-      ${c.winners.map(w => `<p>${w.place}. <b>${esc(w.name)}</b>${w.prize?" — "+esc(w.prize):""}</p>`).join("")}
+      ${arr(c.winners).map(w => `<p>${w.place}. <b>${esc(w.name)}</b>${w.prize?" — "+esc(w.prize):""}</p>`).join("")}
     </div>`).join("");
 }
 
@@ -791,10 +909,10 @@ async function renderHistory() {
     `<button class="${state.historyFilter===k?"active":""}" onclick="setHistoryFilter('${k}')">${l}</button>`).join("");
   const data = await api("/api/history?filter=" + state.historyFilter);
   let body;
-  if (!data.history.length) {
+  if (!arr(data.history).length) {
     body = `<div class="card"><p>История участия пуста.</p></div>`;
   } else {
-    body = data.history.map(h => {
+    body = arr(data.history).map(h => {
       let status = "🎯 Участвуешь";
       if (h.status === "left") status = "🚪 Участие отменено";
       else if (h.is_winner) status = "🏆 Ты победил";
@@ -819,7 +937,7 @@ async function renderHelp() {
   app.innerHTML = `
     <div class="card">
       <h3>ℹ️ Помощь Fable Randomizer</h3>
-      ${h.commands.map(c => `<p>${esc(c)}</p>`).join("")}
+      ${arr(h.commands).map(c => `<p>${esc(c)}</p>`).join("")}
       <p>Приглашай друзей по своей ссылке — это помогает увеличить шансы на победу!</p>
       ${support}
     </div>`;
@@ -837,7 +955,26 @@ function setHistoryFilter(f) { state.historyFilter = f; render(); }
 document.querySelectorAll("nav button").forEach(b =>
   b.addEventListener("click", () => go(b.dataset.nav)));
 
-go("home");
+// Действия, вызываемые из onclick, не обёрнуты в try/catch. Ловим любые
+// необработанные ошибки и показываем их пользователю, а не оставляем
+// приложение в «мёртвом» состоянии.
+window.addEventListener("unhandledrejection", e => {
+  const msg = (e.reason && (e.reason.message || e.reason)) || "Неизвестная ошибка";
+  toast(String(msg));
+});
+
+// Вне Telegram initData пуст — API ответит 401. Показываем понятную подсказку
+// вместо технического сообщения об ошибке авторизации.
+if (!initData) {
+  document.getElementById("greeting").textContent = "Fable Randomizer";
+  app.innerHTML = `<div class="card">
+    <h3>Открой Mini App в Telegram</h3>
+    <p>Этот интерфейс работает внутри Telegram. Запусти бота и нажми
+    «🚀 Открыть Mini App».</p>
+  </div>`;
+} else {
+  go("home");
+}
 </script>
 </body>
 </html>
