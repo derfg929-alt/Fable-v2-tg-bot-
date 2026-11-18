@@ -5,7 +5,7 @@ from aiogram import F, Router, types
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery
 
-from .. import admin_flow, config, database, keyboards
+from .. import admin_flow, database, keyboards
 
 router = Router(name="admin")
 
@@ -28,9 +28,6 @@ ADMIN_CALLBACKS = {
 @router.message(F.text == keyboards.BTN_CREATE)
 async def on_create(message: types.Message) -> None:
     user_id = message.from_user.id
-    if not config.is_admin(user_id):
-        await message.answer("Недостаточно прав.")
-        return
     reply = await admin_flow.start_creation(user_id)
     await message.answer(reply.text, reply_markup=reply.keyboard)
 
@@ -38,9 +35,6 @@ async def on_create(message: types.Message) -> None:
 @router.callback_query(F.data.in_(ADMIN_CALLBACKS))
 async def on_admin_callback(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
-    if not config.is_admin(user_id):
-        await callback.answer("Недостаточно прав", show_alert=True)
-        return
     await callback.answer()
     reply = await admin_flow.handle_callback(user_id, callback.data, callback.bot)
     if reply is None:
@@ -50,12 +44,15 @@ async def on_admin_callback(callback: CallbackQuery) -> None:
 
 @router.message(F.text.regexp(r"^[^\s/].*"))
 async def on_admin_text(message: types.Message) -> None:
+    """Текст шага мастера создания конкурса.
+
+    Создавать конкурсы может любой пользователь, поэтому гейта по ADMIN_IDS нет.
+    Текст потребляется только если у пользователя активен шаг мастера; иначе
+    событие пропускается дальше (например, кодовые слова в user-роутере).
+    """
     user_id = message.from_user.id
-    if not config.is_admin(user_id):
-        raise SkipHandler()
     state = await database.get_admin_state(user_id)
     if not state.get("step"):
-        # Админ без активного мастера — текст может быть кодовым словом.
         raise SkipHandler()
     reply = await admin_flow.handle_text(user_id, message.text or "", message.bot)
     if reply is None:

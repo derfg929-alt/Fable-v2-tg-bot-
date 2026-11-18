@@ -13,7 +13,7 @@ from typing import Any
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
-from . import config, database, keyboards
+from . import database, keyboards
 
 logger = logging.getLogger("fable_random_bot")
 
@@ -83,13 +83,43 @@ async def _save_step(user_id: int, step: str, temp: dict[str, Any]) -> None:
     await database.set_admin_state(user_id, {"step": step, "temp_data": temp})
 
 
-async def _validate_channel(bot: Bot, channel: str) -> tuple[bool, str, int | None]:
-    """Проверить, что бот — админ в канале. Возвращает (ok, сообщение, chat_id)."""
+async def _validate_channel(
+    bot: Bot, channel: str, user_id: int | None = None
+) -> tuple[bool, str, int | None]:
+    """Проверить канал для конкурса.
+
+    Возвращает (ok, сообщение, chat_id). Публиковать конкурс в канале может
+    только его владелец/администратор, и бот тоже должен быть администратором
+    канала с правом публикации сообщений. Если ``user_id`` не передан, проверка
+    владельца пропускается (используется для каналов-спонсоров, где нужен только
+    доступ бота).
+    """
     try:
         chat = await bot.get_chat(channel)
     except Exception as exc:  # noqa: BLE001
         logger.warning("get_chat(%s): %s", channel, exc)
         return False, "Не удалось найти канал. Проверь @username и попробуй снова.", None
+
+    if user_id is not None:
+        try:
+            author = await bot.get_chat_member(chat_id=chat.id, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_chat_member(user=%s, %s): %s", user_id, channel, exc)
+            return (
+                False,
+                "Не удалось проверить твои права в канале. Убедись, что ты его "
+                "владелец или администратор, и повтори.",
+                None,
+            )
+        if author.status not in ("administrator", "creator"):
+            return (
+                False,
+                "⛔ Ты не владелец и не администратор этого канала. Публиковать "
+                "конкурс в канале может только его владелец/админ. Укажи свой "
+                "канал или напиши «-», чтобы создать конкурс без канала.",
+                None,
+            )
+
     try:
         member = await bot.get_chat_member(chat_id=chat.id, user_id=bot.id)
     except Exception as exc:  # noqa: BLE001
@@ -97,6 +127,13 @@ async def _validate_channel(bot: Bot, channel: str) -> tuple[bool, str, int | No
         return False, "Не удалось проверить права бота. Добавь бота админом и повтори.", None
     if member.status not in ("administrator", "creator"):
         return False, "Бот не админ в этом канале. Добавь бота админом и повтори.", None
+    if member.status == "administrator" and not getattr(member, "can_post_messages", True):
+        return (
+            False,
+            "У бота нет права публиковать сообщения в канале. Включи для бота "
+            "разрешение «Публикация сообщений» и повтори.",
+            None,
+        )
     return True, "", chat.id
 
 
@@ -165,7 +202,7 @@ async def handle_text(user_id: int, text: str, bot: Bot) -> Reply | None:
                 keyboard=keyboards.sponsors_keyboard(),
             )
         channel = text if text.startswith("@") else "@" + text
-        ok, message, chat_id = await _validate_channel(bot, channel)
+        ok, message, chat_id = await _validate_channel(bot, channel, user_id=user_id)
         if not ok:
             return Reply(message, keyboard=keyboards.cancel_keyboard())
         temp["channel"] = channel
@@ -337,6 +374,7 @@ async def _finish(user_id: int, temp: dict[str, Any], bot: Bot) -> Reply:
         "id": contest_id,
         "title": temp.get("title", "Конкурс"),
         "prize": temp.get("prize", ""),
+        "owner_id": user_id,
         "channel": temp.get("channel"),
         "channel_id": temp.get("channel_id"),
         "sponsors": temp.get("sponsors", []),

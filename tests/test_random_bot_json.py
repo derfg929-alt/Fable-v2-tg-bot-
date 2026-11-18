@@ -12,10 +12,14 @@ from fable_random_bot.handlers import user as user_handlers
 class FakeBot:
     """Минимальная замена aiogram.Bot для проверки логики без сети."""
 
-    def __init__(self):
+    def __init__(self, bot_status="administrator", can_post_messages=True, member_status="creator"):
         self.id = 1
         self.username = "mybot"
         self.sent = []
+        self.bot_status = bot_status
+        self.can_post_messages = can_post_messages
+        # Статус, который вернётся для любого пользователя в get_chat_member.
+        self.member_status = member_status
 
     async def get_me(self):
         return SimpleNamespace(username=self.username)
@@ -23,6 +27,14 @@ class FakeBot:
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append({"chat_id": chat_id, "text": text})
         return SimpleNamespace(message_id=len(self.sent))
+
+    async def get_chat(self, chat_id):
+        return SimpleNamespace(id=-100123, username="chan", title="Канал")
+
+    async def get_chat_member(self, chat_id, user_id):
+        if user_id == self.id:
+            return SimpleNamespace(status=self.bot_status, can_post_messages=self.can_post_messages)
+        return SimpleNamespace(status=self.member_status, can_post_messages=True)
 
 
 class FakeChecker:
@@ -60,7 +72,6 @@ def isolated_db(tmp_path, monkeypatch):
     """Изолируем JSON-базу в tmp_path и сбрасываем кэш рейтинга."""
     db_file = tmp_path / "database.json"
     monkeypatch.setattr(database.config, "DB_PATH", str(db_file))
-    monkeypatch.setattr(admin_flow.config, "ADMIN_IDS", [1, 42])
     database.invalidate_leaderboard_cache()
     yield db_file
     database.invalidate_leaderboard_cache()
@@ -331,14 +342,13 @@ def test_keyboards_reflect_state():
     assert any("Рейтинг приглашающих: Вкл" in t for t in texts)
 
 
-def test_main_menu_admin_visibility():
-    admin_markup = keyboards.main_menu(1)
-    user_markup = keyboards.main_menu(999)
-    admin_texts = [b.text for row in admin_markup.keyboard for b in row]
-    user_texts = [b.text for row in user_markup.keyboard for b in row]
-    assert keyboards.BTN_CREATE in admin_texts
-    assert keyboards.BTN_CREATE not in user_texts
-    assert keyboards.BTN_ACTIVE in user_texts
+def test_main_menu_create_visible_to_everyone():
+    """Создавать конкурсы может любой пользователь — кнопка видна всем."""
+    for uid in (1, 999, 123456):
+        texts = [b.text for row in keyboards.main_menu(uid).keyboard for b in row]
+        assert keyboards.BTN_CREATE in texts
+        assert keyboards.BTN_ACTIVE in texts
+        assert keyboards.BTN_MY in texts
 
 
 # --- Поток участия (join) -------------------------------------------------
@@ -455,9 +465,10 @@ async def test_check_and_finish_skips_future(isolated_db):
     assert contest["status"] == "active"
 
 
-# --- Маршрутизация текста (admin FSM vs кодовые слова) --------------------
+# --- Маршрутизация текста (мастер конкурса vs кодовые слова) ---------------
 
-async def test_admin_text_skipped_for_non_admin(isolated_db):
+async def test_wizard_text_skipped_without_active_step(isolated_db):
+    """Текст без активного шага мастера пропускается дальше (кодовые слова)."""
     from aiogram.dispatcher.event.bases import SkipHandler
     from fable_random_bot.handlers import admin as admin_handlers
 
@@ -468,23 +479,88 @@ async def test_admin_text_skipped_for_non_admin(isolated_db):
         await admin_handlers.on_admin_text(message)
 
 
-async def test_admin_text_skipped_without_active_step(isolated_db):
-    from aiogram.dispatcher.event.bases import SkipHandler
+async def test_wizard_text_consumed_for_non_admin(isolated_db):
+    """Мастер доступен любому пользователю, не только ADMIN_IDS."""
     from fable_random_bot.handlers import admin as admin_handlers
 
-    message = FakeMessage(FakeBot())
-    message.text = "PROMO"
-    message.from_user = SimpleNamespace(id=42, username="admin")  # 42 в ADMIN_IDS
-    with pytest.raises(SkipHandler):
-        await admin_handlers.on_admin_text(message)
-
-
-async def test_admin_text_consumed_during_fsm(isolated_db):
-    from fable_random_bot.handlers import admin as admin_handlers
-
-    await admin_flow.start_creation(42)
+    await admin_flow.start_creation(999)  # 999 не админ
     message = FakeMessage(FakeBot())
     message.text = "Мой конкурс"
-    message.from_user = SimpleNamespace(id=42, username="admin")
+    message.from_user = SimpleNamespace(id=999, username="u")
     await admin_handlers.on_admin_text(message)
     assert any("приз" in a.lower() for a in message.answers)
+
+
+# --- Создание конкурса любым пользователем --------------------------------
+
+async def test_anyone_can_create_contest_without_channel(isolated_db):
+    """Не-админ создаёт конкурс без канала — сохраняется с owner_id."""
+    await admin_flow.start_creation(999)
+    await admin_flow.handle_text(999, "Народный конкурс", bot=None)
+    await admin_flow.handle_text(999, "Приз", bot=None)
+    await admin_flow.handle_text(999, "-", bot=None)  # без канала
+    await admin_flow.handle_callback(999, "sponsors_done", bot=None)
+    await admin_flow.handle_text(999, "31.12.2026 23:59", bot=None)
+    await admin_flow.handle_text(999, "1", bot=None)
+    reply = await admin_flow.handle_callback(999, "finish_contest", bot=None)
+    assert "создан" in reply.text.lower()
+    contest = await database.get_contest("1")
+    assert contest["owner_id"] == 999
+    assert contest["channel_id"] is None
+
+
+# --- Публикация в канале: проверка владельца/прав -------------------------
+
+async def _reach_channel_step(user_id: int) -> None:
+    await admin_flow.start_creation(user_id)
+    await admin_flow.handle_text(user_id, "T", bot=None)
+    await admin_flow.handle_text(user_id, "P", bot=None)
+
+
+async def test_channel_requires_user_to_be_admin(isolated_db):
+    """Обычный участник канала не может опубликовать там конкурс."""
+    await _reach_channel_step(999)
+    bot = FakeBot(member_status="member")
+    reply = await admin_flow.handle_text(999, "@chan", bot)
+    assert "не владелец" in reply.text.lower()
+    state = await database.get_admin_state(999)
+    assert state["step"] == "waiting_channel"  # шаг не пройден
+    assert not state["temp_data"].get("channel_id")
+
+
+async def test_channel_accepted_when_user_is_owner_and_bot_admin(isolated_db):
+    await _reach_channel_step(999)
+    bot = FakeBot(member_status="creator", bot_status="administrator", can_post_messages=True)
+    reply = await admin_flow.handle_text(999, "@chan", bot)
+    assert "спонсор" in reply.text.lower()  # перешли к следующему шагу
+    state = await database.get_admin_state(999)
+    assert state["temp_data"]["channel_id"] == -100123
+
+
+async def test_channel_rejected_when_bot_not_admin(isolated_db):
+    """Бот не админ канала — публиковать нельзя."""
+    await _reach_channel_step(999)
+    bot = FakeBot(member_status="creator", bot_status="member")
+    reply = await admin_flow.handle_text(999, "@chan", bot)
+    assert "бот не админ" in reply.text.lower()
+
+
+async def test_channel_rejected_without_post_rights(isolated_db):
+    """Бот админ, но без права публикации сообщений."""
+    await _reach_channel_step(999)
+    bot = FakeBot(member_status="creator", bot_status="administrator", can_post_messages=False)
+    reply = await admin_flow.handle_text(999, "@chan", bot)
+    assert "публик" in reply.text.lower()
+
+
+async def test_contest_publishes_to_channel_when_allowed(isolated_db):
+    await _reach_channel_step(999)
+    bot = FakeBot(member_status="creator", bot_status="administrator", can_post_messages=True)
+    await admin_flow.handle_text(999, "@chan", bot)
+    await admin_flow.handle_callback(999, "sponsors_done", bot)
+    await admin_flow.handle_text(999, "31.12.2026 23:59", bot)
+    await admin_flow.handle_text(999, "1", bot)
+    reply = await admin_flow.handle_callback(999, "finish_contest", bot)
+    assert "создан" in reply.text.lower()
+    assert not any("не удалось опубликовать" in m["text"].lower() for m in bot.sent)
+    assert any(m["chat_id"] == -100123 for m in bot.sent)  # пост в канал
