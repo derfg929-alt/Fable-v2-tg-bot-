@@ -11,6 +11,7 @@ router = Router(name="admin")
 
 ADMIN_CALLBACKS = {
     "add_sponsor",
+    "skip_channel",
     "sponsors_done",
     "set_ref_tickets",
     "toggle_codes",

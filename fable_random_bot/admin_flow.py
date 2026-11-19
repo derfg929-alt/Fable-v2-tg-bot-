@@ -57,7 +57,7 @@ def _settings_summary(temp: dict[str, Any]) -> str:
         "⚙️ Настройки конкурса\n"
         f"Название: {temp.get('title', '—')}\n"
         f"Приз: {temp.get('prize', '—')}\n"
-        f"Канал: {temp.get('channel', '—')}\n"
+        f"Канал: {temp.get('channel') or 'без канала (для всех)'}\n"
         f"Спонсоры: {', '.join(temp.get('sponsors', [])) or '—'}\n"
         f"Окончание: {temp.get('ends_at', '—')}\n"
         f"Победителей: {temp.get('winners_count', '—')}\n"
@@ -188,23 +188,25 @@ async def handle_text(user_id: int, text: str, bot: Bot) -> Reply | None:
         temp["prize"] = text
         await _save_step(user_id, "waiting_channel", temp)
         return Reply(
-            "Укажи @username канала конкурса (или напиши «-», чтобы без канала):",
-            keyboard=keyboards.cancel_keyboard(),
+            "Укажи @username канала конкурса или нажми «🌍 Без канала (для всех)» — "
+            "тогда участвовать смогут все:",
+            keyboard=keyboards.channel_keyboard(),
         )
 
     if step == "waiting_channel":
-        if text == "-":
+        if text in ("-", "нет", "без канала", "пропустить", "skip", "—"):
             temp["channel"] = None
             temp["channel_id"] = None
             await _save_step(user_id, "waiting_sponsors", temp)
             return Reply(
+                "🌍 Конкурс без канала — участвовать смогут все.\n\n"
                 "Спонсоры конкурса (необязательно). Добавь спонсоров или нажми «Готово».",
                 keyboard=keyboards.sponsors_keyboard(),
             )
         channel = text if text.startswith("@") else "@" + text
         ok, message, chat_id = await _validate_channel(bot, channel, user_id=user_id)
         if not ok:
-            return Reply(message, keyboard=keyboards.cancel_keyboard())
+            return Reply(message, keyboard=keyboards.channel_keyboard())
         temp["channel"] = channel
         temp["channel_id"] = chat_id
         await _save_step(user_id, "waiting_sponsors", temp)
@@ -304,6 +306,18 @@ async def handle_callback(user_id: int, data: str, bot: Bot) -> Reply | None:
         await database.clear_admin_state(user_id)
         return Reply("Создание конкурса отменено.")
 
+    if data == "skip_channel":
+        if step != "waiting_channel":
+            return None
+        temp["channel"] = None
+        temp["channel_id"] = None
+        await _save_step(user_id, "waiting_sponsors", temp)
+        return Reply(
+            "🌍 Конкурс без канала — участвовать смогут все.\n\n"
+            "Спонсоры конкурса (необязательно). Добавь спонсоров или нажми «Готово».",
+            keyboard=keyboards.sponsors_keyboard(),
+        )
+
     if data == "add_sponsor":
         await _save_step(user_id, "waiting_sponsor_username", temp)
         return Reply("Пришли @username канала-спонсора:", keyboard=keyboards.cancel_keyboard())
@@ -392,7 +406,12 @@ async def _finish(user_id: int, temp: dict[str, Any], bot: Bot) -> Reply:
     database.invalidate_leaderboard_cache(contest_id)
 
     published = await _publish_contest(bot, contest)
-    suffix = "" if published else "\n⚠️ Не удалось опубликовать пост в канал — проверь права бота."
+    if not contest.get("channel_id"):
+        suffix = "\n🌍 Конкурс без канала — участвовать могут все."
+    elif published:
+        suffix = ""
+    else:
+        suffix = "\n⚠️ Не удалось опубликовать пост в канал — проверь права бота."
     return Reply(
         f"✅ Конкурс «{contest['title']}» создан (id {contest_id}).{suffix}",
         keyboard=keyboards.main_menu(user_id),
