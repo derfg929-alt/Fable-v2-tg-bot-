@@ -1,14 +1,16 @@
-"""Хэндлеры администратора: пошаговое создание конкурса (aiogram 3, FSM).
+"""Хэндлеры создания конкурса (aiogram 3, FSM).
 
-Мастер построен на :class:`StatesGroup`: на каждом шаге ввод сохраняется в
-``FSMContext`` через ``state.update_data(...)``. В конце конкурс сохраняется в
-JSON-базу (``data.create_contest``) со статусом «активный» и публикуется пост с
-кнопкой участия из ``Keyboards.конкурс_клавиатура``.
+Создавать конкурсы может любой пользователь: канал необязателен, а если он
+указан — требуется, чтобы бот был в нём администратором (проверяется через
+``get_chat_member``). Мастер построен на :class:`StatesGroup`: на каждом шаге
+ввод сохраняется в ``FSMContext`` через ``state.update_data(...)``. В конце
+конкурс сохраняется в JSON-базу (``data.create_contest``) со статусом
+«активный» и публикуется пост с кнопкой участия из
+``Keyboards.конкурс_клавиатура``.
 """
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime
 
 from aiogram import Bot, F, Router, types
@@ -40,16 +42,6 @@ class CreateContest(StatesGroup):
     winners_count = State()
 
 
-def _is_admin(user_id: int) -> bool:
-    """Администратор — владелец (OWNER_ID) либо id из ADMIN_IDS."""
-    raw = os.getenv("ADMIN_IDS", "")
-    ids = {int(chunk) for chunk in raw.replace(";", ",").split(",") if chunk.strip().isdigit()}
-    if user_id in ids:
-        return True
-    owner = os.getenv("OWNER_ID", "")
-    return owner.isdigit() and user_id == int(owner)
-
-
 def _normalize_channel(text: str) -> str:
     text = text.strip()
     if not text.startswith("@") and not text.startswith("-"):
@@ -79,9 +71,6 @@ def _parse_end_date(text: str) -> str | None:
 @router.message(Command("create"))
 @router.message(F.text == "👑 Создать конкурс")
 async def start_create(message: types.Message, state: FSMContext) -> None:
-    if not _is_admin(message.from_user.id):
-        await message.answer("Недостаточно прав.")
-        return
     await state.set_state(CreateContest.title)
     await state.update_data(title=None, prize=None, channel=None, ends_at=None, winners_count=None)
     await message.answer(
@@ -121,21 +110,36 @@ async def step_prize(message: types.Message, state: FSMContext) -> None:
         return
     await state.update_data(prize=prize)
     await state.set_state(CreateContest.channel)
-    await message.answer("Укажи @username канала конкурса (бот должен быть там админом):")
+    await message.answer(
+        "Укажи @username канала конкурса (бот должен быть там админом) "
+        "или отправь «-», чтобы создать конкурс без канала:"
+    )
 
 
 # --- Шаг 3: канал + проверка прав бота ------------------------------------
 
 @router.message(CreateContest.channel)
 async def step_channel(message: types.Message, state: FSMContext, bot: Bot) -> None:
-    channel = _normalize_channel(message.text or "")
+    raw = (message.text or "").strip()
+    if raw in ("-", "нет", "без канала", "пропустить", "skip", "—"):
+        await state.update_data(channel=None)
+        await state.set_state(CreateContest.ends_at)
+        await message.answer(
+            "Ок, конкурс будет без канала — участвовать смогут все.\n\n"
+            "Когда завершить конкурс? " + DATE_HINT
+        )
+        return
+    channel = _normalize_channel(raw)
     if len(channel) < 2:
-        await message.answer("Укажи корректный @username канала:")
+        await message.answer(
+            "Укажи корректный @username канала или отправь «-», чтобы создать конкурс без канала:"
+        )
         return
     if not await _bot_is_channel_admin(bot, channel):
         await message.answer(
             "Бот не админ в этом канале (или канал не найден). "
-            "Добавь бота администратором и пришли @username снова:"
+            "Добавь бота администратором и пришли @username снова, "
+            "либо отправь «-», чтобы создать конкурс без канала:"
         )
         return
     await state.update_data(channel=channel)
@@ -180,8 +184,11 @@ async def step_winners_count(message: types.Message, state: FSMContext, bot: Bot
     }
     saved = await create_contest(contest)
 
-    published = await _publish_contest(bot, saved)
-    suffix = "" if published else "\n⚠️ Не удалось опубликовать пост в канал — проверь права бота."
+    if contest.get("channel"):
+        published = await _publish_contest(bot, saved)
+        suffix = "" if published else "\n⚠️ Не удалось опубликовать пост в канал — проверь права бота."
+    else:
+        suffix = "\n🌍 Конкурс без канала — участвовать могут все. Участники найдут его в «🎁 Активные розыгрыши»."
     await message.answer(
         f"✅ Конкурс «{saved['title']}» создан (id {saved['id']}).{suffix}"
     )

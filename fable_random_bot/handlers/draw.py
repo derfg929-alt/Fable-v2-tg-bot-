@@ -61,18 +61,25 @@ async def _publish_results(bot, contest: dict) -> None:
     lines.append(f"SHA-256: {tr.get('sha256', '—')}")
     lines.append(f"Соль: {tr.get('salt', '—')}")
     lines.append("")
-    lines.append("Победителям: свяжитесь с администратором.")
+    lines.append("Победителям: свяжитесь с организатором конкурса.")
     text = "\n".join(lines)
     if channel_id:
         try:
             await bot.send_message(chat_id=channel_id, text=text)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Не удалось опубликовать итоги %s: %s", contest.get("id"), exc)
+    owner_id = contest.get("owner_id")
+    if owner_id:
+        # Конкурс мог быть создан без канала — организатор всё равно должен узнать итоги.
+        try:
+            await bot.send_message(chat_id=int(owner_id), text=text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Не удалось уведомить организатора %s: %s", owner_id, exc)
     for winner in winners:
         try:
             await bot.send_message(
                 chat_id=int(winner),
-                text=f"🎉 Ты выиграл в конкурсе «{contest.get('title')}»! Свяжись с администратором.",
+                text=f"🎉 Ты выиграл в конкурсе «{contest.get('title')}»! Свяжись с организатором конкурса.",
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Не удалось уведомить победителя %s: %s", winner, exc)
@@ -142,6 +149,6 @@ async def cmd_confirm(message: types.Message) -> None:
             await database.update_contest(contest["id"], confirmed_winners=sorted(confirmed))
             changed += 1
     if changed:
-        await message.answer("✅ Отклик зафиксирован. Администратор свяжется с тобой.")
+        await message.answer("✅ Отклик зафиксирован. Организатор конкурса свяжется с тобой.")
     else:
         await message.answer("Нет активных выигрышей, требующих подтверждения.")

@@ -134,3 +134,13 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="✖️ Отмена", callback_data="cancel")]]
     )
+
+
+def channel_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура шага «канал»: можно создать конкурс без канала (для всех)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌍 Без канала (для всех)", callback_data="skip_channel")],
+            [InlineKeyboardButton(text="✖️ Отмена", callback_data="cancel")],
+        ]
+    )

@@ -564,3 +564,137 @@ async def test_contest_publishes_to_channel_when_allowed(isolated_db):
     assert "создан" in reply.text.lower()
     assert not any("не удалось опубликовать" in m["text"].lower() for m in bot.sent)
     assert any(m["chat_id"] == -100123 for m in bot.sent)  # пост в канал
+
+
+# --- Кнопка «Без канала (для всех)» --------------------------------------
+
+async def test_skip_channel_callback_creates_contest_for_everyone(isolated_db):
+    """Кнопка «🌍 Без канала» на шаге канала ведёт к конкурсу без подписки."""
+    await admin_flow.start_creation(777)
+    await admin_flow.handle_text(777, "Для всех", bot=None)
+    await admin_flow.handle_text(777, "Приз", bot=None)
+
+    reply = await admin_flow.handle_callback(777, "skip_channel", bot=None)
+    assert "без канала" in reply.text.lower()
+
+    await admin_flow.handle_callback(777, "sponsors_done", bot=None)
+    await admin_flow.handle_text(777, "31.12.2026 23:59", bot=None)
+    await admin_flow.handle_text(777, "1", bot=None)
+    reply = await admin_flow.handle_callback(777, "finish_contest", bot=None)
+
+    assert "создан" in reply.text.lower()
+    # Без канала публиковать некуда — не должно быть предупреждения о правах.
+    assert "не удалось опубликовать" not in reply.text.lower()
+    contest = await database.get_contest("1")
+    assert contest["channel"] is None
+    assert contest["channel_id"] is None
+
+
+async def test_skip_channel_ignored_outside_channel_step(isolated_db):
+    """Callback «skip_channel» на других шагах не ломает мастер."""
+    await admin_flow.start_creation(778)
+    assert await admin_flow.handle_callback(778, "skip_channel", bot=None) is None
+    state = await database.get_admin_state(778)
+    assert state["step"] == "waiting_title"
+
+
+# --- Корневой мастер (handlers/admin.py): конкурс может создать любой -----
+
+class _FakeState:
+    def __init__(self):
+        self.state = None
+        self.data = {}
+
+    async def set_state(self, value):
+        self.state = value
+
+    async def update_data(self, **kwargs):
+        self.data.update(kwargs)
+
+    async def get_data(self):
+        return dict(self.data)
+
+    async def clear(self):
+        self.state = None
+        self.data = {}
+
+
+class _FakeUserMessage:
+    def __init__(self, text, user_id=555):
+        self.text = text
+        self.from_user = SimpleNamespace(id=user_id)
+        self.answers = []
+
+    async def answer(self, text, reply_markup=None):
+        self.answers.append(text)
+
+
+async def test_legacy_wizard_allows_anyone_and_optional_channel(isolated_db, monkeypatch):
+    """Корневой мастер создаёт конкурс любому пользователю, канал необязателен."""
+    import data as legacy_data
+    from handlers import admin as legacy_admin
+
+    monkeypatch.setattr(legacy_data, "DB_PATH", str(isolated_db))
+    monkeypatch.setattr(legacy_admin, "create_contest", legacy_data.create_contest)
+
+    state = _FakeState()
+    start = _FakeUserMessage("👑 Создать конкурс", user_id=555)
+    await legacy_admin.start_create(start, state)
+    assert state.state == legacy_admin.CreateContest.title
+
+    await legacy_admin.step_title(_FakeUserMessage("Народный конкурс"), state)
+    assert state.state == legacy_admin.CreateContest.prize
+    await legacy_admin.step_prize(_FakeUserMessage("Приз"), state)
+    assert state.state == legacy_admin.CreateContest.channel
+
+    channel_msg = _FakeUserMessage("-")
+    await legacy_admin.step_channel(channel_msg, state, bot=FakeBot())
+    assert state.state == legacy_admin.CreateContest.ends_at
+    assert state.data["channel"] is None
+
+    await legacy_admin.step_ends_at(_FakeUserMessage("31.12.2026 23:59"), state)
+    assert state.state == legacy_admin.CreateContest.winners_count
+    final = _FakeUserMessage("1")
+    await legacy_admin.step_winners_count(final, state, bot=FakeBot())
+
+    assert any("создан" in a.lower() for a in final.answers)
+    assert not any("не удалось опубликовать" in a.lower() for a in final.answers)
+
+    contests = await legacy_data.load_data()
+    assert contests["contests"]["1"]["channel"] is None
+
+
+def test_legacy_main_menu_shows_create_to_everyone():
+    """Кнопка создания конкурса в корневом меню видна всем пользователям."""
+    import Keyboards
+
+    for uid in (1, 999, 123456):
+        texts = [b.text for row in Keyboards.main_menu(uid).keyboard for b in row]
+        assert Keyboards.BTN_CREATE in texts
+
+
+# --- Итоги конкурса без канала -------------------------------------------
+
+async def test_draw_notifies_organizer_when_no_channel(isolated_db):
+    """Без канала итоги уходят организатору, а не в никуда."""
+    from fable_random_bot.handlers import draw as draw_handlers
+
+    await database.create_contest({
+        "id": "1",
+        "title": "Без канала",
+        "status": "active",
+        "channel": None,
+        "channel_id": None,
+        "owner_id": 555,
+        "participants": ["10"],
+        "winners_count": 1,
+        "ends_at": None,
+        "settings": {"reserve_count": 0},
+    })
+    bot = FakeBot()
+    contest = await draw_handlers.finish_contest(bot, "1")
+
+    assert contest is not None
+    owner_messages = [m for m in bot.sent if m["chat_id"] == 555]
+    assert owner_messages, bot.sent
+    assert "организатор" in owner_messages[0]["text"].lower()

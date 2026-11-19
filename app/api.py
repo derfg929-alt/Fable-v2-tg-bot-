@@ -375,8 +375,8 @@ async def help_info(x_init_data: str | None = Header(default=None)):
             "/profile — профиль",
             "/history — история участия",
             "/winners — победители",
-            "/mycontests — мои конкурсы (для владельцев каналов)",
-            "/createcontest — создать конкурс для своего канала",
+            "/mycontests — мои конкурсы",
+            "/createcontest — создать конкурс (для канала или без канала)",
         ],
     }
 
