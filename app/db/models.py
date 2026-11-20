@@ -175,6 +175,7 @@ class ActivityRecord(Base):
     __table_args__ = (
         Index("ix_activity_chat_created", "chat_id", "created_at"),
         Index("ix_activity_user_created", "user_id", "created_at"),
+        Index("ix_activity_chat_user_message", "chat_id", "user_id", "message_id"),
         CheckConstraint("points >= 0", name="ck_activity_points_nonnegative"),
     )
 
@@ -184,6 +185,9 @@ class ActivityRecord(Base):
     points: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     message_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reward_coins: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # Telegram message_id: нужен, чтобы учитывать каждое сообщение один раз,
+    # даже когда монеты за него не начислены (кулдаун, лимит, короткий текст).
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
 
 

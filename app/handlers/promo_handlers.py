@@ -128,6 +128,15 @@ async def handle_promo_create(message: types.Message):
 async def handle_promo_list(message: types.Message):
     """Список промокодов (только владелец)."""
     if not message.from_user or not _is_owner(message.from_user.id):
+        # Игрокам тоже полезно знать, как активировать промокод.
+        try:
+            await message.reply(
+                "🎟 Активировать промокод: <code>промо КОД</code>\n"
+                "Список промокодов доступен только владельцу бота.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
         return
     async with session_scope() as session:
         promos = await list_promos(session, limit=30)

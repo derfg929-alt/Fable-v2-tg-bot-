@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import parse_qsl
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -34,6 +34,7 @@ from app.services import referral_service as ds_ref
 from app.services import draw_service as ds
 from app.services import ticket_service as tickets
 from app.services import randomizer_settings as rset
+from app.services import activity_service
 from app.services.player_service import get_or_create_player
 
 logger = logging.getLogger("fable.api")
@@ -163,16 +164,33 @@ async def me(x_init_data: str | None = Header(default=None)):
         invited = await ds_ref.count_invited(session, user_id)
         stats = await cs.get_user_stats(session, user_id)
         bot_username = await rset.get_bot_username(session)
+        activity = await activity_service.get_global_activity_breakdown(session, user_id=user_id)
     ref_link = ds_ref.build_referral_link(bot_username, user_id) if bot_username else None
+
+    registered_at = player.registered_at if player else None
+    if registered_at is not None and registered_at.tzinfo is None:
+        registered_at = registered_at.replace(tzinfo=timezone.utc)
+    days_in_bot = max(0, (datetime.now(timezone.utc) - registered_at).days) if registered_at else None
+    last_active = activity["last_active"]
+
     return {
         "user": {
             "id": user_id,
             "first_name": user.get("first_name"),
             "username": user.get("username"),
-            "registered_at": player.registered_at.isoformat() if player and player.registered_at else None,
+            "registered_at": registered_at.isoformat() if registered_at else None,
+            "days_in_bot": days_in_bot,
             "is_banned": bool(player.is_globally_banned) if player else False,
         },
         "stats": stats,
+        "activity": {
+            "messages_all_time": activity["all_time"],
+            "messages_day": activity["day"],
+            "messages_week": activity["week"],
+            "messages_month": activity["month"],
+            "chats": activity["chats"],
+            "last_active": last_active.isoformat() if last_active else None,
+        },
         "invited": invited,
         "referral_link": ref_link,
     }

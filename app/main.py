@@ -239,9 +239,40 @@ async def _ensure_bot_username(bot, settings) -> None:
         logger.error("Ошибка автоопределения username бота: %s", e)
 
 
+# Список команд для меню «/» в Telegram. Без него пользователь видит пустой
+# список и не знает, какие команды существуют — хотя все они работают.
+BOT_COMMANDS = [
+    ("start", "Главное меню"),
+    ("contests", "Активные конкурсы"),
+    ("mycontests", "Мои конкурсы"),
+    ("createcontest", "Создать конкурс"),
+    ("profile", "Мой профиль и статистика"),
+    ("history", "История участия"),
+    ("winners", "Победители"),
+    ("myref", "Пригласить друзей"),
+    ("join", "Участвовать в конкурсе"),
+    ("help", "Помощь по командам"),
+]
+
+
+async def _register_bot_commands(bot) -> None:
+    """Публикует список команд в меню «/» Telegram."""
+    from aiogram.types import BotCommand
+
+    try:
+        await bot.set_my_commands(
+            [BotCommand(command=name, description=text) for name, text in BOT_COMMANDS]
+        )
+        logger.info("Список команд бота зарегистрирован (%d шт.)", len(BOT_COMMANDS))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Не удалось зарегистрировать список команд: %s", e)
+
+
 async def _setup_bot_menu(bot, settings) -> None:
     """Регистрирует кнопки меню бота: Mini App и верификатор честности."""
     from aiogram.types import MenuButtonWebApp, WebAppInfo
+
+    await _register_bot_commands(bot)
 
     base = settings.effective_mini_app_url
     if not base:

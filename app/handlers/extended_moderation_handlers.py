@@ -8,6 +8,7 @@ from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, IS_MEMBER,
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.db.session import session_scope
+from app.handlers.common_hints import reply_group_only
 from sqlalchemy.dialects.postgresql import insert
 from app.db.models import ChatAdmin
 from app.services.player_service import get_or_create_player
@@ -34,10 +35,28 @@ from app.services.chat_settings_service import (
     DEFAULT_CHAT_SETTINGS,
 )
 from app.services.antispam_service import DEFAULT_ANTISPAM, antispam_status_line
+from app.services.ai_moderation_service import (
+    DEFAULT_AI_MODERATION,
+    ai_moderation_status_line,
+    classify_join_profile,
+)
 from app.services.logging_service import notify_moderation_log
 from app.services.help_service import get_greeting_text
 
 router = Router(name="extended_moderation_router")
+
+
+async def _safe_get_me(bot: Bot):
+    """get_me с кэшем на уровне модуля: не дёргаем Telegram на каждого входящего."""
+    cached = getattr(_safe_get_me, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        me = await bot.get_me()
+    except Exception:
+        return None
+    _safe_get_me._cache = me
+    return me
 
 
 async def _get_target_user_id(message: types.Message, session) -> int | None:
@@ -119,7 +138,30 @@ async def on_bot_added_new_chat_members(message: types.Message, bot: Bot):
 async def on_new_chat_member(event: types.ChatMemberUpdated, bot: Bot):
     chat = event.chat
     new_user = event.new_chat_member.user
+
+    # Боты, которых добавляют в чат: по умолчанию сразу выкидываем — так в
+    # группы не попадают рекламные боты. Своих ботов и админов не трогаем.
     if new_user.is_bot:
+        me = await _safe_get_me(bot)
+        if me is not None and new_user.id == me.id:
+            return
+        async with session_scope() as session:
+            chat_db = await get_or_create_chat(session, chat_id=chat.id, title=chat.title or "")
+            settings = chat_db.settings or {}
+            if not settings.get("kick_bots_on_join", True):
+                return
+        try:
+            await bot.ban_chat_member(chat_id=chat.id, user_id=new_user.id)
+            await bot.unban_chat_member(chat_id=chat.id, user_id=new_user.id, only_if_banned=True)
+        except Exception:
+            return
+        try:
+            await bot.send_message(
+                chat_id=chat.id,
+                text=f"🤖 Бот @{new_user.username or new_user.id} удалён из чата автоматически.",
+            )
+        except Exception:
+            pass
         return
 
     async with session_scope() as session:
@@ -127,14 +169,81 @@ async def on_new_chat_member(event: types.ChatMemberUpdated, bot: Bot):
         chat_db = await get_or_create_chat(session, chat_id=chat.id, title=chat.title or "")
         settings = chat_db.settings or {}
 
-        # 1. Проверка капчи
+        # 1. Проверка профиля на входе: рекламный или автогенерированный ник
+        #    почти всегда принадлежит спам-аккаунту. Спам-ботов заводят пачками,
+        #    поэтому отсекаем их до первого сообщения, а не после рекламы в чате.
+        #    Работает на эвристиках; нейросеть — только при включённой ИИ-модерации.
+        if settings.get("join_check_enabled", True):
+            join_settings = dict(settings)
+            join_settings["ai_moderation_use_llm"] = bool(
+                settings.get("ai_moderation_enabled", False) and settings.get("ai_moderation_use_llm", True)
+            )
+            try:
+                verdict = await classify_join_profile(
+                    first_name=new_user.first_name,
+                    last_name=getattr(new_user, "last_name", None),
+                    username=new_user.username,
+                    settings=join_settings,
+                )
+            except Exception:
+                verdict = None
+            if verdict is not None and verdict.is_spam:
+                reason = f"Проверка входа: {verdict.reason or 'спам-аккаунт'} (скор {verdict.score:.2f})"
+                try:
+                    await bot.ban_chat_member(chat_id=chat.id, user_id=new_user.id)
+                    await bot.unban_chat_member(chat_id=chat.id, user_id=new_user.id, only_if_banned=True)
+                except Exception:
+                    return
+                try:
+                    await record_ban_or_kick(
+                        session,
+                        chat_id=chat.id,
+                        moderator_id=bot.id if bot else 0,
+                        target_id=new_user.id,
+                        action="ban",
+                        reason=reason,
+                        bot=bot,
+                        system=True,
+                    )
+                except Exception:
+                    pass
+                try:
+                    await notify_moderation_log(
+                        session,
+                        bot=bot,
+                        chat_id=chat.id,
+                        text=(
+                            f"🤖 <b>АВТО-БАН НА ВХОДЕ</b>\n"
+                            f"Аккаунт: <code>{new_user.id}</code>"
+                            f"{' @' + new_user.username if new_user.username else ''}\n"
+                            f"Причина: {verdict.reason or 'спам-аккаунт'}\n"
+                            f"Источник: {verdict.source}"
+                        ),
+                    )
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        chat_id=chat.id,
+                        text=f"🤖 {new_user.first_name} удалён: ИИ-модерация распознала спам-аккаунт ({verdict.reason or 'спам-ник'}).",
+                    )
+                except Exception:
+                    pass
+                return
+
+        # 2. Проверка капчи
         if settings.get("captcha_enabled", False):
             ch = await create_captcha(session, chat_id=chat.id, user_id=new_user.id)
+            timeout = int(settings.get("captcha_timeout_seconds", 120) or 120)
             builder = InlineKeyboardBuilder()
             builder.button(text="🤖 Я человек (пройти капчу)", callback_data=f"captcha_solve_{ch.challenge_token}")
             await bot.send_message(
                 chat_id=chat.id,
-                text=f"👋 Привет, {new_user.first_name}! Пройди капчу в течение 2 минут, нажав кнопку ниже.",
+                text=(
+                    f"👋 Привет, {new_user.first_name}! Пройди капчу в течение "
+                    f"{max(1, timeout // 60)} мин., нажав кнопку ниже.\n"
+                    "Пока капча не пройдена, сообщения удаляются."
+                ),
                 reply_markup=builder.as_markup(),
             )
             return
@@ -153,6 +262,7 @@ async def on_new_chat_member(event: types.ChatMemberUpdated, bot: Bot):
 ])))
 async def handle_kick(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
@@ -204,6 +314,7 @@ async def handle_kick(message: types.Message, bot: Bot):
 ])))
 async def handle_ban(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     raw_text = (message.text or "").strip()
     async with session_scope() as session:
@@ -272,6 +383,7 @@ async def handle_ban(message: types.Message, bot: Bot):
 ])))
 async def handle_unban(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
@@ -324,6 +436,7 @@ async def handle_unban(message: types.Message, bot: Bot):
 @router.message(F.text.casefold().startswith("заморозка"))
 async def handle_freeze(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     text = (message.text or "").strip().casefold()
     async with session_scope() as session:
@@ -333,7 +446,7 @@ async def handle_freeze(message: types.Message, bot: Bot):
             return
 
         if "выкл" in text:
-            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=None, min_level=3)
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=None, min_level=3, bot=bot)
             await message.reply("🔓 Заморозка чата снята. Участники снова могут писать сообщения.")
             return
 
@@ -341,7 +454,7 @@ async def handle_freeze(message: types.Message, bot: Bot):
         try:
             dur = parse_duration_string(rest_freeze)
             until = datetime.now(timezone.utc) + dur
-            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=until.isoformat(), min_level=3)
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=until.isoformat(), min_level=3, bot=bot)
             await message.reply(f"❄️ Чат заморожен на {rest_freeze}. Обычные участники временно не могут отправлять сообщения.")
         except Exception as e:
             await message.reply(f"❌ {e}")
@@ -350,6 +463,7 @@ async def handle_freeze(message: types.Message, bot: Bot):
 @router.message(F.text.casefold().startswith("слоумод"))
 async def handle_slowmode(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     text = (message.text or "").strip().casefold()
     async with session_scope() as session:
@@ -363,7 +477,7 @@ async def handle_slowmode(message: types.Message, bot: Bot):
                 await bot.set_chat_slow_mode_delay(chat_id=message.chat.id, slow_mode_delay=0)
             except Exception:
                 pass
-            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="slowmode_seconds", value=0, min_level=3)
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="slowmode_seconds", value=0, min_level=3, bot=bot)
             await message.reply("🚀 Слоумод отключен.")
             return
 
@@ -374,7 +488,7 @@ async def handle_slowmode(message: types.Message, bot: Bot):
                 await bot.set_chat_slow_mode_delay(chat_id=message.chat.id, slow_mode_delay=sec)
             except Exception:
                 pass
-            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="slowmode_seconds", value=sec, min_level=3)
+            await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="slowmode_seconds", value=sec, min_level=3, bot=bot)
             await message.reply(f"🐢 Слоумод установлен на {sec} сек.")
 
 
@@ -383,6 +497,7 @@ async def handle_slowmode(message: types.Message, bot: Bot):
 @router.message(F.text.casefold().startswith("репорт"))
 async def handle_report_cmd(message: types.Message):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     reason = " ".join((message.text or "").split()[1:]) or "Жалоба на нарушение"
 
@@ -416,7 +531,13 @@ async def on_report_accept(callback: types.CallbackQuery):
     rep_id = int(callback.data.split("_")[2])
     async with session_scope() as session:
         try:
-            await handle_report(session, report_id=rep_id, moderator_id=callback.from_user.id, resolution="accepted")
+            await handle_report(
+                session,
+                report_id=rep_id,
+                moderator_id=callback.from_user.id,
+                resolution="accepted",
+                bot=callback.bot,
+            )
             try:
                 await callback.answer("Жалоба принята!")
             except Exception:
@@ -437,7 +558,13 @@ async def on_report_reject(callback: types.CallbackQuery):
     rep_id = int(callback.data.split("_")[2])
     async with session_scope() as session:
         try:
-            await handle_report(session, report_id=rep_id, moderator_id=callback.from_user.id, resolution="rejected")
+            await handle_report(
+                session,
+                report_id=rep_id,
+                moderator_id=callback.from_user.id,
+                resolution="rejected",
+                bot=callback.bot,
+            )
             try:
                 await callback.answer("Жалоба отклонена!")
             except Exception:
@@ -461,6 +588,7 @@ async def on_report_reject(callback: types.CallbackQuery):
 ])))
 async def handle_admin_appoint(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     parts = (message.text or "").split()
     lvl_val = None
@@ -497,6 +625,7 @@ async def handle_admin_appoint(message: types.Message, bot: Bot):
 ])))
 async def handle_admin_dismiss(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
@@ -518,6 +647,7 @@ async def handle_admin_dismiss(message: types.Message, bot: Bot):
 @router.message(F.text.casefold().startswith("ссылки"))
 async def handle_whitelist(message: types.Message):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     parts = (message.text or "").split()
     if len(parts) == 1 or parts[1].casefold() == "список":
@@ -537,7 +667,13 @@ async def handle_whitelist(message: types.Message):
         domain = parts[2]
         async with session_scope() as session:
             try:
-                await add_link_whitelist(session, chat_id=message.chat.id, admin_id=message.from_user.id, domain=domain)
+                await add_link_whitelist(
+                    session,
+                    chat_id=message.chat.id,
+                    admin_id=message.from_user.id,
+                    domain=domain,
+                    bot=bot,
+                )
                 await message.reply(f"✅ Домен <code>{domain}</code> добавлен в белый список.", parse_mode="HTML")
             except Exception as e:
                 await message.reply(f"❌ {e}")
@@ -547,7 +683,13 @@ async def handle_whitelist(message: types.Message):
         domain = parts[2]
         async with session_scope() as session:
             try:
-                ok = await remove_link_whitelist(session, chat_id=message.chat.id, admin_id=message.from_user.id, domain=domain)
+                ok = await remove_link_whitelist(
+                    session,
+                    chat_id=message.chat.id,
+                    admin_id=message.from_user.id,
+                    domain=domain,
+                    bot=bot,
+                )
                 await message.reply("✅ Домен удален из белого списка." if ok else "Домен не найден в белом списке.")
             except Exception as e:
                 await message.reply(f"❌ {e}")
@@ -559,6 +701,7 @@ async def handle_whitelist(message: types.Message):
 ]))
 async def handle_chat_settings_panel(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         # Автоматическая синхронизация истинного создателя чата (ур. 5) и администраторов из Telegram
@@ -600,7 +743,11 @@ async def handle_chat_settings_panel(message: types.Message, bot: Bot):
             text=f"👋 Приветствие: {'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}",
             callback_data=f"cfg_toggle_welcome_{message.chat.id}",
         )
-        builder.adjust(3, 2, 2, 1)
+        builder.button(
+            text=f"🤖 ИИ-модерация: {'Вкл' if s.get('ai_moderation_enabled') else 'Выкл'}",
+            callback_data=f"cfg_toggle_ai_{message.chat.id}",
+        )
+        builder.adjust(3, 2, 2, 2)
 
         log_channel = chat.log_chat_id or s.get("log_channel_id")
         warn_limit = int(s.get("warn_limit", 5) or 0)
@@ -620,11 +767,13 @@ async def handle_chat_settings_panel(message: types.Message, bot: Bot):
             f"Антимат: <b>{'Вкл' if s.get('badwords_enabled', False) else 'Выкл'}</b>\n"
             f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required', False) else 'Выкл'}</b>\n"
             f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n"
+            f"ИИ-модерация спама: <b>{'Вкл' if s.get('ai_moderation_enabled') else 'Выкл'}</b>\n"
             f"Варны: лимит <b>{warn_limit or '∞'}</b>, действие <b>{warn_action}</b>\n"
             f"Лог-канал: <b>{log_channel if log_channel else 'не настроен'}</b>\n\n"
             f"<b>Команды настройки:</b>\n"
             f"• <code>антиспам вкл|выкл</code>, <code>антиспам лимит 6 10</code>, <code>антиспам действие бан</code>\n"
             f"• <code>антимат вкл|выкл</code>, <code>антимат действие удалить|варн|мут</code>\n"
+            f"• <code>ии вкл</code> — ИИ-модерация спама и кик ботов\n"
             f"• <code>варн настройки</code> — лимит, действие и срок авто-наказания\n"
             f"• <code>+капча</code> / <code>-капча</code> — капча при входе\n"
             f"• <code>логи настроить ID</code> — логи модерации\n"
@@ -654,6 +803,7 @@ async def on_setting_toggle(callback: types.CallbackQuery):
         "badwords": "badwords_enabled",
         "rules": "rules_acceptance_required",
         "welcome": "welcome_enabled",
+        "ai": "ai_moderation_enabled",
     }
     setting_key = mapping.get(key)
     if not setting_key:
@@ -707,6 +857,7 @@ async def _refresh_settings_panel(callback: types.CallbackQuery, chat_id: int) -
         builder.button(text=f"🤬 Антимат: {'Вкл' if s.get('badwords_enabled') else 'Выкл'}", callback_data=f"cfg_toggle_badwords_{chat_id}")
         builder.button(text=f"📜 Правила: {'Вкл' if s.get('rules_acceptance_required') else 'Выкл'}", callback_data=f"cfg_toggle_rules_{chat_id}")
         builder.button(text=f"👋 Приветствие: {'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}", callback_data=f"cfg_toggle_welcome_{chat_id}")
+        builder.button(text=f"🤖 ИИ-модерация: {'Вкл' if s.get('ai_moderation_enabled') else 'Выкл'}", callback_data=f"cfg_toggle_ai_{chat_id}")
         builder.adjust(3, 2, 2, 1)
 
         warn_limit = int(s.get("warn_limit", 5) or 0)
@@ -726,6 +877,7 @@ async def _refresh_settings_panel(callback: types.CallbackQuery, chat_id: int) -
             f"Антимат: <b>{'Вкл' if s.get('badwords_enabled') else 'Выкл'}</b>\n"
             f"Обязательные правила: <b>{'Вкл' if s.get('rules_acceptance_required') else 'Выкл'}</b>\n"
             f"Приветствие: <b>{'Вкл' if s.get('welcome_enabled', True) else 'Выкл'}</b>\n"
+            f"ИИ-модерация спама: <b>{'Вкл' if s.get('ai_moderation_enabled') else 'Выкл'}</b>\n"
             f"Варны: лимит <b>{warn_limit or '∞'}</b>, действие <b>{warn_action}</b>\n\n"
             f"<i>Нажмите кнопку, чтобы переключить настройку.</i>"
         )
@@ -781,6 +933,7 @@ async def _send_log_channel_help(message: types.Message, bot: Bot, chat_id: int,
 async def handle_moderation_logs(message: types.Message, bot: Bot):
     """Управление лог-каналом модерации: просмотр, настройка, отключение."""
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     parts = (message.text or "").split()
     async with session_scope() as session:
@@ -839,11 +992,13 @@ async def handle_moderation_logs(message: types.Message, bot: Bot):
 async def handle_antispam_settings(message: types.Message, bot: Bot):
     """Включение/выключение и настройка автоматического антиспама."""
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     parts = (message.text or "").split()
     async with session_scope() as session:
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         if lvl < 3:
+            await message.reply(_ADMIN_ONLY_HINT)
             return
 
         chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
@@ -952,6 +1107,144 @@ async def handle_antispam_settings(message: types.Message, bot: Bot):
         await message.reply("Неизвестная настройка антиспама. Напишите <code>антиспам</code> для справки.", parse_mode="HTML")
 
 
+# ===================== ИИ-МОДЕРАЦИЯ СПАМ-БОТОВ =====================
+
+@router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
+    "ии", "!ии", "/ai", "ии модерация", "нейросеть", "ии модератор"
+])))
+async def handle_ai_moderation_settings(message: types.Message, bot: Bot):
+    """Настройка ИИ-модерации спама и рекламы."""
+    if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
+        return
+    parts = (message.text or "").split()
+    async with session_scope() as session:
+        lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
+        if lvl < 3:
+            await message.reply(_ADMIN_ONLY_HINT)
+            return
+
+        chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
+        settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
+
+        def _persist() -> None:
+            chat.settings = settings
+
+        if len(parts) == 1:
+            dur = int(settings.get("ai_moderation_duration_seconds", DEFAULT_AI_MODERATION["ai_moderation_duration_seconds"])) // 60
+            await message.reply(
+                f"🤖 <b>ИИ-модерация спама</b>\n\n"
+                f"Статус: <b>{'Вкл' if settings.get('ai_moderation_enabled') else 'Выкл'}</b>\n"
+                f"Действие: <b>{settings.get('ai_moderation_action', 'delete')}</b>, срок <b>{dur} мин.</b>\n"
+                f"Проверка нейросетью: <b>{'Да' if settings.get('ai_moderation_use_llm', True) else 'Нет'}</b>\n"
+                f"Порог срабатывания: <b>{settings.get('ai_moderation_min_score', 0.6)}</b>\n"
+                f"Кик ботов при входе: <b>{'Вкл' if settings.get('kick_bots_on_join', True) else 'Выкл'}</b>\n"
+                f"Проверка профиля на входе: <b>{'Вкл' if settings.get('join_check_enabled', True) else 'Выкл'}</b>\n\n"
+                f"<b>Управление:</b>\n"
+                f"• <code>ии вкл</code> / <code>ии выкл</code>\n"
+                f"• <code>ии действие удалить|мут|бан</code>\n"
+                f"• <code>ии срок 1ч</code> — длительность мута/бана\n"
+                f"• <code>ии проверка вкл|выкл</code> — обращаться ли к нейросети\n"
+                f"• <code>ии порог 0.6</code> — насколько уверенно нужно быть\n"
+                f"• <code>ии боты вкл|выкл</code> — кикать ботов при входе\n"
+                f"• <code>ии вход вкл|выкл</code> — проверять ник нового участника",
+                parse_mode="HTML",
+            )
+            return
+
+        cmd = parts[1].casefold()
+        if cmd in ("вкл", "включить", "on"):
+            settings["ai_moderation_enabled"] = True
+            _persist()
+            await session.flush()
+            await message.reply(
+                "🤖 ИИ-модерация <b>включена</b>. Спам, реклама и скам будут удаляться автоматически.",
+                parse_mode="HTML",
+            )
+            return
+        if cmd in ("выкл", "отключить", "off"):
+            settings["ai_moderation_enabled"] = False
+            _persist()
+            await session.flush()
+            await message.reply("🤖 ИИ-модерация <b>выключена</b>.")
+            return
+        if cmd in ("действие", "action") and len(parts) >= 3:
+            act = parts[2].casefold()
+            if act in ("удалить", "удаление", "delete"):
+                settings["ai_moderation_action"] = "delete"
+            elif act in ("мут", "mute"):
+                settings["ai_moderation_action"] = "mute"
+            elif act in ("бан", "ban"):
+                settings["ai_moderation_action"] = "ban"
+            else:
+                await message.reply(
+                    "Укажите: <code>ии действие удалить</code>, <code>ии действие мут</code> или <code>ии действие бан</code>",
+                    parse_mode="HTML",
+                )
+                return
+            _persist()
+            await session.flush()
+            await message.reply(f"⚙️ Действие ИИ-модерации: <b>{settings['ai_moderation_action']}</b>")
+            return
+        if cmd in ("срок", "время") and len(parts) >= 3:
+            try:
+                dur = parse_duration_string(parts[2])
+            except Exception as e:
+                await message.reply(f"❌ {e}")
+                return
+            settings["ai_moderation_duration_seconds"] = int(dur.total_seconds())
+            _persist()
+            await session.flush()
+            await message.reply(f"⏱ Срок ИИ-наказания: <b>{int(dur.total_seconds()) // 60} мин.</b>", parse_mode="HTML")
+            return
+        if cmd in ("проверка", "нейросеть", "llm") and len(parts) >= 3:
+            state = parts[2].casefold() in ("вкл", "включить", "on", "да")
+            settings["ai_moderation_use_llm"] = state
+            _persist()
+            await session.flush()
+            await message.reply(
+                f"🧠 Проверка нейросетью: <b>{'Вкл' if state else 'Выкл'}</b>. "
+                + ("Подозрительные сообщения будет оценивать ИИ." if state else "Работают только быстрые эвристики.")
+            )
+            return
+        if cmd in ("вход", "join") and len(parts) >= 3:
+            state = parts[2].casefold() in ("вкл", "включить", "on", "да")
+            settings["join_check_enabled"] = state
+            _persist()
+            await session.flush()
+            await message.reply(
+                f"🚪 Проверка профиля на входе: <b>{'Вкл' if state else 'Выкл'}</b>. "
+                + (
+                    "Новые участники с рекламным или автогенерированным ником будут забанены."
+                    if state
+                    else "Новые участники проходят без проверки ника."
+                )
+            )
+            return
+        if cmd in ("боты", "bots") and len(parts) >= 3:
+            state = parts[2].casefold() in ("вкл", "включить", "on", "да")
+            settings["kick_bots_on_join"] = state
+            _persist()
+            await session.flush()
+            await message.reply(
+                f"🤖 Кик ботов при входе: <b>{'Вкл' if state else 'Выкл'}</b>."
+            )
+            return
+        if cmd in ("порог", "threshold") and len(parts) >= 3:
+            try:
+                value = float(parts[2].replace(",", "."))
+            except ValueError:
+                await message.reply("Укажите число от 0 до 1, например: <code>ии порог 0.6</code>", parse_mode="HTML")
+                return
+            settings["ai_moderation_min_score"] = max(0.1, min(1.0, value))
+            _persist()
+            await session.flush()
+            await message.reply(f"🎚 Порог срабатывания: <b>{settings['ai_moderation_min_score']}</b>")
+            return
+
+        await message.reply("Неизвестная настройка ИИ-модерации. Напишите <code>ии</code> для справки.", parse_mode="HTML")
+
+
 # ===================== СПРАВКА ПО МОДЕРАЦИИ =====================
 
 @router.message(F.text.casefold().in_([
@@ -973,11 +1266,13 @@ async def handle_moderation_help(message: types.Message):
 async def handle_antiflood_pause(message: types.Message, bot: Bot):
     """Минимальный интервал между сообщениями одного игрока (анти-флуд «пауза»)."""
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     parts = (message.text or "").split()
     async with session_scope() as session:
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         if lvl < 3:
+            await message.reply(_ADMIN_ONLY_HINT)
             return
         chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")
         settings = dict(chat.settings or DEFAULT_CHAT_SETTINGS)
@@ -1032,11 +1327,13 @@ async def handle_antiflood_pause(message: types.Message, bot: Bot):
 async def handle_badwords_settings(message: types.Message, bot: Bot):
     """Настройка фильтра нецензурной лексики (антимат)."""
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     parts = (message.text or "").split()
     async with session_scope() as session:
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         if lvl < 3:
+            await message.reply(_ADMIN_ONLY_HINT)
             return
 
         from app.services import badwords_service as bw
@@ -1121,6 +1418,14 @@ async def handle_badwords_settings(message: types.Message, bot: Bot):
         await message.reply("Неизвестная настройка антимата. Напишите <code>антимат</code> для справки.", parse_mode="HTML")
 
 
+_ADMIN_ONLY_HINT = (
+    "❌ Эта настройка доступна администраторам чата уровня 3+ "
+    "(Админ, Старший админ, Создатель).\n"
+    "Если вы админ группы, выдайте боту права администратора — "
+    "тогда он увидит ваш уровень автоматически."
+)
+
+
 # ===================== КАПЧА (ВКЛЮЧЕНИЕ АДМИНОМ) =====================
 
 @router.message(F.text.casefold().func(lambda t: any(t == p or t.startswith(p + " ") for p in [
@@ -1129,12 +1434,14 @@ async def handle_badwords_settings(message: types.Message, bot: Bot):
 async def handle_captcha_settings(message: types.Message, bot: Bot):
     """Включение/выключение капчи при входе. Команда «+капча» включает, «-капча» выключает."""
     if not message.chat or message.chat.type == ChatType.PRIVATE:
+        await reply_group_only(message)
         return
     text = (message.text or "").strip().casefold()
     parts = text.split()
     async with session_scope() as session:
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=bot)
         if lvl < 3:
+            await message.reply(_ADMIN_ONLY_HINT)
             return
 
         chat = await get_or_create_chat(session, chat_id=message.chat.id, title=message.chat.title or "")

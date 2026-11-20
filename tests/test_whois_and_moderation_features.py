@@ -97,7 +97,7 @@ async def test_whois_and_profile_commands():
 
 
 @pytest.mark.asyncio
-async def test_admins_sync_creator_only_level5():
+async def test_admins_sync_creator_level5_and_telegram_admins_level3():
     chat_id = -10055443323
     creator_id = 81110003
     admin_id = 81110004
@@ -122,9 +122,10 @@ async def test_admins_sync_creator_only_level5():
         lvl_creator = await get_user_admin_level(session, chat_id=chat_id, user_id=creator_id, bot=mock_bot)
         assert lvl_creator == 5
 
-        # Админ Telegram НЕ получил уровень 3 или 5, а остался ур. 1
+        # Администратор Telegram получает уровень 3 — иначе «мут», «варн» и «бан»
+        # в группе не работали бы ни у кого, кроме создателя.
         lvl_admin = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=mock_bot)
-        assert lvl_admin == 1
+        assert lvl_admin == 3
 
 
 @pytest.mark.asyncio

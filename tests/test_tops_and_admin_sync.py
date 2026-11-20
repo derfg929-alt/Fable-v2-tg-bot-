@@ -66,9 +66,9 @@ async def test_bot_added_syncs_chat_owner_level5():
         owner_lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=creator_id)
         assert owner_lvl == 5
 
-        # Проверяем, что добавивший админ НЕ получает админку автоматически (остается ур. 1)
+        # Добавивший админ — администратор группы, значит получает уровень 3.
         adder_lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=adder_id)
-        assert adder_lvl == 1
+        assert adder_lvl == 3
 
 
 @pytest.mark.asyncio

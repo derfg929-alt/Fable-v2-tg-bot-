@@ -289,7 +289,7 @@ function contestCard(c) {
       ${img}
       <div class="row"><h3>${esc(c.title)}</h3><span class="pill">${esc(c.status_label)}</span></div>
       <p>${esc(c.description || "")}</p>
-      <p>👥 ${c.participants} участников · 🏆 ${c.winners_count} победителей${c.prize ? " · 🎁 " + esc(c.prize) : ""}</p>
+      <p>👥 ${c.participants ?? 0} участников · 🏆 ${c.winners_count ?? 1} победителей${c.prize ? " · 🎁 " + esc(c.prize) : ""}</p>
       <button class="btn" onclick="openContest(${c.id})">Открыть</button>
     </div>`;
 }
@@ -351,7 +351,7 @@ async function openContest(id) {
       <p>${esc(c.description || "")}</p>
       ${c.prize ? `<p>🎁 Приз: <b>${esc(c.prize)}</b></p>` : ""}
       <p>📅 ${fmtDate(c.starts_at)} — ${fmtDate(c.ends_at)}</p>
-      <p>👥 ${c.participants} участников · 🏆 ${c.winners_count} победителей</p>
+      <p>👥 ${c.participants ?? 0} участников · 🏆 ${c.winners_count ?? 1} победителей</p>
       ${c.extra_conditions ? `<p>📌 ${esc(c.extra_conditions)}</p>` : ""}
       ${channels}
       ${winners}
@@ -495,7 +495,7 @@ async function openManage(id) {
       <button class="btn ghost" onclick="go('mycontests')">◀️ К моим конкурсам</button>
       <div class="card">
         <div class="row"><h3>🛠 ${esc(c.title)}</h3><span class="pill">${esc(c.status_label)}</span></div>
-        <p>👥 ${c.participants} участников · 🏆 ${c.winners_count} победителей</p>
+        <p>👥 ${c.participants ?? 0} участников · 🏆 ${c.winners_count ?? 1} победителей</p>
         <button class="btn" onclick="openStats(${id})">📊 Статистика</button>
         <button class="btn secondary" onclick="openContest(${id})">👁 Открыть как участник</button>
       </div>
@@ -823,12 +823,24 @@ async function exportContest(id) {
 
 async function renderProfile() {
   const me = await api("/api/me");
+  const act = me.activity || {};
+  const days = me.user.days_in_bot;
+  const daysLine = (typeof days === "number" && days >= 0)
+    ? ` · <b>${days}</b> дн. в боте` : "";
+  const lastActive = act.last_active ? fmtDate(act.last_active) : "нет данных";
   app.innerHTML = `
     <div class="card">
       <h3>👤 ${esc(me.user.first_name || "Игрок")}</h3>
       <p>📛 @${esc(me.user.username || "не указан")}</p>
       <p>🆔 ${me.user.id}</p>
-      <p>🗓 Регистрация: ${fmtDate(me.user.registered_at)}</p>
+      <p>🗓 Регистрация: ${fmtDate(me.user.registered_at)}${daysLine}</p>
+      <p>⏱ Последняя активность: ${lastActive}</p>
+    </div>
+    <div class="card">
+      <h3>💬 Сообщений: ${act.messages_all_time ?? 0}</h3>
+      <p>Сегодня: <b>${act.messages_day ?? 0}</b> · за неделю: <b>${act.messages_week ?? 0}</b>
+         · за месяц: <b>${act.messages_month ?? 0}</b></p>
+      <p>Чатов, где общаешься: <b>${act.chats ?? 0}</b></p>
     </div>
     <div class="grid">
       <div class="stat"><b>${me.invited}</b><span>Приглашено</span></div>

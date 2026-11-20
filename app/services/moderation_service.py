@@ -93,91 +93,161 @@ def _format_duration_ru(td: timedelta) -> str:
     return " ".join(parts) or "0 мин."
 
 
-def parse_duration_string(duration_str: str) -> timedelta:
-    """Парсит строки с длительностью в timedelta.
-    Поддерживает:
-      - Секунды: '67000 сек', '67000 секунд', '500с', '100s'
-      - Минуты: '120 мин', '30м', '45 минут', 'полчаса'
-      - Часы: '1 час 30 минут', 'час 30', 'час 2', '2 часа', 'на 2 часа', 'на час', '1ч 30м', '2ч'
-      - Дни: '1 день', '3 дня', '7д', '1д'
-      - Недели и месяцы: '1 неделя', '1 месяц'
-      - Бессрочно: 'навсегда', 'вечно'
+# Единицы срока: (регулярное выражение, секунды, подпись для ответа).
+# Альтернативы идут от длинных к коротким, иначе «м» перехватит «мес».
+_DURATION_UNITS: tuple[tuple[str, int, str], ...] = (
+    (r"секунд\w*|секунды|секунда|сек|с|seconds?|secs?|s", 1, "сек."),
+    (r"минут\w*|минуты|минута|мин|м|minutes?|mins?|m", 60, "мин."),
+    (r"часов|часа|часу|час|ч|hours?|hrs?|h", 3600, "ч."),
+    (r"суток|сутки|сутка|дней|дня|день|дн|д|days?|d", 86400, "д."),
+    (r"недель|недели|неделю|неделя|нед|weeks?|w", 7 * 86400, "нед."),
+    (r"месяцев|месяца|месяц|мес|months?|mon", 30 * 86400, "мес."),
+    (r"года|год|году|лет|г|years?|yrs?|y", 365 * 86400, "г."),
+)
+_DURATION_UNIT_RE = "|".join(f"(?:{u})" for u, _, _ in _DURATION_UNITS)
+# Замыкающая граница обязательна: без неё «1 сутки» распознавалось как «1 с».
+_DURATION_PAIR_RE = re.compile(
+    rf"(\d+)\s*({_DURATION_UNIT_RE})(?![а-яёa-z])", re.IGNORECASE
+)
+
+
+def _unit_seconds(unit: str) -> tuple[int, str] | None:
+    for pattern, seconds, label in _DURATION_UNITS:
+        if re.fullmatch(pattern, unit, re.IGNORECASE):
+            return seconds, label
+    return None
+
+
+def _match_compound_duration(text: str) -> tuple[timedelta, str, int] | None:
+    """Разбирает «2 недели», «1 сутки», «1ч 30м», «2д 3ч 15м».
+
+    Дополнительно понимает разговорную форму «1 час 30» (один час тридцать
+    минут): число без единицы после часов считается минутами.
     """
-    s = duration_str.strip().lower()
-    if s.startswith("на "):
+    total = 0
+    parts: list[str] = []
+    end = 0
+    last_was_hours = False
+    for match in _DURATION_PAIR_RE.finditer(text):
+        if match.start() != end and text[end:match.start()].strip(" ,и"):
+            break
+        parsed = _unit_seconds(match.group(2))
+        if parsed is None:
+            break
+        seconds, label = parsed
+        amount = int(match.group(1))
+        total += amount * seconds
+        parts.append(f"{amount} {label}")
+        last_was_hours = seconds == 3600
+        end = match.end()
+
+    if parts and last_was_hours:
+        tail = re.match(r"\s*(\d{1,2})(?![\w])", text[end:])
+        if tail and 0 < int(tail.group(1)) < 60:
+            minutes = int(tail.group(1))
+            total += minutes * 60
+            parts.append(f"{minutes} мин.")
+            end += tail.end()
+
+    if not parts or total <= 0:
+        return None
+    return timedelta(seconds=total), " ".join(parts), end
+
+
+# Особые словесные формы, которые нельзя получить из пар «число + единица».
+_DURATION_WORDS: tuple[tuple[str, timedelta, str], ...] = (
+    (r"полчаса|пол-часа", timedelta(minutes=30), "30 мин."),
+    (r"час|один час", timedelta(hours=1), "1 ч."),
+    (r"два часа", timedelta(hours=2), "2 ч."),
+    (r"три часа", timedelta(hours=3), "3 ч."),
+    (r"день|сутки|один день", timedelta(days=1), "1 д."),
+    (r"два дня", timedelta(days=2), "2 д."),
+    (r"три дня", timedelta(days=3), "3 д."),
+    (r"неделя|неделю|одну неделю", timedelta(days=7), "7 д."),
+    (r"месяц|один месяц", timedelta(days=30), "30 д."),
+    (r"год|один год", timedelta(days=365), "365 д."),
+)
+
+
+def _match_duration_prefix(text: str) -> tuple[timedelta | None, str, int] | None:
+    """Ищет срок наказания в начале строки.
+
+    Возвращает (длительность, подпись, сколько символов занято) либо None,
+    если строка не начинается со срока. ``None`` вместо длительности означает
+    «навсегда».
+    """
+    s = text.strip()
+    if not s:
+        return None
+
+    if re.match(r"^(?:навсегда|вечно|бессрочно)\b", s, re.IGNORECASE):
+        match = re.match(r"^(?:навсегда|вечно|бессрочно)\b", s, re.IGNORECASE)
+        return None, "навсегда", match.end()
+
+    # «час 2», «час-два», «1-2 часа» — разговорные формы на два часа.
+    legacy = re.match(
+        r"^(?:час\s*[-–—]\s*(?:два|2)|час\s+(?:два|2)|1\s*[-–—]\s*2\s*(?:ч|часа|часов))\b",
+        s,
+        re.IGNORECASE,
+    )
+    if legacy:
+        return timedelta(hours=2), "2 ч.", legacy.end()
+
+    # «час 30» — один час тридцать минут.
+    legacy = re.match(r"^(?:один\s+)?час\s*(\d{1,2})\s*(?:м|мин|минут\w*|m)?\b", s, re.IGNORECASE)
+    if legacy:
+        minutes = int(legacy.group(1))
+        return timedelta(hours=1, minutes=minutes), f"1 ч. {minutes} мин.", legacy.end()
+
+    compound = _match_compound_duration(s)
+    if compound:
+        return compound
+
+    for pattern, duration, label in _DURATION_WORDS:
+        match = re.match(rf"^(?:{pattern})\b", s, re.IGNORECASE)
+        if match:
+            return duration, label, match.end()
+
+    # Голое число трактуем как минуты: «мут 67» = 67 минут.
+    bare = re.match(r"^(\d+)\b", s)
+    if bare:
+        minutes = int(bare.group(1))
+        if minutes > 0:
+            return timedelta(minutes=minutes), _format_duration_ru(timedelta(minutes=minutes)), bare.end()
+
+    return None
+
+
+def parse_duration_string(duration_str: str) -> timedelta:
+    """Парсит строку со сроком в timedelta.
+
+    Поддерживает секунды, минуты, часы, дни, недели, месяцы и годы в любых
+    сочетаниях: «67000 сек», «30м», «1ч 30м», «2 часа», «на час 2», «1 сутки»,
+    «2 недели», «1 месяц», «год», «навсегда», а также голое число (минуты).
+    """
+    s = duration_str.strip()
+    if s.lower().startswith("на "):
         s = s[3:].strip()
+    if not s:
+        raise ModerationError("Пустой срок наказания")
 
-    patterns = [
-        # Xд Yч Zм
-        (
-            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|minutes?|m)?$",
-            lambda m: timedelta(days=int(m.group(1)), hours=int(m.group(2)), minutes=int(m.group(3) or 0)),
-        ),
-        # Xд Yч
-        (
-            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)$",
-            lambda m: timedelta(days=int(m.group(1)), hours=int(m.group(2))),
-        ),
-        # Xч Yм ('1ч 30м', '1ч30м', '2 часа 15 минут', '1 ч 45')
-        (
-            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)?$",
-            lambda m: timedelta(hours=int(m.group(1)), minutes=int(m.group(2))),
-        ),
-        # 'час 2' / 'час два' / 'час-два' / '1-2 часа' -> 2 часа
-        (
-            r"^(?:час\s*[-–—]\s*(?:два|2)|час\s+(?:два|2)|1\s*[-–—]\s*2\s*(?:ч|часа|часов))$",
-            lambda m: timedelta(hours=2),
-        ),
-        # 'час 30' / 'час 15' / 'час 45'
-        (
-            r"^(?:один\s+)?час\s*(\d{1,2})\s*(?:м|мин|минут|минуты|minutes?|m)?$",
-            lambda m: timedelta(hours=1, minutes=int(m.group(1))),
-        ),
-        # Секунды: '67000 сек', '67000 секунд', '500с', '100s'
-        (
-            r"^(\d+)\s*(?:с|сек|секунд|секунды|секунда|seconds?|sec|s)$",
-            lambda m: timedelta(seconds=int(m.group(1))),
-        ),
-        # Одиночные с числами: дни, часы, минуты
-        (
-            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)$",
-            lambda m: timedelta(days=int(m.group(1))),
-        ),
-        (
-            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)$",
-            lambda m: timedelta(hours=int(m.group(1))),
-        ),
-        (
-            r"^(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)$",
-            lambda m: timedelta(minutes=int(m.group(1))),
-        ),
-        # Голое число = минуты ('мут 67' -> 67 минут = 1 ч. 7 мин.)
-        (
-            r"^(\d+)$",
-            lambda m: timedelta(minutes=int(m.group(1))),
-        ),
-        # Слова без чисел
-        (r"^(?:полчаса|пол-часа)$", lambda m: timedelta(minutes=30)),
-        (r"^(?:час|один час)$", lambda m: timedelta(hours=1)),
-        (r"^(?:два часа)$", lambda m: timedelta(hours=2)),
-        (r"^(?:три часа)$", lambda m: timedelta(hours=3)),
-        (r"^(?:день|сутки|один день)$", lambda m: timedelta(days=1)),
-        (r"^(?:два дня)$", lambda m: timedelta(days=2)),
-        (r"^(?:три дня)$", lambda m: timedelta(days=3)),
-        (r"^(?:неделя|неделю|одну неделю)$", lambda m: timedelta(days=7)),
-        (r"^(?:месяц|один месяц)$", lambda m: timedelta(days=30)),
-        (r"^(?:навсегда|вечно)$", lambda m: timedelta(days=3650)),
-    ]
+    matched = _match_duration_prefix(s)
+    if matched is not None:
+        duration, _, consumed = matched
+        if s[consumed:].strip(" ,"):
+            raise ModerationError(
+                "Неверный формат времени. Примеры: 67000 сек, 30м, 1ч 30м, 2 часа, 2 недели, 1д"
+            )
+        if duration is None:
+            return timedelta(days=3650)
+        if duration.total_seconds() <= 0:
+            raise ModerationError("Срок должен быть больше 0")
+        return duration
 
-    for pat, func in patterns:
-        m = re.match(pat, s, re.IGNORECASE)
-        if m:
-            res = func(m)
-            if res.total_seconds() <= 0:
-                raise ModerationError("Срок должен быть больше 0")
-            return res
+    raise ModerationError(
+        "Неверный формат времени. Примеры: 67000 сек, 30м, 1ч 30м, 2 часа, 2 недели, 1д"
+    )
 
-    raise ModerationError("Неверный формат времени. Примеры: 67000 сек, 30м, 1ч 30м, 2 часа, на час 2, 1д")
 
 
 def extract_moderation_args(
@@ -204,7 +274,7 @@ def extract_moderation_args(
     cmd = tokens[0]
     rest = full_text.strip()[len(cmd):].strip()
 
-    # Удаляем упоминание пользователя или цифровой ID в начале аргументов, если есть
+    # Убираем упоминание пользователя или цифровой ID из начала аргументов.
     if rest.startswith("@"):
         parts = rest.split(maxsplit=1)
         rest = parts[1] if len(parts) > 1 else ""
@@ -219,97 +289,25 @@ def extract_moderation_args(
         s_work = re.sub(r"^на\s+", "", s_work, count=1, flags=re.IGNORECASE).strip()
         leading_na = True
 
-    patterns = [
-        # Xд Yч Zм
-        (
-            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|minutes?|m)?\b",
-            lambda m: (timedelta(days=int(m.group(1)), hours=int(m.group(2)), minutes=int(m.group(3) or 0)), f"{m.group(1)} д. {m.group(2)} ч. {m.group(3) or 0} мин."),
-        ),
-        # Xд Yч
-        (
-            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\s*(\d+)\s*(?:ч|час|часа|часов|hours?|h)\b",
-            lambda m: (timedelta(days=int(m.group(1)), hours=int(m.group(2))), f"{m.group(1)} д. {m.group(2)} ч."),
-        ),
-        # Xч Yм
-        (
-            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)\s*(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)?\b",
-            lambda m: (timedelta(hours=int(m.group(1)), minutes=int(m.group(2))), f"{m.group(1)} ч. {m.group(2)} мин."),
-        ),
-        # 'час 2' / 'час два' / 'час-два' / '1-2 часа' -> 2 часа
-        (
-            r"^(?:час\s*[-–—]\s*(?:два|2)|час\s+(?:два|2)|1\s*[-–—]\s*2\s*(?:ч|часа|часов))\b",
-            lambda m: (timedelta(hours=2), "2 ч."),
-        ),
-        # 'час 30' / 'час 15' / 'час 45'
-        (
-            r"^(?:один\s+)?час\s*(\d{1,2})\s*(?:м|мин|минут|минуты|minutes?|m)?\b",
-            lambda m: (timedelta(hours=1, minutes=int(m.group(1))), f"1 ч. {m.group(1)} мин."),
-        ),
-        # Секунды: '67000 сек', '67000 секунд', '500с', '100s'
-        (
-            r"^(\d+)\s*(?:с|сек|секунд|секунды|секунда|seconds?|sec|s)\b",
-            lambda m: (timedelta(seconds=int(m.group(1))), f"{m.group(1)} сек."),
-        ),
-        # Одиночные с числами: дни, часы, минуты
-        (
-            r"^(\d+)\s*(?:д|дн|дней|дня|день|days?|d)\b",
-            lambda m: (timedelta(days=int(m.group(1))), f"{m.group(1)} д."),
-        ),
-        (
-            r"^(\d+)\s*(?:ч|час|часа|часов|hours?|h)\b",
-            lambda m: (timedelta(hours=int(m.group(1))), f"{m.group(1)} ч."),
-        ),
-        (
-            r"^(\d+)\s*(?:м|мин|минут|минуты|минута|minutes?|m)\b",
-            lambda m: (timedelta(minutes=int(m.group(1))), f"{m.group(1)} мин."),
-        ),
-        # Голое число = минуты ('мут 67' -> 1 ч. 7 мин.)
-        (
-            r"^(\d+)\b",
-            lambda m: (timedelta(minutes=int(m.group(1))), _format_duration_ru(timedelta(minutes=int(m.group(1))))),
-        ),
-        # Слова без чисел
-        (r"^(?:полчаса|пол-часа)\b", lambda m: (timedelta(minutes=30), "30 мин.")),
-        (r"^(?:час|один час)\b", lambda m: (timedelta(hours=1), "1 ч.")),
-        (r"^(?:два часа)\b", lambda m: (timedelta(hours=2), "2 ч.")),
-        (r"^(?:три часа)\b", lambda m: (timedelta(hours=3), "3 ч.")),
-        (r"^(?:день|сутки|один день)\b", lambda m: (timedelta(days=1), "1 д.")),
-        (r"^(?:два дня)\b", lambda m: (timedelta(days=2), "2 д.")),
-        (r"^(?:три дня)\b", lambda m: (timedelta(days=3), "3 д.")),
-        (r"^(?:неделя|неделю|одну неделю)\b", lambda m: (timedelta(days=7), "7 д.")),
-        (r"^(?:месяц|один месяц)\b", lambda m: (timedelta(days=30), "30 д.")),
-        (r"^(?:навсегда|вечно)\b", lambda m: (None, "навсегда")),
-    ]
-
-    matched_td = None
-    matched_disp = ""
-    matched_len = 0
-
-    for pat, func in patterns:
-        m = re.match(pat, s_work, re.IGNORECASE)
-        if m:
-            matched_td, matched_disp = func(m)
-            matched_len = m.end()
-            break
-
-    if matched_td is not None or matched_disp == "навсегда":
-        reason = s_work[matched_len:].strip()
+    matched = _match_duration_prefix(s_work)
+    if matched is not None:
+        duration, display, consumed = matched
+        reason = s_work[consumed:].strip()
         reason = re.sub(r"^[,\-–—:]\s*", "", reason).strip()
         if target_id and reason.startswith(str(target_id)):
             reason = reason[len(str(target_id)):].strip()
         elif reason.startswith("@"):
             parts = reason.split(maxsplit=1)
             reason = parts[1] if len(parts) > 1 else ""
-        return matched_td, matched_disp, reason or "Нарушение порядка"
+        return duration, display, reason or "Нарушение порядка"
 
     reason = rest
     if leading_na:
         reason = "на " + s_work
-    clean_words = []
-    for w in reason.split():
-        if w.startswith("@") or (target_id and w == str(target_id)):
-            continue
-        clean_words.append(w)
+    clean_words = [
+        w for w in reason.split()
+        if not w.startswith("@") and not (target_id and w == str(target_id))
+    ]
     final_reason = " ".join(clean_words).strip() or "Нарушение порядка"
     default_disp = (
         "30 мин."
@@ -319,12 +317,67 @@ def extract_moderation_args(
     return default_duration, default_disp, final_reason
 
 
+# assigned_by для ролей, синхронизированных из Telegram автоматически.
+# Позволяет отличать их от назначенных вручную и снимать при потере прав.
+AUTO_SYNC_MARKER = 0
+
+# Уровень, который получает администратор Telegram без ручного назначения:
+# может мутить, выдавать варны, банить и настраивать чат, но не может
+# раздавать роли (уровень 3 < 4) — иерархия остаётся управляемой создателем.
+TELEGRAM_ADMIN_LEVEL = 3
+
+# Кэш «не админ» по (chat_id, user_id). Без него на каждое сообщение каждого
+# участника уходил бы bot.get_chat_member — Telegram отвечает 429 на такой поток.
+_NON_ADMIN_TTL = timedelta(minutes=10)
+_non_admin_cache: dict[tuple[int, int], datetime] = {}
+
+
+def _is_cached_non_admin(chat_id: int, user_id: int, now: datetime) -> bool:
+    ts = _non_admin_cache.get((chat_id, user_id))
+    if ts is None:
+        return False
+    if now - ts > _NON_ADMIN_TTL:
+        _non_admin_cache.pop((chat_id, user_id), None)
+        return False
+    return True
+
+
+def _mark_non_admin(chat_id: int, user_id: int, now: datetime) -> None:
+    if len(_non_admin_cache) > 10000:
+        _non_admin_cache.clear()
+    _non_admin_cache[(chat_id, user_id)] = now
+
+
+def invalidate_admin_cache(chat_id: int, user_id: int) -> None:
+    """Сбрасывает кэш после смены прав, чтобы изменения применились сразу."""
+    _non_admin_cache.pop((chat_id, user_id), None)
+
+
+async def _apply_admin_level(
+    session: AsyncSession, *, chat_id: int, user_id: int, level: int, assigned_by: int
+) -> None:
+    stmt = insert(ChatAdmin).values(
+        chat_id=chat_id,
+        user_id=user_id,
+        level=level,
+        assigned_by=assigned_by,
+        is_active=True,
+    ).on_conflict_do_update(
+        index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
+        set_={"level": level, "is_active": True},
+    )
+    await session.execute(stmt)
+
+
 async def get_user_admin_level(
     session: AsyncSession, *, chat_id: int, user_id: int, bot=None
 ) -> int:
     """Возвращает локальный уровень прав пользователя в чате (от 1 до 5).
-    Если пользователь является создателем или администратором в самом Telegram,
-    но в базе еще нет записи, уровень синхронизируется.
+
+    Если записи в БД нет, права запрашиваются у Telegram и кэшируются:
+    создатель группы получает уровень 5, администратор — уровень 3.
+    Без этого модераторы группы не могли пользоваться «мут», «варн», «бан»
+    и другими командами: они всегда считались обычными игроками.
     """
     from app.config import get_settings
     # Глобальный владелец бота всегда имеет уровень 5 во всех чатах
@@ -341,81 +394,94 @@ async def get_user_admin_level(
     if admin_row:
         return admin_row.level
 
-    # Попытка проверить права напрямую в Telegram чате, если в БД еще нет роли
-    if bot:
-        try:
-            member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-            status = getattr(member, "status", None)
-            if status in ("creator", "owner"):
-                # Назначаем создателю ур. 5
-                stmt = insert(ChatAdmin).values(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    level=5,
-                    assigned_by=user_id,
-                    is_active=True,
-                ).on_conflict_do_update(
-                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
-                    set_={"level": 5, "is_active": True},
-                )
-                await session.execute(stmt)
-                return 5
-            elif status == "administrator":
-                # Обычные администраторы Telegram не получают админку бота автоматически
-                return 1
-        except Exception:
-            pass
+    if not bot:
+        return 1
 
+    now = datetime.now(timezone.utc)
+    if _is_cached_non_admin(chat_id, user_id, now):
+        return 1
+
+    try:
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        status = getattr(member, "status", None)
+        if status in ("creator", "owner"):
+            await _apply_admin_level(
+                session, chat_id=chat_id, user_id=user_id, level=5, assigned_by=AUTO_SYNC_MARKER
+            )
+            return 5
+        if status == "administrator":
+            await _apply_admin_level(
+                session,
+                chat_id=chat_id,
+                user_id=user_id,
+                level=TELEGRAM_ADMIN_LEVEL,
+                assigned_by=AUTO_SYNC_MARKER,
+            )
+            return TELEGRAM_ADMIN_LEVEL
+    except Exception:
+        return 1
+
+    _mark_non_admin(chat_id, user_id, now)
     return 1
 
 
 async def sync_chat_creator_and_admins(session: AsyncSession, *, chat_id: int, bot) -> int | None:
-    """Синхронизирует владельца (создателя) чата через Telegram Bot API.
-    Админку (ур. 5) автоматически получает только создатель группы.
+    """Синхронизирует состав администрации чата с Telegram.
+
+    Создатель группы получает уровень 5, остальные администраторы — уровень 3.
+    Автоматически выданные роли снимаются, когда пользователь перестаёт быть
+    администратором в Telegram; назначенные вручную (assigned_by != 0) не трогаем.
     Возвращает telegram_id создателя чата, если найден.
     """
     if not bot:
         return None
     try:
         admins = await bot.get_chat_administrators(chat_id=chat_id)
-        creator_id = None
-        for adm in admins:
-            user = getattr(adm, "user", None)
-            if not user or getattr(user, "is_bot", False):
-                continue
-
-            status = getattr(adm, "status", None)
-            if status in ("creator", "owner"):
-                creator_id = user.id
-                level = 5
-
-                # Убеждаемся, что создатель существует в БД игроков
-                p_stmt = insert(Player).values(
-                    telegram_id=user.id,
-                    first_name=user.first_name or "Создатель",
-                    username=user.username,
-                ).on_conflict_do_nothing(index_elements=[Player.telegram_id])
-                await session.execute(p_stmt)
-
-                # Синхронизируем уровень только создателя
-                stmt = insert(ChatAdmin).values(
-                    chat_id=chat_id,
-                    user_id=user.id,
-                    level=level,
-                    assigned_by=user.id,
-                    is_active=True,
-                ).on_conflict_do_update(
-                    index_elements=[ChatAdmin.chat_id, ChatAdmin.user_id],
-                    set_={"level": level, "is_active": True},
-                )
-                await session.execute(stmt)
-            else:
-                # Обычные администраторы Telegram не получают права автоматически
-                continue
-
-        return creator_id
     except Exception:
         return None
+
+    creator_id: int | None = None
+    actual_levels: dict[int, int] = {}
+    for adm in admins:
+        user = getattr(adm, "user", None)
+        if not user or getattr(user, "is_bot", False):
+            continue
+        status = getattr(adm, "status", None)
+        if status in ("creator", "owner"):
+            creator_id = user.id
+            actual_levels[user.id] = 5
+        elif status == "administrator":
+            actual_levels[user.id] = TELEGRAM_ADMIN_LEVEL
+        else:
+            continue
+
+        p_stmt = insert(Player).values(
+            telegram_id=user.id,
+            first_name=getattr(user, "first_name", None) or "Админ",
+            username=getattr(user, "username", None),
+        ).on_conflict_do_nothing(index_elements=[Player.telegram_id])
+        await session.execute(p_stmt)
+        await _apply_admin_level(
+            session,
+            chat_id=chat_id,
+            user_id=user.id,
+            level=actual_levels[user.id],
+            assigned_by=AUTO_SYNC_MARKER,
+        )
+
+    stale = await session.scalars(
+        select(ChatAdmin).where(
+            ChatAdmin.chat_id == chat_id,
+            ChatAdmin.is_active.is_(True),
+            ChatAdmin.assigned_by == AUTO_SYNC_MARKER,
+        )
+    )
+    for row in stale.all():
+        if row.user_id not in actual_levels:
+            row.is_active = False
+    await session.flush()
+
+    return creator_id
 
 
 async def ensure_player_and_chat_exist(
@@ -550,6 +616,8 @@ async def set_admin_level(
             set_={"level": new_level, "assigned_by": actor_id, "is_active": True},
         )
         await session.execute(statement)
+
+    invalidate_admin_cache(chat_id, target_id)
 
     log_entry = AdminActionLog(
         chat_id=chat_id,
@@ -1092,9 +1160,10 @@ async def add_link_whitelist(
     chat_id: int,
     admin_id: int,
     domain: str,
+    bot=None,
 ) -> str:
     """Добавляет домен в белый список ссылок (ур. 5)."""
-    level = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    level = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if level < 5:
         raise PermissionDeniedError("Управлять белым списком ссылок может только Создатель (ур. 5)")
 
@@ -1113,9 +1182,10 @@ async def remove_link_whitelist(
     chat_id: int,
     admin_id: int,
     domain: str,
+    bot=None,
 ) -> bool:
     """Удаляет домен из белого списка ссылок (ур. 5)."""
-    level = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    level = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if level < 5:
         raise PermissionDeniedError("Управлять белым списком ссылок может только Создатель (ур. 5)")
 

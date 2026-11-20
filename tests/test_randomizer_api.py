@@ -477,3 +477,37 @@ async def test_api_participants_search_finds_any_page(monkeypatch):
     found = await contest_participants(cid, page=1, q=str(target), x_init_data=_init_data(920001))
     assert found["total"] == 1
     assert found["participants"][0]["name"] == f"User{target}"
+
+
+@pytest.mark.asyncio
+async def test_api_me_returns_activity_and_days_in_bot():
+    """Профиль в Mini App должен показывать стаж и число сообщений.
+
+    Без этих полей пользователь видел только дату регистрации и не понимал,
+    сколько он реально написал — именно это и было в жалобе «не показывает,
+    сколько я зареган и сколько сообщений отправил».
+    """
+    from datetime import timedelta
+
+    from app.services.activity_service import record_message_activity
+    from app.services.chat_settings_service import get_or_create_chat
+    from app.services.player_service import get_or_create_player
+
+    user_id = 771001
+    chat_id = -100771001
+    async with session_scope() as session:
+        await get_or_create_chat(session, chat_id=chat_id, title="Activity")
+        reg = await get_or_create_player(session, telegram_id=user_id, first_name="Аня")
+        reg.player.registered_at = datetime.now(timezone.utc) - timedelta(days=30)
+        for i in range(1, 6):
+            await record_message_activity(
+                session, chat_id=chat_id, user_id=user_id, message_id=i, text=f"сообщение {i}"
+            )
+        await session.flush()
+
+    payload = await me(x_init_data=_init_data(user_id))
+
+    assert payload["user"]["days_in_bot"] == 30
+    assert payload["activity"]["messages_all_time"] == 5
+    assert payload["activity"]["chats"] == 1
+    assert payload["activity"]["last_active"] is not None
