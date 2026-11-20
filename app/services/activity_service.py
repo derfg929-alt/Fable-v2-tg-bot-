@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ActivityRecord, EconomyTransaction, GlobalSetting, Player
+from app.db.models import ActivityRecord, Chat, EconomyTransaction, GlobalSetting, Player
 from app.services.economy_service import credit_coins
 
 
@@ -127,6 +127,7 @@ async def reward_chat_message(
         select(func.max(ActivityRecord.created_at)).where(
             ActivityRecord.chat_id == chat_id,
             ActivityRecord.user_id == user_id,
+            ActivityRecord.reward_coins > 0,
         )
     )
     if last_activity is not None and moment - last_activity < timedelta(
@@ -183,14 +184,63 @@ async def reward_chat_message(
         metadata={"chat_id": chat_id, "message_id": message_id, "text_hash": fingerprint},
     )
 
-    session.add(ActivityRecord(
-        chat_id=chat_id, user_id=user_id, points=1,
-        message_length=len(body), reward_coins=coins,
-    ))
+    record = await session.scalar(
+        select(ActivityRecord).where(
+            ActivityRecord.chat_id == chat_id,
+            ActivityRecord.user_id == user_id,
+            ActivityRecord.message_id == message_id,
+        )
+    )
+    if record is not None:
+        record.reward_coins = coins
+        record.message_length = len(body)
+    else:
+        session.add(ActivityRecord(
+            chat_id=chat_id, user_id=user_id, points=1,
+            message_length=len(body), reward_coins=coins, message_id=message_id,
+        ))
     # Сессия использует autoflush=False, поэтому фиксируем запись активности явно:
     # иначе кулдаун и дневные лимиты не увидят её в рамках той же сессии.
     await session.flush()
     return ActivityRewardResult(True, "awarded", coins=coins)
+
+
+async def record_message_activity(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    user_id: int,
+    message_id: int,
+    text: str,
+) -> bool:
+    """Учитывает сообщение в статистике, даже если монеты за него не начислены.
+
+    reward_chat_message платит только за часть сообщений (кулдаун, дневной
+    лимит, минимальная длина), поэтому без этой записи профиль показывал лишь
+    оплаченные сообщения — сильно меньше реальных.
+    """
+    if chat_id == 0 or user_id <= 0 or message_id <= 0:
+        return False
+    existing = await session.scalar(
+        select(ActivityRecord.id).where(
+            ActivityRecord.chat_id == chat_id,
+            ActivityRecord.user_id == user_id,
+            ActivityRecord.message_id == message_id,
+        )
+    )
+    if existing is not None:
+        return False
+    session.add(ActivityRecord(
+        chat_id=chat_id,
+        user_id=user_id,
+        points=1,
+        message_length=len((text or "").strip()),
+        reward_coins=0,
+        message_id=message_id,
+    ))
+    await session.flush()
+    return True
+
 
 async def get_chat_activity_breakdown(
     session: AsyncSession,
@@ -284,6 +334,70 @@ async def get_chat_activity_breakdown(
         "year": year_count,
         "all_time": all_time_count,
         "last_active": last_active,
+    }
+
+
+async def get_global_activity_breakdown(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    now: datetime | None = None,
+) -> dict:
+    """Активность игрока по всем чатам сразу.
+
+    Возвращает те же окна, что и активность в чате, плюс число чатов и топ
+    чатов по количеству сообщений — чтобы профиль показывал, сколько всего
+    человек написал в боте, а не только в текущей группе.
+    """
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+
+    async def _count(since: datetime | None) -> int:
+        stmt = select(func.count(ActivityRecord.id)).where(ActivityRecord.user_id == user_id)
+        if since is not None:
+            stmt = stmt.where(ActivityRecord.created_at >= since)
+        return (await session.scalar(stmt)) or 0
+
+    last_active = await session.scalar(
+        select(func.max(ActivityRecord.created_at)).where(ActivityRecord.user_id == user_id)
+    )
+
+    chats_count = (
+        await session.scalar(
+            select(func.count(func.distinct(ActivityRecord.chat_id))).where(
+                ActivityRecord.user_id == user_id
+            )
+        )
+    ) or 0
+
+    top_rows = (
+        await session.execute(
+            select(
+                ActivityRecord.chat_id,
+                Chat.title,
+                func.count(ActivityRecord.id).label("messages"),
+            )
+            .join(Chat, Chat.telegram_id == ActivityRecord.chat_id, isouter=True)
+            .where(ActivityRecord.user_id == user_id)
+            .group_by(ActivityRecord.chat_id, Chat.title)
+            .order_by(func.count(ActivityRecord.id).desc())
+            .limit(5)
+        )
+    ).all()
+
+    return {
+        "day": await _count(moment - timedelta(days=1)),
+        "week": await _count(moment - timedelta(days=7)),
+        "month": await _count(moment - timedelta(days=30)),
+        "year": await _count(moment - timedelta(days=365)),
+        "all_time": await _count(None),
+        "last_active": last_active,
+        "chats": chats_count,
+        "top_chats": [
+            {"chat_id": row[0], "title": row[1] or f"Чат {row[0]}", "messages": row[2]}
+            for row in top_rows
+        ],
     }
 
 

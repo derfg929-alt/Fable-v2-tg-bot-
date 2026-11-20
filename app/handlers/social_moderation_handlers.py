@@ -14,6 +14,7 @@ from aiogram.enums import ChatType
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.db.session import session_scope
+from app.handlers.common_hints import reply_group_only
 from app.services.player_service import get_or_create_player
 from app.services.clan_service import (
     create_clan,
@@ -544,6 +545,7 @@ async def handle_rules(message: types.Message):
 async def handle_rules_manage(message: types.Message):
     """Управление правилами чата: добавление, удаление, изменение (ур. 3+)."""
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     raw = (message.text or "").strip()
     parts = raw.split(maxsplit=2)
@@ -566,7 +568,11 @@ async def handle_rules_manage(message: types.Message):
                 return
             try:
                 rule = await add_chat_rule(
-                    session, chat_id=message.chat.id, admin_id=message.from_user.id, text=payload
+                    session,
+                    chat_id=message.chat.id,
+                    admin_id=message.from_user.id,
+                    text=payload,
+                    bot=message.bot,
                 )
                 await message.reply(
                     f"✅ Правило <b>№{rule.position}</b> добавлено:\n<i>{rule.text}</i>",
@@ -582,7 +588,11 @@ async def handle_rules_manage(message: types.Message):
                 return
             try:
                 ok = await remove_chat_rule(
-                    session, chat_id=message.chat.id, admin_id=message.from_user.id, position=int(payload)
+                    session,
+                    chat_id=message.chat.id,
+                    admin_id=message.from_user.id,
+                    position=int(payload),
+                    bot=message.bot,
                 )
                 if ok:
                     await message.reply(f"🗑 Правило <b>№{payload}</b> удалено.", parse_mode="HTML")
@@ -613,16 +623,43 @@ async def on_rules_accept(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("captcha_solve_"))
 async def on_captcha_solve(callback: types.CallbackQuery):
-    token = callback.data.split("_")[2]
+    token = callback.data.split("_", 2)[2]
     async with session_scope() as session:
         ok = await solve_captcha(session, challenge_token=token, actor_id=callback.from_user.id)
         if ok:
+            # Снимаем ограничения, которые Telegram выставил при входе, иначе
+            # человек прошёл капчу, но всё равно не может писать.
             try:
-                await callback.answer("✅ Капча пройдена!", show_alert=True)
+                if callback.bot:
+                    from aiogram.types import ChatPermissions
+
+                    await callback.bot.restrict_chat_member(
+                        chat_id=callback.message.chat.id,
+                        user_id=callback.from_user.id,
+                        permissions=ChatPermissions(
+                            can_send_messages=True,
+                            can_send_media_messages=True,
+                            can_send_other_messages=True,
+                            can_add_web_page_previews=True,
+                            can_send_polls=True,
+                            can_invite_users=True,
+                        ),
+                    )
+            except Exception:
+                pass
+            try:
+                await callback.answer("✅ Капча пройдена! Добро пожаловать.", show_alert=True)
             except Exception:
                 pass
             try:
                 await callback.message.delete()
+            except Exception:
+                pass
+            try:
+                await callback.bot.send_message(
+                    chat_id=callback.message.chat.id,
+                    text=f"✅ {callback.from_user.first_name}, капча пройдена — можно общаться!",
+                )
             except Exception:
                 pass
         else:
@@ -635,6 +672,7 @@ async def on_captcha_solve(callback: types.CallbackQuery):
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["мут", "!мут", "/mute", "замутить"])))
 async def handle_mute(message: types.Message):
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     raw_text = (message.text or "").strip()
     parts = raw_text.split()
@@ -720,6 +758,7 @@ async def handle_mute(message: types.Message):
 @router.message(F.text.casefold().func(lambda t: any(t.startswith(prefix) for prefix in ["размут", "!размут", "/unmute", "снять мут"])))
 async def handle_unmute(message: types.Message):
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
@@ -770,6 +809,7 @@ async def handle_unmute(message: types.Message):
 async def handle_warn_settings(message: types.Message):
     """Настройка лимита варнов и авто-наказания при достижении лимита."""
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     from datetime import timedelta
     from app.services.moderation_service import _format_duration_ru
@@ -854,6 +894,7 @@ async def handle_warn_settings(message: types.Message):
 async def handle_view_warns(message: types.Message):
     """Просмотр счётчика и активных предупреждений пользователя в чате."""
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         target_id = await _get_target_user_id(message, session)
@@ -988,6 +1029,7 @@ async def handle_warn(message: types.Message):
 ]))
 async def handle_admin_list(message: types.Message):
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         admins = await get_chat_admins(session, chat_id=message.chat.id)
@@ -1008,6 +1050,7 @@ async def handle_admin_list(message: types.Message):
 async def handle_punishment_history(message: types.Message):
     """История наказаний пользователя в чате (для модераторов, ур. 2+)."""
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     from app.services.moderation_service import get_user_moderation_history
 
@@ -1060,6 +1103,7 @@ async def handle_chat_purge(message: types.Message):
         сообщений конкретного пользователя в пределах последних 300 сообщений.
     """
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     parts = (message.text or "").split()
     args = parts[1:]
@@ -1124,6 +1168,7 @@ async def handle_chat_purge(message: types.Message):
 async def handle_pin_message(message: types.Message):
     """Закрепление сообщения в группе для админов (ур. 3+)."""
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     if not message.reply_to_message:
         await message.reply("Ответьте на сообщение, которое нужно закрепить: <code>закрепить</code>", parse_mode="HTML")
@@ -1147,6 +1192,7 @@ async def handle_pin_message(message: types.Message):
 async def handle_unpin_message(message: types.Message):
     """Открепление сообщения в группе для админов (ур. 3+)."""
     if not message.chat or message.chat.type in (ChatType.PRIVATE, "private"):
+        await reply_group_only(message)
         return
     async with session_scope() as session:
         lvl = await get_user_admin_level(session, chat_id=message.chat.id, user_id=message.from_user.id, bot=message.bot)

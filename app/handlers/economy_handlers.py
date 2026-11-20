@@ -857,8 +857,12 @@ async def handle_profile(message: types.Message):
             first_seen_str = "Неизвестно"
 
         # Активность в текущем чате (день, неделя, месяц, год, все время)
-        from app.services.activity_service import get_chat_activity_breakdown
+        from app.services.activity_service import (
+            get_chat_activity_breakdown,
+            get_global_activity_breakdown,
+        )
         act = await get_chat_activity_breakdown(session, chat_id=chat_id, user_id=p.telegram_id)
+        global_act = await get_global_activity_breakdown(session, user_id=p.telegram_id)
 
         # Время последней активности
         last_act_dt = act["last_active"]
@@ -869,12 +873,24 @@ async def handle_profile(message: types.Message):
 
         chat_label = f"«{message.chat.title}»" if (message.chat and message.chat.title) else "этом чате"
 
+        days_in_bot = ""
+        if first_seen_dt:
+            from datetime import datetime as _dt, timezone as _tz
+            seen = first_seen_dt if first_seen_dt.tzinfo else first_seen_dt.replace(tzinfo=_tz.utc)
+            days = (_dt.now(_tz.utc) - seen).days
+            days_in_bot = f" (дней в боте: <b>{days}</b>)" if days >= 0 else ""
+
         text = (
             f"👤 <b>Профиль игрока {disp_name}</b>\n\n"
             f"🆔 ID: <code>{p.telegram_id}</code>\n"
             f"🔔 Звонок: <b>{admin_lvl} ({role_name})</b>\n"
-            f"🗓 Первое появление в боте: <b>{first_seen_str}</b>\n"
+            f"🗓 Первое появление в боте: <b>{first_seen_str}</b>{days_in_bot}\n"
             f"⏱ Последний актив в чате: <b>{last_act_str}</b>\n\n"
+            f"💬 <b>Всего сообщений: {global_act['all_time']:,}</b> "
+            f"в {global_act['chats']} чат(ах)\n"
+            f"• За день: <b>{global_act['day']:,}</b>\n"
+            f"• За неделю: <b>{global_act['week']:,}</b>\n"
+            f"• За месяц: <b>{global_act['month']:,}</b>\n\n"
             f"📊 <b>Активность в {chat_label}:</b>\n"
             f"• За день: <b>{act['day']:,}</b> сообщ.\n"
             f"• За неделю: <b>{act['week']:,}</b> сообщ.\n"
@@ -882,6 +898,10 @@ async def handle_profile(message: types.Message):
             f"• За год: <b>{act['year']:,}</b> сообщ.\n"
             f"• За всё время: <b>{act['all_time']:,}</b> сообщ.".replace(",", " ")
         )
+        if global_act["top_chats"]:
+            text += "\n\n🏆 <b>Где общаюсь больше всего:</b>"
+            for row in global_act["top_chats"]:
+                text += f"\n• {row['title']} — <b>{row['messages']:,}</b>".replace(",", " ")
         await message.reply(text, parse_mode="HTML")
 
 

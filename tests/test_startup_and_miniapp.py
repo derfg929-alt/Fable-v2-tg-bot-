@@ -132,10 +132,32 @@ async def test_main_setup_bot_menu_registers_webapp(monkeypatch):
         async def set_chat_menu_button(self, menu_button=None):
             captured["menu"] = menu_button
 
+        async def set_my_commands(self, commands):
+            captured["commands"] = commands
+
     settings = _settings(MINI_APP_URL="https://example.com/")
     await main._setup_bot_menu(FakeBot(), settings)
     assert isinstance(captured["menu"], MenuButtonWebApp)
     assert captured["menu"].web_app.url == "https://example.com/"
+
+
+@pytest.mark.asyncio
+async def test_bot_commands_are_registered():
+    """Меню «/» не должно быть пустым: список команд публикуется в Telegram."""
+    import app.main as main
+
+    captured = {}
+
+    class FakeBot:
+        async def set_my_commands(self, commands):
+            captured["commands"] = commands
+
+    await main._register_bot_commands(FakeBot())
+
+    names = [c.command for c in captured["commands"]]
+    assert "start" in names
+    assert "profile" in names
+    assert len(names) == len(main.BOT_COMMANDS)
 
 
 @pytest.mark.asyncio
@@ -145,6 +167,9 @@ async def test_main_setup_bot_menu_skips_without_url():
     class FakeBot:
         async def set_chat_menu_button(self, menu_button=None):  # pragma: no cover
             raise AssertionError("не должен вызываться без URL")
+
+        async def set_my_commands(self, commands):
+            pass
 
     settings = _settings()
     await main._setup_bot_menu(FakeBot(), settings)

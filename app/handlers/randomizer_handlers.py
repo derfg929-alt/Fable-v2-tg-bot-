@@ -104,7 +104,7 @@ async def cmd_start(message: types.Message, bot: Bot):
     await _handle_start(message, bot, None)
 
 
-@router.message(F.text.casefold().in_(["старт", "!старт"]))
+@router.message(F.text.casefold().in_(["старт", "!старт", "start", "!start"]))
 async def cmd_start_text(message: types.Message, bot: Bot):
     await _handle_start(message, bot, None)
 
@@ -201,7 +201,7 @@ async def _send_quick_menu(message: types.Message):
 # ===================== КОНКУРСЫ =====================
 
 @router.message(Command("contests"))
-@router.message(F.text.casefold().in_(["конкурсы", "!конкурсы", MENU_CONTESTS.casefold()]))
+@router.message(F.text.casefold().in_(["конкурсы", "!конкурсы", "contests", MENU_CONTESTS.casefold()]))
 async def cmd_contests(message: types.Message):
     await _send_contests_menu(message, category="active")
 
@@ -806,10 +806,17 @@ async def on_confirm_prize(callback: types.CallbackQuery):
 # ===================== ПРОФИЛЬ =====================
 
 @router.message(Command("profile"))
-@router.message(F.text.casefold().in_(["профиль", "!профиль", MENU_PROFILE.casefold()]))
+@router.message(F.text.casefold().in_(["профиль", "!профиль", "profile", "мой профиль", MENU_PROFILE.casefold()]))
 async def cmd_profile(message: types.Message):
     if not message.from_user:
         return
+    from app.services.activity_service import (
+        get_chat_activity_breakdown,
+        get_global_activity_breakdown,
+    )
+    from app.services.moderation_service import ROLE_NAMES, get_user_admin_level
+
+    chat_id = message.chat.id if message.chat else 0
     async with session_scope() as session:
         reg = await get_or_create_player(
             session,
@@ -821,22 +828,54 @@ async def cmd_profile(message: types.Message):
         p = reg.player
         invited = await ref.count_invited(session, p.telegram_id)
         stats = await cs.get_user_stats(session, p.telegram_id)
-        recent = await cs.get_user_entries(session, p.telegram_id)
-        recent = recent[:5]
+        recent = (await cs.get_user_entries(session, p.telegram_id))[:5]
+        global_act = await get_global_activity_breakdown(session, user_id=p.telegram_id)
+        chat_act = await get_chat_activity_breakdown(session, chat_id=chat_id, user_id=p.telegram_id)
+        admin_lvl = await get_user_admin_level(
+            session, chat_id=chat_id, user_id=p.telegram_id, bot=message.bot
+        )
+        wallet, bank_balance = p.wallet, p.bank_balance
 
     name = p.custom_nickname or p.first_name or "Игрок"
     uname = f"@{p.username}" if p.username else "не указан"
     reg_date = p.registered_at.strftime("%d.%m.%Y") if p.registered_at else "—"
+    days_in_bot = ""
+    if p.registered_at:
+        from datetime import datetime as _dt, timezone as _tz
+
+        seen = p.registered_at if p.registered_at.tzinfo else p.registered_at.replace(tzinfo=_tz.utc)
+        days = (_dt.now(_tz.utc) - seen).days
+        if days >= 0:
+            days_in_bot = f" · <b>{days}</b> дн. в боте"
+
+    last_active = global_act["last_active"]
+    last_active_str = last_active.strftime("%d.%m.%Y %H:%M") if last_active else "нет данных"
+
+    def num(value: int) -> str:
+        return f"{value:,}".replace(",", " ")
+
     lines = [
         f"👤 <b>Профиль {name}</b>\n",
         f"🆔 ID: <code>{p.telegram_id}</code>",
         f"📛 Username: {uname}",
-        f"🗓 Регистрация: {reg_date}\n",
+        f"🗓 Регистрация: <b>{reg_date}</b>{days_in_bot}",
+        f"🛡 Роль в чате: <b>{ROLE_NAMES.get(admin_lvl, 'Игрок')}</b>\n",
+        f"💬 <b>Сообщений всего: {num(global_act['all_time'])}</b> в {global_act['chats']} чат(ах)",
+        f"   • за день: <b>{num(global_act['day'])}</b> · за неделю: <b>{num(global_act['week'])}</b>"
+        f" · за месяц: <b>{num(global_act['month'])}</b>",
+        f"⏱ Последняя активность: <b>{last_active_str}</b>",
+        f"📊 В этом чате: <b>{num(chat_act['all_time'])}</b> сообщ. (сегодня <b>{num(chat_act['day'])}</b>)",
+        "",
+        f"💰 Кошелёк: <b>{num(wallet)}</b> · 🏦 Банк: <b>{num(bank_balance)}</b>",
         f"👥 Приглашено друзей: <b>{invited}</b>",
         f"🎯 Активных участий: <b>{stats['active']}</b>",
         f"🏁 Завершённых участий: <b>{stats['finished']}</b>",
         f"🏆 Побед: <b>{stats['wins']}</b>",
     ]
+    if global_act["top_chats"]:
+        lines.append("\n🏆 <b>Где общаюсь больше всего:</b>")
+        for row in global_act["top_chats"]:
+            lines.append(f"• {row['title']} — <b>{num(row['messages'])}</b>")
     if recent:
         lines.append("\n📜 <b>Последние конкурсы:</b>")
         for entry, contest in recent:
@@ -865,7 +904,7 @@ async def on_menu_back(callback: types.CallbackQuery):
 # ===================== ПРИГЛАШЕНИЯ =====================
 
 @router.message(Command("myref"))
-@router.message(F.text.casefold().in_(["пригласить друзей", "!пригласить друзей", MENU_INVITE.casefold()]))
+@router.message(F.text.casefold().in_(["пригласить друзей", "!пригласить друзей", "myref", "реф", MENU_INVITE.casefold()]))
 async def cmd_myref(message: types.Message, bot: Bot):
     if not message.from_user:
         return
@@ -977,7 +1016,7 @@ async def on_ref_list(callback: types.CallbackQuery):
 # ===================== ПОБЕДИТЕЛИ =====================
 
 @router.message(Command("winners"))
-@router.message(F.text.casefold().in_(["победители", "!победители", MENU_WINNERS.casefold()]))
+@router.message(F.text.casefold().in_(["победители", "!победители", "winners", MENU_WINNERS.casefold()]))
 async def cmd_winners(message: types.Message):
     await _send_winners(message)
 
@@ -1038,7 +1077,7 @@ async def _send_winners(message, edit: bool = False):
 # ===================== ИСТОРИЯ УЧАСТИЯ =====================
 
 @router.message(Command("history"))
-@router.message(F.text.casefold().in_(["история участия", "!история участия", MENU_HISTORY.casefold()]))
+@router.message(F.text.casefold().in_(["история участия", "!история участия", "история", MENU_HISTORY.casefold()]))
 async def cmd_history(message: types.Message):
     await _send_history(message, filter_="all")
 
@@ -1126,7 +1165,7 @@ HELP_TEXT = (
 
 
 @router.message(Command("help"))
-@router.message(F.text.casefold().in_(["помощь randomizer", "!помощь randomizer", MENU_HELP.casefold()]))
+@router.message(F.text.casefold().in_(["помощь randomizer", "!помощь randomizer", "help", "хелп", MENU_HELP.casefold()]))
 async def cmd_help(message: types.Message):
     async with session_scope() as session:
         support = await rset.get_support_link(session)

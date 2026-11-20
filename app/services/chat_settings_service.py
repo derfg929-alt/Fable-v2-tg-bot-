@@ -77,6 +77,18 @@ DEFAULT_CHAT_SETTINGS = {
     "badwords_duration_seconds": 600,
     # Общий анти-флуд «пауза» (минимальный интервал между сообщениями одного игрока).
     "antiflood_pause_seconds": 0,  # 0 — выключено
+    # ИИ-модерация спам-ботов и рекламы (эвристики + LLM). Выключена по умолчанию.
+    "ai_moderation_enabled": False,
+    "ai_moderation_action": "delete",  # delete | mute | ban
+    "ai_moderation_duration_seconds": 3600,
+    "ai_moderation_use_llm": True,
+    "ai_moderation_min_score": 0.6,
+    # Кик ботов, которых добавляют в чат (защита от спам-ботов).
+    "kick_bots_on_join": True,
+    # Проверка профиля нового участника на спам-аккаунт. Включена по умолчанию:
+    # работает на бесплатных эвристиках, а нейросеть подключается только если
+    # администратор включил ai_moderation_enabled.
+    "join_check_enabled": True,
 }
 
 
@@ -110,9 +122,10 @@ async def update_chat_setting(
     key: str,
     value: any,
     min_level: int = 5,
+    bot=None,
 ) -> dict:
     """Обновляет параметр в настройках чата с проверкой прав."""
-    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if lvl < min_level:
         raise PermissionDeniedError(f"Для изменения этой настройки требуется уровень {min_level}")
 
@@ -130,9 +143,10 @@ async def toggle_ai_moderation(
     chat_id: int,
     admin_id: int,
     enabled: bool,
+    bot=None,
 ) -> bool:
     """Включение или выключение ИИ-админки / ИИ-модератора чата (ур. 3+)."""
-    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if lvl < 3:
         raise PermissionDeniedError("Управлять ИИ-админкой могут администраторы чата (ур. 3+)")
     chat = await get_or_create_chat(session, chat_id=chat_id)
@@ -149,9 +163,10 @@ async def set_ai_moderation_strictness(
     chat_id: int,
     admin_id: int,
     strictness: str,
+    bot=None,
 ) -> str:
     """Установка уровня строгости ИИ-модерации чата (low, medium, strict) (ур. 3+)."""
-    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if lvl < 3:
         raise PermissionDeniedError("Настраивать строгость ИИ-админки могут администраторы чата (ур. 3+)")
     valid_modes = {"low", "medium", "strict", "низкий", "средний", "строгий"}
@@ -172,9 +187,10 @@ async def apply_chat_preset(
     chat_id: int,
     admin_id: int,
     preset_name: str,  # 'strict', 'normal', 'casual'
+    bot=None,
 ) -> dict:
     """Применяет один из 3 согласованных пресетов (Строгий, Обычный, Казуальный)."""
-    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if lvl < 5:
         raise PermissionDeniedError("Применять пресеты может только Создатель (ур. 5)")
 
@@ -226,9 +242,10 @@ async def add_chat_rule(
     chat_id: int,
     admin_id: int,
     text: str,
+    bot=None,
 ) -> ChatRule:
     """Добавляет правило чата (ур. 3+)."""
-    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if lvl < 3:
         raise PermissionDeniedError("Добавлять правила может Админ (ур. 3+)")
 
@@ -257,9 +274,10 @@ async def remove_chat_rule(
     chat_id: int,
     admin_id: int,
     position: int,
+    bot=None,
 ) -> bool:
     """Удаляет правило по номеру позиции (ур. 3+)."""
-    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id)
+    lvl = await get_user_admin_level(session, chat_id=chat_id, user_id=admin_id, bot=bot)
     if lvl < 3:
         raise PermissionDeniedError("Удалять правила может Админ (ур. 3+)")
 
@@ -419,6 +437,7 @@ async def handle_report(
     report_id: int,
     moderator_id: int,
     resolution: str,  # 'accepted', 'rejected', 'closed'
+    bot=None,
 ) -> ModerationReport:
     """Обработка репорта модератором ур. 2+."""
     report = await session.scalar(
@@ -427,7 +446,7 @@ async def handle_report(
     if not report:
         raise ChatSettingsError("Жалоба не найдена")
 
-    lvl = await get_user_admin_level(session, chat_id=report.chat_id, user_id=moderator_id)
+    lvl = await get_user_admin_level(session, chat_id=report.chat_id, user_id=moderator_id, bot=bot)
     if lvl < 2:
         raise PermissionDeniedError("Обрабатывать жалобы может только модератор (ур. 2+)")
 

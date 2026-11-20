@@ -298,6 +298,25 @@ async def _migrate_legacy_schema(conn) -> None:
     await _add_column_if_missing("winners", "notified_at", "notified_at DATETIME")
     await _add_column_if_missing("draw_logs", "salt", "salt VARCHAR(64)")
     await _add_column_if_missing("draw_logs", "participants_hash", "participants_hash VARCHAR(64)")
+    await _add_column_if_missing("activity_records", "message_id", "message_id BIGINT")
+
+    # create_all не создаёт индексы для уже существующих таблиц, поэтому на
+    # обновлённой базе индекс дедупликации сообщений нужно доставить отдельно.
+    async def _create_index_if_missing(index: str, table: str, columns: str) -> None:
+        try:
+            exists = await conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='index' AND name=:i"),
+                {"i": index},
+            )
+            if exists.scalar_one_or_none():
+                return
+            await conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index} ON {table} ({columns})"))
+        except Exception:
+            pass
+
+    await _create_index_if_missing(
+        "ix_activity_chat_user_message", "activity_records", "chat_id, user_id, message_id"
+    )
 
 
 async def init_database() -> None:

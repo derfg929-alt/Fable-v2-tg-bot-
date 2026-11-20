@@ -13,6 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.config import get_settings
 from app.db.session import session_scope
+from app.handlers.common_hints import reply_owner_only
 from app.services.owner_service import (
     verify_owner,
     list_chats_summary,
@@ -186,6 +187,8 @@ async def on_owner_menu_moderation(callback: types.CallbackQuery):
 @router.message(F.text.casefold().in_(["понель", "!понель", "панель", "!панель", "панель управления", "овнер панель"]))
 async def handle_admin_panel(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     # Если в группе, панель владельца не должна перехватывать групповую админку
     if message.chat and message.chat.type != ChatType.PRIVATE:
@@ -288,6 +291,8 @@ async def on_owner_menu_balances(callback: types.CallbackQuery):
 @router.message(F.text.casefold().in_(["балансы", "!балансы", "кто сколько", "!кто сколько"]))
 async def handle_owner_players_balances(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     async with session_scope() as session:
         players = await list_players_wealth_summary(session, owner_id=message.from_user.id, limit=25)
@@ -310,6 +315,8 @@ async def handle_owner_players_balances(message: types.Message):
 @router.message(F.text.casefold().startswith("инфо"))
 async def handle_owner_player_info(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     parts = (message.text or "").split()
     target_id = None
@@ -400,6 +407,8 @@ async def on_owner_menu_stats(callback: types.CallbackQuery):
 @router.message(F.text.casefold().startswith("выдать"))
 async def handle_give_coins(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     parts = (message.text or "").split()
     if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
@@ -432,6 +441,8 @@ async def handle_give_coins(message: types.Message):
 @router.message(F.text.casefold().startswith("забрать"))
 async def handle_take_coins(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     parts = (message.text or "").split()
     if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
@@ -462,6 +473,8 @@ async def handle_take_coins(message: types.Message):
 @router.message(F.text.casefold().startswith("настройки чаты"))
 async def handle_owner_chats(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     async with session_scope() as session:
         chats = await list_chats_summary(session, owner_id=message.from_user.id)
@@ -480,6 +493,8 @@ async def handle_owner_chats(message: types.Message):
 @router.message(F.text.casefold().startswith("настройки стоп"))
 async def handle_owner_stop_chat(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     parts = (message.text or "").split()
     if len(parts) < 3:
@@ -496,6 +511,8 @@ async def handle_owner_stop_chat(message: types.Message):
 @router.message(F.text.casefold().startswith("настройки старт"))
 async def handle_owner_start_chat(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     parts = (message.text or "").split()
     if len(parts) < 3:
@@ -512,6 +529,8 @@ async def handle_owner_start_chat(message: types.Message):
 @router.message(F.text.casefold().startswith("глобальный бан"))
 async def handle_global_ban(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     parts = (message.text or "").split()
     target_id = None
@@ -536,6 +555,8 @@ async def handle_global_ban(message: types.Message):
 @router.message(F.text.casefold().startswith("глобальный разбан"))
 async def handle_global_unban(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     parts = (message.text or "").split()
     target_id = None
@@ -567,6 +588,8 @@ def _build_economy_reset_keyboard():
 @router.message(F.text.casefold().in_(["сброс экономики", "!сброс экономики"]))
 async def handle_reset_economy_prompt(message: types.Message):
     if not message.from_user or not _is_owner(message.from_user.id):
+        if message.chat and message.chat.type == ChatType.PRIVATE:
+            await reply_owner_only(message)
         return
     await message.reply(
         "🚨 <b>ВНИМАНИЕ! ОПАСНАЯ ОПЕРАЦИЯ!</b>\n\n"

@@ -17,7 +17,7 @@ from aiogram.enums import ChatType
 from app.db.session import session_scope
 from sqlalchemy import select
 from app.db.models import ModerationCase
-from app.services.activity_service import reward_chat_message
+from app.services.activity_service import record_message_activity, reward_chat_message
 from app.services.moderation_service import (
     apply_warn_escalation,
     get_user_admin_level,
@@ -32,6 +32,7 @@ from app.services.chat_settings_service import (
     has_pending_captcha,
 )
 from app.services.antispam_service import check_and_apply_antispam, check_flood_pause
+from app.services.ai_moderation_service import classify_message, looks_like_bot_name
 
 # Команды и кнопки главного меню, которые должны работать всегда — даже если
 # пользователь в этот момент находится в пошаговом мастере (FSM). Иначе хэндлеры
@@ -207,8 +208,13 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                 settings = chat.settings or {}
 
                 # Уровень прав запрашиваем один раз и переиспользуем во всех проверках ниже.
+                # bot обязателен: без него администратор, ещё не попавший в БД,
+                # считался бы обычным игроком и получал бы авто-муты/удаления.
                 admin_lvl = await get_user_admin_level(
-                    session, chat_id=message.chat.id, user_id=message.from_user.id
+                    session,
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    bot=message.bot,
                 )
 
                 # 1. Проверка заморозки чата
@@ -371,15 +377,99 @@ class MessageActivityAndSecurityMiddleware(BaseMiddleware):
                             pass
                         return
 
-                # 8. Начисление активности за общение
-                if message.text:
+                # 8. ИИ-модерация: спам-боты, реклама, скам (по умолчанию выключена).
+                if settings.get("ai_moderation_enabled", False) and admin_lvl < 2:
+                    verdict = None
+                    bot_like_reason = looks_like_bot_name(
+                        message.from_user.first_name, message.from_user.username
+                    )
+                    try:
+                        verdict = await classify_message(
+                            message.text or message.caption or "",
+                            settings=settings,
+                            user_name=message.from_user.first_name,
+                        )
+                    except Exception:
+                        verdict = None
+                    # Ник-спам (Crypto Signals и т.п.) сам по себе — достаточный повод.
+                    if bot_like_reason and verdict is not None and not verdict.is_spam:
+                        verdict = type(verdict)(
+                            is_spam=True,
+                            score=max(verdict.score, 0.7),
+                            reason=f"спам-ник: {bot_like_reason}",
+                            source="heuristic",
+                        )
+                    if verdict is not None and verdict.is_spam:
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
+                        action = str(settings.get("ai_moderation_action", "delete"))
+                        reason = f"ИИ-модерация: {verdict.reason or 'спам'} (скор {verdict.score:.2f})"
+                        try:
+                            if action == "ban":
+                                from app.services.moderation_service import record_ban_or_kick
+
+                                await record_ban_or_kick(
+                                    session,
+                                    chat_id=message.chat.id,
+                                    moderator_id=message.bot.id if message.bot else 0,
+                                    target_id=message.from_user.id,
+                                    action="ban",
+                                    reason=reason,
+                                    duration=timedelta(
+                                        seconds=int(settings.get("ai_moderation_duration_seconds", 3600) or 3600)
+                                    ),
+                                    bot=message.bot,
+                                    system=True,
+                                )
+                            elif action == "mute":
+                                await issue_mute(
+                                    session,
+                                    chat_id=message.chat.id,
+                                    moderator_id=message.bot.id if message.bot else 0,
+                                    target_id=message.from_user.id,
+                                    duration=timedelta(
+                                        seconds=int(settings.get("ai_moderation_duration_seconds", 3600) or 3600)
+                                    ),
+                                    reason=reason,
+                                    bot=message.bot,
+                                    system=True,
+                                )
+                        except Exception:
+                            pass
+                        try:
+                            await message.answer(
+                                f"🤖 {message.from_user.first_name}, сообщение удалено ИИ-модерацией: "
+                                f"{verdict.reason or 'спам'}.",
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                # 9. Активность за общение: сначала учитываем само сообщение
+                #    (нужно для «сколько всего написал»), затем начисляем монеты.
+                #    Монеты достаются не каждому сообщению, поэтому статистика
+                #    не может опираться только на награждённые.
+                body = message.text or message.caption
+                if body:
+                    try:
+                        await record_message_activity(
+                            session,
+                            chat_id=message.chat.id,
+                            user_id=message.from_user.id,
+                            message_id=message.message_id,
+                            text=body,
+                        )
+                    except Exception:
+                        pass
                     try:
                         await reward_chat_message(
                             session,
                             chat_id=message.chat.id,
                             user_id=message.from_user.id,
                             message_id=message.message_id,
-                            text=message.text,
+                            text=body,
                         )
                     except Exception:
                         pass

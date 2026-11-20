@@ -131,9 +131,9 @@ async def test_telegram_moderation_sync_and_permissions():
         lvl_creator = await get_user_admin_level(session, chat_id=chat_id, user_id=creator_id, bot=mock_bot)
         assert lvl_creator == 5
 
-        # Администраторы Telegram не получают права автоматически (ур. 1)
+        # Администраторы Telegram получают уровень 3 (могут модерировать чат).
         lvl_mod = await get_user_admin_level(session, chat_id=chat_id, user_id=moderator_id, bot=mock_bot)
-        assert lvl_mod == 1
+        assert lvl_mod == 3
 
         lvl_user = await get_user_admin_level(session, chat_id=chat_id, user_id=regular_user_id, bot=mock_bot)
         assert lvl_user == 1
