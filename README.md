@@ -2,8 +2,9 @@
 
 Fable — многофункциональный игровой и модерационный бот для Telegram на Python, aiogram 3 и SQLAlchemy 2.
 
-Хранилище данных — **локальный SQLite-файл** (`data/bot_database.db`) на базе
-SQLAlchemy 2 и aiosqlite. PostgreSQL не требуется (его можно включить через
+Хранилище данных — **SQLite-файл** на базе SQLAlchemy 2 и aiosqlite. Файл
+создаётся в постоянной папке `DATA_DIR` (на Bothost — `/app/data`, по умолчанию
+`/app/data/bot.db`). PostgreSQL не требуется (его можно включить через
 `DATABASE_URL` при необходимости).
 
 Проект включает модуль **Fable Randomizer** — полноценную систему конкурсов и
@@ -120,9 +121,17 @@ SQLAlchemy 2 и aiosqlite. PostgreSQL не требуется (его можно
 `d4e5f6a7b8c9`). Уникальные ограничения защищают от дублей Telegram ID,
 повторных рефералов и участия.
 
-Долговременное хранилище — **SQLite-файл** `data/bot_database.db` (путь задаётся
-через `DATABASE_URL`). Данные (включая историю участия и результаты розыгрышей)
-сохраняются между перезапусками.
+Долговременное хранилище — **SQLite-файл** `$DATA_DIR/bot.db` (по умолчанию
+`/app/data/bot.db`). Папка создаётся при старте, таблицы — через
+`CREATE TABLE IF NOT EXISTS` (`Base.metadata.create_all`), каждый обработчик
+пишет данные в транзакции `session_scope()` с `commit`. Данные (участники,
+настройки, история участия, результаты розыгрышей и таблица
+`randomizer_history`) сохраняются между перезапусками.
+
+`randomizer_history` — плоская история выпадений: `id`, `user_id`,
+`contest_id`, `result`, `is_reserve`, `created_at`. Она не зависит от конкурса
+и остаётся после его удаления; записи отдаются в `/api/history` (поле `draws`).
+
 PostgreSQL опционален: задайте `DATABASE_URL`, и данные будут храниться в нём.
 
 ---
@@ -217,7 +226,12 @@ OWNER_ID=8039111975
 LOG_LEVEL=INFO
 TIMEZONE=Europe/Moscow
 
-# Хранилище: по умолчанию локальный SQLite-файл (data/bot_database.db) — PostgreSQL не нужен.
+# Постоянная папка данных. На Bothost это /app/data (сохраняется между перезапусками).
+# Файл базы создаётся автоматически: $DATA_DIR/bot.db.
+DATA_DIR=/app/data
+# DB_FILENAME=bot.db
+
+# Хранилище: по умолчанию SQLite-файл в DATA_DIR — PostgreSQL не нужен.
 # Для PostgreSQL раскомментируйте:
 # DATABASE_URL=postgresql+asyncpg://fable:fable@localhost:5432/fable
 
@@ -271,6 +285,18 @@ python -m app.main
 Бот и серверный API Mini App запускаются одной командой: Long Polling Telegram и
 HTTP API на `API_HOST:API_PORT`. Для Mini App укажите в BotFather адрес
 `https://ваш-домен/` (эндпойнт `/` отдаёт `index.html`, API — на `/api/...`).
+
+### 7. Развёртывание на Bothost (тариф Базовый)
+
+1. В панели Bothost задайте переменные окружения: `BOT_TOKEN`, `OWNER_ID` и
+   `DATA_DIR=/app/data`. Папка `/app/data` — постоянная: она сохраняется между
+   перезапусками и деплоями, в отличие от папки с кодом.
+2. Команда запуска: `python -m app.main`. База `$DATA_DIR/bot.db` создаётся
+   автоматически при первом старте.
+3. Не переопределяйте `DATABASE_URL` на относительный путь и не храните базу в
+   папке проекта — при перезапуске она потеряется.
+4. Для резервной копии скачайте `/app/data/bot.db` (файлы `*.db` в Git не
+   попадают — они перечислены в `.gitignore`).
 
 ---
 

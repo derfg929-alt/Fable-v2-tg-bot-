@@ -22,7 +22,14 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Contest, ContestEntry, DrawLog, Player, Winner
+from app.db.models import (
+    Contest,
+    ContestEntry,
+    DrawLog,
+    Player,
+    RandomizerHistory,
+    Winner,
+)
 from app.services import contest_settings as cset
 from app.services.randomizer_settings import get_max_referral_bonus_units
 
@@ -256,6 +263,26 @@ async def run_draw(
             )
         )
 
+    # Плоская история выпадений — переживает удаление конкурса.
+    prize = (contest.prize or "").strip()
+    for place, uid in enumerate(winner_ids, start=1):
+        session.add(
+            RandomizerHistory(
+                user_id=uid,
+                contest_id=contest_id,
+                result=_history_result(place, prize, reserve=False),
+            )
+        )
+    for place, uid in enumerate(reserve_ids, start=1):
+        session.add(
+            RandomizerHistory(
+                user_id=uid,
+                contest_id=contest_id,
+                result=_history_result(place, prize, reserve=True),
+                is_reserve=True,
+            )
+        )
+
     participants_hash = compute_participants_hash(participants, weights, salt)
     log = DrawLog(
         contest_id=contest_id,
@@ -432,3 +459,28 @@ async def get_draw_history(session: AsyncSession, contest_id: int) -> list[DrawL
             )
         ).all()
     )
+
+
+async def get_randomizer_history(
+    session: AsyncSession,
+    *,
+    user_id: int | None = None,
+    contest_id: int | None = None,
+    limit: int = 50,
+) -> list[RandomizerHistory]:
+    """Плоская история выпадений (последние записи первыми)."""
+    stmt = select(RandomizerHistory)
+    if user_id is not None:
+        stmt = stmt.where(RandomizerHistory.user_id == user_id)
+    if contest_id is not None:
+        stmt = stmt.where(RandomizerHistory.contest_id == contest_id)
+    stmt = stmt.order_by(
+        RandomizerHistory.created_at.desc(), RandomizerHistory.id.desc()
+    ).limit(limit)
+    return list((await session.scalars(stmt)).all())
+
+
+def _history_result(place: int, prize: str, *, reserve: bool) -> str:
+    role = "Запасной" if reserve else "Победитель"
+    text = f"{role}, место {place}"
+    return f"{text}: {prize}"[:255] if prize else text
