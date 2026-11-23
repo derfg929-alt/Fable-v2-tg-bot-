@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Final
 
 from sqlalchemy import text, Integer
@@ -19,6 +20,8 @@ from sqlalchemy.ext.asyncio import (
 from app.config import get_settings
 from app.db.models import Base
 
+logger = logging.getLogger("fable.db")
+
 # Адаптируем первичные ключи моделей для совместимости с SQLite
 for table in Base.metadata.sorted_tables:
     for col in table.columns:
@@ -31,8 +34,9 @@ for table in Base.metadata.sorted_tables:
 
 def _build_async_database_url(raw_url: str) -> str:
     """Определяет корректный асинхронный URL подключения."""
+    raw_url = (raw_url or "").strip()
     if not raw_url:
-        return "sqlite+aiosqlite:///data/bot_database.db"
+        raw_url = get_settings().effective_database_url
 
     # Если указан sqlite файл или память
     if "sqlite" in raw_url:
@@ -46,7 +50,36 @@ def _build_async_database_url(raw_url: str) -> str:
             return raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
         return raw_url
 
-    return "sqlite+aiosqlite:///data/bot_database.db"
+    return get_settings().effective_database_url
+
+
+def _sqlite_file_path(database_url: str) -> Path | None:
+    if "sqlite" not in database_url or ":memory:" in database_url:
+        return None
+    raw_path = database_url.split("///", 1)[-1].split("?", 1)[0]
+    return Path(raw_path).expanduser() if raw_path else None
+
+
+def _ensure_sqlite_directory(database_url: str) -> None:
+    """Создаёт папку под файл SQLite (на Bothost — /app/data)."""
+    path = _sqlite_file_path(database_url)
+    if path is not None:
+        path.resolve().parent.mkdir(parents=True, exist_ok=True)
+
+
+def _adopt_legacy_sqlite(database_url: str) -> None:
+    """Подхватывает старую базу bot_database.db, если новой ещё нет.
+
+    До перехода на DATA_DIR путь по умолчанию был ``data/bot_database.db``.
+    Без этого переноса бот после обновления стартовал бы с пустой базой.
+    """
+    path = _sqlite_file_path(database_url)
+    if path is None or path.exists():
+        return
+    legacy = path.parent / "bot_database.db"
+    if legacy.exists():
+        legacy.replace(path)
+        logger.warning("Старая база %s перенесена в %s", legacy, path)
 
 
 _initialized_db = False
@@ -56,11 +89,13 @@ _db_transaction_lock = asyncio.Lock()
 def create_database_engine(custom_url: str | None = None) -> AsyncEngine:
     """Создаёт engine для асинхронной работы базы данных (PostgreSQL / SQLite)."""
     config = get_settings()
-    database_url = _build_async_database_url(custom_url or config.database_url_value)
-
-    if "sqlite" in database_url and ":memory:" not in database_url:
-        db_file = database_url.split("///")[-1]
-        os.makedirs(os.path.dirname(os.path.abspath(db_file)), exist_ok=True)
+    explicit_url = (custom_url or "").strip() or (
+        config.database_url.get_secret_value().strip() if config.database_url else ""
+    )
+    database_url = _build_async_database_url(explicit_url or config.database_url_value)
+    _ensure_sqlite_directory(database_url)
+    if not explicit_url:
+        _adopt_legacy_sqlite(database_url)
 
     if "postgresql" in database_url:
         return create_async_engine(
@@ -328,6 +363,10 @@ async def init_database() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_legacy_schema(conn)
     _initialized_db = True
+    logger.info(
+        "База данных готова: %s",
+        engine.url.render_as_string(hide_password=True),
+    )
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

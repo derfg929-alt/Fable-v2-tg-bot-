@@ -31,13 +31,12 @@ ADMIN_IDS: list[int] = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 # Часовой пояс для планировщика и разбора дат.
 TIMEZONE: str = os.getenv("TIMEZONE", "Europe/Moscow")
 
-DATABASE_PATH: str = os.getenv("DATABASE_PATH", "")
+_default_data_dir = (
+    "/app/data" if os.path.isdir("/app/data") else str(Path(__file__).resolve().parent / "data")
+)
+DATA_DIR: str = os.getenv("DATA_DIR", _default_data_dir)
 
-if not DATABASE_PATH:
-    if os.path.isdir("/app/data"):
-        DATABASE_PATH = "/app/data/database.json"
-    else:
-        DATABASE_PATH = str(Path(__file__).resolve().parent / "data" / "database.json")
+DATABASE_PATH: str = os.getenv("DATABASE_PATH", "") or str(Path(DATA_DIR) / "database.json")
 
 DB_PATH: str = DATABASE_PATH
 

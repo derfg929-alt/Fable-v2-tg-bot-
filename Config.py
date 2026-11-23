@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator
@@ -16,10 +17,9 @@ class Settings(BaseSettings):
 
     bot_token: SecretStr = Field(default=SecretStr("123456:dummy_token_default"), alias="BOT_TOKEN")
     owner_id: int = Field(default=8039111975, alias="OWNER_ID", gt=0)
-    database_url: SecretStr = Field(
-        default=SecretStr("sqlite+aiosqlite:///data/bot_database.db"),
-        alias="DATABASE_URL",
-    )
+    data_dir: Path = Field(default=Path("/app/data"), alias="DATA_DIR")
+    db_filename: str = Field(default="bot.db", alias="DB_FILENAME")
+    database_url: SecretStr | None = Field(default=None, alias="DATABASE_URL")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", alias="LOG_LEVEL"
     )
@@ -55,14 +55,11 @@ class Settings(BaseSettings):
 
     @field_validator("database_url")
     @classmethod
-    def validate_database_url(cls, value: SecretStr) -> SecretStr:
+    def validate_database_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
         url = value.get_secret_value().strip()
-        if not url.startswith(("postgresql://", "postgresql+asyncpg://")):
-            raise ValueError(
-                "DATABASE_URL должен быть PostgreSQL URL "
-                "(например, postgresql+asyncpg://user:password@localhost:5432/fable)"
-            )
-        return SecretStr(url)
+        return SecretStr(url) if url else None
 
     @field_validator("grok_api_key", "groq_api_key", mode="before")
     @classmethod
@@ -141,9 +138,18 @@ class Settings(BaseSettings):
         return self.bot_token.get_secret_value()
 
     @property
+    def effective_database_url(self) -> str:
+        """URL подключения: явный DATABASE_URL либо SQLite-файл в DATA_DIR."""
+        if self.database_url:
+            raw = self.database_url.get_secret_value().strip()
+            if raw:
+                return raw
+        return f"sqlite+aiosqlite:///{self.data_dir / self.db_filename}"
+
+    @property
     def database_url_value(self) -> str:
         """URL подключения только для SQLAlchemy."""
-        return self.database_url.get_secret_value()
+        return self.effective_database_url
 
     @property
     def grok_api_key_value(self) -> str | None:

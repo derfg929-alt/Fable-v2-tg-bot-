@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY fable_random_bot ./fable_random_bot
 
 # Папка /app/data сохраняется между перезапусками на Bothost.
-ENV DATABASE_PATH=/app/data/database.json
+ENV DATA_DIR=/app/data
 VOLUME ["/app/data"]
 
 CMD ["python", "-m", "fable_random_bot.main"]

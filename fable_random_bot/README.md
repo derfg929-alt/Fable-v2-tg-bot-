@@ -67,7 +67,8 @@ fable_random_bot/
 | Переменная | Описание |
 | --- | --- |
 | `BOT_TOKEN` | Токен от @BotFather (обязательно) |
-| `DATABASE_PATH` | Путь к JSON-файлу (по умолчанию `/app/data/database.json`) |
+| `DATA_DIR` | Постоянная папка данных (по умолчанию `/app/data`); файл базы — `$DATA_DIR/database.json` |
+| `DATABASE_PATH` | Явный путь к JSON-файлу (имеет приоритет над `DATA_DIR`) |
 | `TIMEZONE` | Часовой пояс планировщика (по умолчанию `Europe/Moscow`) |
 
 > `ADMIN_IDS` больше не нужен: конкурсы создаёт любой пользователь.

@@ -929,6 +929,25 @@ class DrawLog(Base, TimestampMixin):
     executed_by: Mapped[int | None] = mapped_column(BigInteger)
 
 
+class RandomizerHistory(Base):
+    """Плоская история выпадений: одна строка на каждый приз розыгрыша.
+
+    Дублирует победителей в удобном для выборки виде (id, user_id, result,
+    created_at), чтобы история не зависела от структуры конкурса и сохранялась
+    даже после его удаления.
+    """
+    __tablename__ = "randomizer_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    contest_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    result: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_reserve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TZDateTime, server_default=func.now(), nullable=False
+    )
+
+
 class Notification(Base, TimestampMixin):
     """Отправленное уведомление (защита от повторной отправки одного события)."""
     __tablename__ = "notifications"

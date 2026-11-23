@@ -8,6 +8,14 @@ __pycache__/
 env/
 venv/
 *.log
+
+# Файлы баз данных не попадают в Git (данные живут в DATA_DIR на хостинге).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 data/bot_database.db
 data/bot_database.db*
 data/*.tmp

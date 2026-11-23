@@ -351,7 +351,18 @@ async def history(filter: str = Query(default="all"), x_init_data: str | None = 
                 "contest_status": cs.compute_status(contest),
                 "is_winner": winner,
             })
-    return {"history": result}
+        draws = await ds.get_randomizer_history(session, user_id=user_id)
+        draw_items = [
+            {
+                "id": row.id,
+                "contest_id": row.contest_id,
+                "result": row.result,
+                "is_reserve": row.is_reserve,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in draws
+        ]
+    return {"history": result, "draws": draw_items}
 
 
 @app.get("/api/winners")

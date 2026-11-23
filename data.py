@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import Any
 
-DB_PATH = "/app/data/database.json"
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
+DB_PATH = str(DATA_DIR / "database.json")
 
 # Глобальная блокировка на все операции чтения/записи.
 _lock = asyncio.Lock()
