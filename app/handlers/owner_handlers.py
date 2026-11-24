@@ -418,20 +418,21 @@ async def handle_give_coins(message: types.Message):
     amount = int(parts[2])
     async with session_scope() as session:
         from app.services.economy_service import credit_coins
-        from app.services.player_service import get_or_create_player
-        await get_or_create_player(session, telegram_id=target_id)
+        from app.services.player_service import get_or_create_player, get_player
+        if await get_player(session, target_id) is None:
+            await get_or_create_player(session, telegram_id=target_id, first_name="Игрок")
         try:
             res = await credit_coins(
                 session,
                 user_id=target_id,
                 amount=amount,
                 reason="Выдача администратором",
-                operation_type="admin_grant",
+                operation_type="admin_credit",
                 actor_id=message.from_user.id,
             )
             await message.reply(
                 f"✅ Выдано <b>{amount:,}</b> монет игроку <code>{target_id}</code>!\n"
-                f"Его новый баланс: <b>{res.current_balance:,}</b> монет.".replace(",", " "),
+                f"Его новый баланс: <b>{res.recipient_balance:,}</b> монет.".replace(",", " "),
                 parse_mode="HTML",
             )
         except Exception as e:
@@ -452,18 +453,25 @@ async def handle_take_coins(message: types.Message):
     amount = int(parts[2])
     async with session_scope() as session:
         from app.services.economy_service import debit_coins
+        from app.services.player_service import get_player
+        if await get_player(session, target_id) is None:
+            await message.reply(
+                f"❌ Игрок с ID <code>{target_id}</code> не зарегистрирован.",
+                parse_mode="HTML",
+            )
+            return
         try:
             res = await debit_coins(
                 session,
                 user_id=target_id,
                 amount=amount,
                 reason="Списание администратором",
-                operation_type="admin_revoke",
+                operation_type="admin_debit",
                 actor_id=message.from_user.id,
             )
             await message.reply(
                 f"✅ Списано <b>{amount:,}</b> монет у игрока <code>{target_id}</code>!\n"
-                f"Его остаток: <b>{res.current_balance:,}</b> монет.".replace(",", " "),
+                f"Его остаток: <b>{res.actor_balance:,}</b> монет.".replace(",", " "),
                 parse_mode="HTML",
             )
         except Exception as e:
