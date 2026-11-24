@@ -976,6 +976,14 @@ async def handle_bank(message: types.Message):
                 await message.reply(f"❌ Ошибка: {e}")
             return
 
+        await message.reply(
+            "🏦 <b>Банк Fable</b>\n\n"
+            "• <code>банк</code> — баланс и ставка\n"
+            "• <code>банк положить [сумма|все]</code>\n"
+            "• <code>банк снять [сумма|все]</code>",
+            parse_mode="HTML",
+        )
+
 
 @router.message(F.text.casefold().startswith("перевод"))
 async def handle_transfer(message: types.Message):

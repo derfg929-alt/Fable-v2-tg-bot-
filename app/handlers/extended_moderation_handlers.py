@@ -455,7 +455,7 @@ async def handle_freeze(message: types.Message, bot: Bot):
             dur = parse_duration_string(rest_freeze)
             until = datetime.now(timezone.utc) + dur
             await update_chat_setting(session, chat_id=message.chat.id, admin_id=message.from_user.id, key="frozen_until", value=until.isoformat(), min_level=3, bot=bot)
-            await message.reply(f"❄️ Чат заморожен на {rest_freeze}. Обычные участники временно не могут отправлять сообщения.")
+            await message.reply(f"❄️ Чат заморожен на {_format_duration_ru(dur).rstrip('.')}. Обычные участники временно не могут отправлять сообщения.")
         except Exception as e:
             await message.reply(f"❌ {e}")
 
@@ -645,7 +645,7 @@ async def handle_admin_dismiss(message: types.Message, bot: Bot):
 
 
 @router.message(F.text.casefold().startswith("ссылки"))
-async def handle_whitelist(message: types.Message):
+async def handle_whitelist(message: types.Message, bot: Bot):
     if not message.chat or message.chat.type == ChatType.PRIVATE:
         await reply_group_only(message)
         return
